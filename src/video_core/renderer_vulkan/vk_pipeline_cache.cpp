@@ -363,6 +363,13 @@ bool IsShaderReuseAllowed() {
     return value == nullptr || value[0] != '0';
 }
 
+// EDEN_NX2_GPL_OPTIMIZE=0: keep fast-linked pipelines as they are. Otherwise each one is also
+// compiled whole in the background and replaced when that is done.
+bool IsPipelineOptimizationAllowed() {
+    const char* const value = std::getenv("EDEN_NX2_GPL_OPTIMIZE");
+    return value == nullptr || value[0] != '0';
+}
+
 size_t GetTotalPipelineWorkers() {
     const size_t max_core_threads =
         std::max<size_t>(static_cast<size_t>(std::thread::hardware_concurrency()), 2ULL) - 1ULL;
@@ -406,6 +413,12 @@ size_t GetTotalTranslationWorkers() {
     return std::max<size_t>(1, GetTotalPipelineWorkers() / 2);
 }
 
+// Optimized builds are not waited for: a quarter of the pipeline workers' count, so they leave
+// the CPU to the builds draws wait for.
+size_t GetTotalOptimizeWorkers() {
+    return std::max<size_t>(1, GetTotalPipelineWorkers() / 4);
+}
+
 } // Anonymous namespace
 
 size_t ComputePipelineCacheKey::Hash() const noexcept {
@@ -445,8 +458,15 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
       use_async_translation{use_asynchronous_shaders && IsAsyncTranslationAllowed() &&
                             !device.HasBrokenParallelShaderCompiling()},
       use_shader_reuse{IsShaderReuseAllowed()},
+      // Shader parts are cached per shader module set: without reuse, every pipeline has its own
+      // set and would compile its parts and then its optimized build, twice the work for nothing.
+      use_pipeline_libraries{device.IsExtGraphicsPipelineLibrarySupported() && use_shader_reuse},
+      use_optimized_pipelines{use_pipeline_libraries && IsPipelineOptimizationAllowed()},
       translation_wait_budget{GetTranslationWaitBudget()},
       num_translation_threads{use_async_translation ? GetTotalTranslationWorkers() : 0},
+      pipeline_libraries{device},
+      optimize_workers(use_optimized_pipelines ? GetTotalOptimizeWorkers() : 0,
+                       "VkPipelineOptimizer", {}, Common::ThreadPlacement::Background),
       workers(device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
               "VkPipelineBuilder", {}, Common::ThreadPlacement::Background),
       serialization_thread(1, "VkPipelineSerialization", {},
@@ -461,6 +481,17 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
     }
     LOG_INFO(Render_Vulkan, "Graphics pipelines {} the shaders of earlier pipelines that fit them",
              use_shader_reuse ? "reuse" : "do not reuse (EDEN_NX2_SHADER_REUSE=0)");
+    if (device.IsExtGraphicsPipelineLibrarySupported() && !use_pipeline_libraries) {
+        LOG_INFO(Render_Vulkan, "Pipeline libraries are not used without shader reuse");
+    }
+    if (use_pipeline_libraries) {
+        LOG_INFO(Render_Vulkan,
+                 "Graphics pipelines built for draws are fast-linked from pipeline libraries, {}",
+                 use_optimized_pipelines
+                     ? fmt::format("then compiled whole on {} background threads",
+                                   GetTotalOptimizeWorkers())
+                     : std::string{"and kept so (EDEN_NX2_GPL_OPTIMIZE=0)"});
+    }
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
     const VkShaderStageFlags subgroup_stages{device.GetSubgroupSupportedStages()};
@@ -815,7 +846,7 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
                 env_ptrs.push_back(&env);
             }
             auto pipeline{CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs),
-                                                 state.statistics.get(), false)};
+                                                 state.statistics.get(), false, false)};
 
             std::scoped_lock lock{state.mutex};
             if (pipeline) {
@@ -1007,7 +1038,7 @@ bool PipelineCache::BuildNewGraphicsPipeline() {
 std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
     ShaderPools& pools, const GraphicsPipelineCacheKey& key,
     std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
-    bool build_in_parallel, bool allow_translation) try {
+    bool build_in_parallel, bool link_from_libraries, bool allow_translation) try {
     auto hash = key.Hash();
     LOG_DEBUG(Render_Vulkan, "{:#016x}", hash);
     const ShaderTranslationKey translation_key{MakeShaderTranslationKey(key, device)};
@@ -1029,10 +1060,13 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline(
         }
     }
     Common::ThreadWorker* const thread_worker{build_in_parallel ? &workers : nullptr};
+    const bool link{link_from_libraries && use_pipeline_libraries};
     return std::make_unique<GraphicsPipeline>(
         scheduler, buffer_cache, texture_cache, vulkan_pipeline_cache, &shader_notify, device,
         descriptor_pool, guest_descriptor_queue, descriptor_buffer_ring, thread_worker, statistics,
-        render_pass_cache, key, shaders->modules, shaders->InfoPointers());
+        render_pass_cache, link ? &pipeline_libraries : nullptr,
+        link && use_optimized_pipelines ? &optimize_workers : nullptr, key, shaders->modules,
+        shaders->InfoPointers());
 
 } catch (const Shader::Exception& exception) {
     LOG_ERROR(Render_Vulkan, "{}", exception.what());
@@ -1330,8 +1364,8 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipeline() {
     GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
 
     main_pools.ReleaseContents();
-    auto pipeline{
-        CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr, true)};
+    auto pipeline{CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr,
+                                         true, true)};
     if (!pipeline || pipeline_cache_filename.empty()) {
         return pipeline;
     }
@@ -1348,7 +1382,7 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::CreateGraphicsPipelineFromReuse
     GraphicsEnvironments environments;
     GetGraphicsEnvironments(environments, graphics_key.unique_hashes);
     auto pipeline{CreateGraphicsPipeline(main_pools, graphics_key, environments.Span(), nullptr,
-                                         true, false)};
+                                         true, true, false)};
     if (!pipeline) {
         return nullptr;
     }
@@ -1465,7 +1499,7 @@ void PipelineCache::TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& ke
     try {
         // Not built in parallel: the driver compile runs here too, so the pipeline can be drawn
         // with as soon as the GPU thread adopts it.
-        pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, false);
+        pipeline = CreateGraphicsPipeline(pools, key, MakeSpan(env_ptrs), nullptr, false, true);
     } catch (const std::exception& exception) {
         // Shader errors are handled inside; nothing else may end the worker thread.
         LOG_ERROR(Render_Vulkan, "Graphics pipeline translation failed: {}", exception.what());

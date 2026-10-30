@@ -34,6 +34,7 @@
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/renderer_vulkan/vk_pipeline_library.h"
 #include "video_core/renderer_vulkan/vk_shader_reuse.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/shader_cache.h"
@@ -176,10 +177,14 @@ private:
                                    GraphicsEnvironmentArray envs);
 
     /// With `allow_translation` false, only builds pipelines from reused shaders (else null).
+    /// With `link_from_libraries`, the driver pipeline is linked from VK_EXT_graphics_pipeline_library
+    /// parts when the device allows it. Pipelines built for draws are; the disk cache replay at
+    /// boot compiles them whole: nothing waits for them, and the VkPipelineCache then holds what
+    /// the next replay asks for.
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
         std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
-        bool build_in_parallel, bool allow_translation = true);
+        bool build_in_parallel, bool link_from_libraries, bool allow_translation = true);
 
     // Reuse of translated shaders between graphics pipelines (vk_shader_reuse.h).
 
@@ -226,11 +231,16 @@ private:
     bool use_vulkan_pipeline_cache{};
     bool use_async_translation{};
     bool use_shader_reuse{};
+    bool use_pipeline_libraries{};
+    bool use_optimized_pipelines{};
     std::chrono::microseconds translation_wait_budget{};
     size_t num_translation_threads{};
 
     GraphicsPipelineCacheKey graphics_key{};
     GraphicsPipeline* current_pipeline{};
+
+    /// Declared before the pipelines, which may have been linked from its libraries.
+    GraphicsPipelineLibraryCache pipeline_libraries;
 
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>> compute_cache;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>> graphics_cache;
@@ -252,6 +262,10 @@ private:
     std::atomic<size_t> last_cache_size{};
     std::atomic_bool flush_in_flight{};
 
+    /// Optimized builds of fast-linked pipelines. Destroyed after `workers` and
+    /// translation_workers, which queue them, and before graphics_cache, whose pipelines they
+    /// complete.
+    Common::ThreadWorker optimize_workers;
     Common::ThreadWorker workers;
     Common::ThreadWorker serialization_thread;
     DynamicFeatures dynamic_features;

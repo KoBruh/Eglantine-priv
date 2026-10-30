@@ -72,6 +72,7 @@ using GraphicsShaderModules =
     std::array<vk::ShaderModule, Tegra::Engines::Maxwell3D::Regs::MaxShaderStage>;
 
 class Device;
+class GraphicsPipelineLibraryCache;
 class PipelineStatistics;
 class RenderPassCache;
 class RescalingPushConstant;
@@ -89,6 +90,7 @@ public:
         GuestDescriptorQueue& guest_descriptor_queue,
         DescriptorBufferRing& descriptor_buffer_ring, Common::ThreadWorker* worker_thread,
         PipelineStatistics* pipeline_statistics, RenderPassCache& render_pass_cache,
+        GraphicsPipelineLibraryCache* library_cache, Common::ThreadWorker* optimize_worker,
         const GraphicsPipelineCacheKey& key,
         std::shared_ptr<const GraphicsShaderModules> modules,
         const std::array<const Shader::Info*, NUM_STAGES>& infos);
@@ -147,7 +149,31 @@ private:
     bool ConfigureDraw(const RescalingPushConstant& rescaling,
                        const RenderAreaPushConstant& render_are);
 
-    void MakePipeline(VkRenderPass render_pass);
+    struct DriverPipeline {
+        vk::Pipeline pipeline;
+        bool fast_linked{}; ///< Linked from VK_EXT_graphics_pipeline_library parts.
+    };
+
+    enum class LinkMode {
+        None,            ///< Compile the pipeline whole.
+        Link,            ///< Link it from library_cache's parts, compiling those missing; compile
+                         ///< it whole when the parts cannot express its state.
+        CachedPartsOnly, ///< Link it if every part is compiled already, else create nothing.
+    };
+
+    DriverPipeline MakePipeline(VkRenderPass render_pass, LinkMode link_mode);
+
+    /// Builds the pipeline on the calling thread if it can be linked from parts compiled already.
+    bool LinkFromCachedParts(RenderPassCache& render_pass_cache,
+                             VideoCore::ShaderNotify* shader_notify);
+
+    /// Compiles the pipeline whole on optimize_worker, then draws switch to it.
+    void QueueOptimizedPipeline(VkRenderPass render_pass);
+
+    /// The pipeline to bind: the optimized one once it is ready, else `pipeline`.
+    VkPipeline BoundPipeline() const noexcept {
+        return optimized_ready.load(std::memory_order_acquire) ? *optimized_pipeline : *pipeline;
+    }
 
     void Validate();
 
@@ -182,6 +208,16 @@ private:
     vk::PipelineLayout pipeline_layout;
     vk::DescriptorUpdateTemplate descriptor_update_template;
     vk::Pipeline pipeline;
+
+    /// Null when pipelines are compiled whole (no VK_EXT_graphics_pipeline_library, disk cache
+    /// replay at boot).
+    GraphicsPipelineLibraryCache* library_cache{};
+    /// Null when fast-linked pipelines are kept as they are.
+    Common::ThreadWorker* optimize_worker{};
+    /// Written once by optimize_worker, then published by optimized_ready. The fast-linked
+    /// `pipeline` stays alive with it: command buffers still in flight may use it.
+    vk::Pipeline optimized_pipeline;
+    std::atomic_bool optimized_ready{false};
 
     DescriptorBufferLayout descriptor_buffer_layout;
     std::vector<DescriptorUpdateEntry> last_descriptor_payload;
