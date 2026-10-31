@@ -49,13 +49,6 @@ NPad::NPad(Core::HID::HIDCore& hid_core_, KernelHelpers::ServiceContext& service
         for (std::size_t i = 0; i < controller_data[aruid_index].size(); ++i) {
             auto& controller = controller_data[aruid_index][i];
             controller.device = hid_core.GetEmulatedControllerByIndex(i);
-            Core::HID::ControllerUpdateCallback engine_callback{
-                .on_change = [this, i, kernel = &hid_core.kernel](Core::HID::ControllerTriggerType type) {
-                    ControllerUpdate(*kernel, type, i);
-                },
-                .is_npad_service = true,
-            };
-            controller.callback_key = controller.device->SetCallback(engine_callback);
         }
     }
     for (std::size_t i = 0; i < abstracted_pads.size(); ++i) {
@@ -1192,6 +1185,21 @@ void NPad::SetNpadExternals(std::shared_ptr<AppletResource> resource,
     for (auto& abstract_pad : abstracted_pads) {
         abstract_pad.SetExternals(&applet_resource_holder, nullptr, nullptr, nullptr, nullptr,
                                   &vibration_handler, &hid_core);
+    }
+
+    // ControllerUpdate reads the applet resource. The UI thread sends pad events at all times, also
+    // while a game boots, so the callbacks must start after the applet resource is set.
+    for (std::size_t aruid_index = 0; aruid_index < AruidIndexMax; ++aruid_index) {
+        for (std::size_t i = 0; i < controller_data[aruid_index].size(); ++i) {
+            auto& controller = controller_data[aruid_index][i];
+            Core::HID::ControllerUpdateCallback engine_callback{
+                .on_change = [this, i, kernel = &hid_core.kernel](Core::HID::ControllerTriggerType type) {
+                    ControllerUpdate(*kernel, type, i);
+                },
+                .is_npad_service = true,
+            };
+            controller.callback_key = controller.device->SetCallback(engine_callback);
+        }
     }
 }
 
