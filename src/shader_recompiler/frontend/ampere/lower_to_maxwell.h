@@ -315,6 +315,18 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                              op == 0xc0b || op == 0xc11 || op == 0x896;
 
     }
+    // The f32 HMMA emulation keeps its accumulators and fragments in R240-R245, which a program
+    // may use itself (or hold UR22-UR27 in, with the uniform bank): take it only when no operand
+    // field names R236-R245 (a wide write from R236 up reaches R240). False positives just keep
+    // the HFMA2 emulation.
+    const bool hmma_f32_registers_free =
+        !uses_uniform_bank && std::none_of(code.begin(), code.end(), [](const Instruction& instruction) {
+            for (const u32 bit : {16U, 24U, 32U, 64U}) {
+                const u32 reg = instruction.Bits(bit, 8);
+                if (reg >= 236 && reg < 246) return true;
+            }
+            return false;
+        });
     const auto address_of = [](u32 index) { return 0x50U + index * 8 + ((index + 1) / 3) * 8; };
     const auto fail = [&](u32 index, std::string_view reason) {
         result.instructions.clear();
@@ -1691,6 +1703,77 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             }
             if (!emulate)
                 return fail(index, "native matrix multiply (EDEN_NX2_TENSOR off, or emulation off by default)");
+            if (hmma_f32_registers_free) {
+                // The unit sums the eight products of one k group in f32 and rounds the sum to f16
+                // once, so this keeps four f32 accumulators and converts after every eight products.
+                // Accumulating with HFMA2 (below; a rounding per product) tints Splatoon Raiders'
+                // whole scene yellow: the sums sit near the top of the f16 range. Also takes the
+                // plain HMMA.1688 (depth 8) form, and needs an unpredicated instruction since the
+                // emulation shuffles across the warp.
+                const u32 form = insn.words[2] & ~0xffU;
+                const u32 depth = form == 0 ? 8U : 16U;
+                const u32 a_count = depth / 4, b_count = depth / 8;
+                if (native_predicate != 7 || (form != 0 && form != 0x800) || (insn.words[1] & ~0xffU) ||
+                    (dest & 1) || (a & (a_count - 1)) || a + a_count > 246 ||
+                    (b & (b_count - 1)) || b + b_count > 246 || (c != 255 && (c & 1)))
+                    return fail(index, "native half matrix multiply mode");
+                const auto add = [&](u32 target, u32 lhs, u32 rhs) {
+                    emit(0x5c10000000000000ULL | predicate | target | (u64{lhs} << 8) | (u64{rhs} << 20));
+                };
+                const auto shuffle_lane = [&](u32 target, u32 source, u32 lane) {
+                    emit(0xef10000000000000ULL | predicate | target | (u64{source} << 8) |
+                         (u64{lane} << 20) | (u64{1} << 29) | (u64{0x1f} << 34) | (u64{7} << 48));
+                };
+                const auto round_half = [&](u32 reg) {
+                    emit(0x5ca8000000000000ULL | predicate | reg | (u64{1} << 8) |
+                         (u64{2} << 10) | (u64{reg} << 20));
+                };
+                const auto fma = [&](u32 target, u32 lhs, u32 rhs) {
+                    emit(0x5980000000000000ULL | predicate | target | (u64{lhs} << 8) |
+                         (u64{rhs} << 20) | (u64{target} << 39));
+                };
+                // R240..R243: D rows g / g+8, columns 2i (even k) and 2i+1 (odd k), in f32.
+                for (u32 row = 0; row < 2; ++row) {
+                    for (u32 col = 0; col < 2; ++col) {
+                        extract_half({c == 255 ? 255U : c + row, 0, false, false}, col, 240 + row * 2 + col);
+                    }
+                }
+                emit(0xf0c8000000000000ULL | predicate | 250);                                    // laneid
+                emit(0x0400000000000000ULL | predicate | 251 | (u64{250} << 8) | (u64{0x1c} << 20));
+                emit(0x0400000000000000ULL | predicate | 252 | (u64{250} << 8) | (u64{3} << 20));
+                emit(0x3848000000000000ULL | predicate | 252 | (u64{252} << 8) | (u64{3} << 20));  // 8(t%4)
+                for (u32 pair = 0; pair < depth / 2; ++pair) {
+                    mov_imm(253, pair & 3);
+                    add(254, 252, 253);
+                    add(253, 251, 253);                                                           // A lane 4g+i
+                    shuffle_lane(244, a + (pair >= 4 ? 2 : 0), 253);
+                    shuffle_lane(245, a + (pair >= 4 ? 3 : 1), 253);
+                    shuffle_lane(246, b + pair / 4, 254);                                         // B lane 8(t%4)+i
+                    mov_imm(253, 4);
+                    add(254, 254, 253);
+                    shuffle_lane(247, b + pair / 4, 254);
+                    for (u32 half = 0; half < 2; ++half) {
+                        extract_half({246, 0, false, false}, half, 253);
+                        extract_half({247, 0, false, false}, half, 254);
+                        for (u32 row = 0; row < 2; ++row) {
+                            extract_half({244 + row, 0, false, false}, half, 250);
+                            fma(240 + row * 2, 250, 253);
+                            fma(241 + row * 2, 250, 254);
+                        }
+                    }
+                    if ((pair & 3) == 3) {
+                        for (u32 reg = 240; reg < 244; ++reg) {
+                            round_half(reg);
+                            if (pair + 1 < depth / 2) extract_half({reg, 2, false, false}, 0, reg);
+                        }
+                    }
+                }
+                for (u32 row = 0; row < 2; ++row) {
+                    emit(0x5c18000000000000ULL | predicate | (dest + row) |
+                         (u64{241 + row * 2} << 8) | (u64{240 + row * 2} << 20) | (u64{16} << 39));
+                }
+                break;
+            }
             const auto shuffle = [&](u32 target, u32 source_reg) {
                 emit(0xef10000000000000ULL | predicate | target | (u64{source_reg} << 8) | (u64{246} << 20) |
                      (u64{1} << 29) | (u64{31} << 34) | (u64{7} << 48));
