@@ -232,6 +232,7 @@
     <string name="view_carousel">Carousel</string>
     <string name="game_image_desc">Screenshot for %1$s</string>
     <string name="folder">Folder</string>
+    <string name="open_file">Open file</string>
     <string name="dont_show_again">Don\'t Show Again</string>
     <string name="add_directory_success">New game directory added successfully </string>
     <string name="enable_update_checks">Check for Updates</string>
