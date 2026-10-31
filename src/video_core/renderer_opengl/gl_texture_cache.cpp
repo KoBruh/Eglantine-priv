@@ -448,9 +448,8 @@ OGLTexture MakeImage(const VideoCommon::ImageInfo& info, GLenum gl_internal_form
 [[nodiscard]] GLenum SelectAstcFormat(PixelFormat format, bool is_srgb) {
     switch (Settings::GetAstcRecompression()) {
     case Settings::AstcRecompression::Bc1:
-        return is_srgb ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT : GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
-        break;
     case Settings::AstcRecompression::Bc3:
+        // ConvertImage writes BC1 only for opaque images, which OpenGL does not detect.
         return is_srgb ? GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT : GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
         break;
     default:

@@ -616,11 +616,7 @@ u32 CalculateConvertedSizeBytes(const ImageInfo& info) noexcept {
     static constexpr Extent2D TILE_SIZE{1, 1};
     if (IsPixelFormatASTC(info.format) &&
         Settings::GetAstcRecompression() != Settings::AstcRecompression::Uncompressed) {
-        const u32 bpp_div =
-            Settings::GetAstcRecompression() == Settings::AstcRecompression::Bc1 ||
-                    info.astc_opaque
-                ? 2
-                : 1;
+        const u32 bpp_div = info.astc_opaque ? 2 : 1;
         // NumBlocksPerLayer doesn't account for this correctly, so we have to do it manually.
         u32 output_size = 0;
         for (s32 i = 0; i < info.resources.levels; i++) {
@@ -1060,8 +1056,7 @@ void ConvertedLayout(const ImageInfo& info, std::span<BufferImageCopy> copies) {
             size = u64{copy.image_extent.width} * copy.image_extent.height * layers *
                    BytesPerBlock(PixelFormat::A8B8G8R8_UNORM);
         } else if (astc) {
-            const u64 bpp_div =
-                recompression == Settings::AstcRecompression::Bc1 || info.astc_opaque ? 2 : 1;
+            const u64 bpp_div = info.astc_opaque ? 2 : 1;
             size = u64{Common::AlignUp(copy.image_extent.width, 4U)} *
                    Common::AlignUp(copy.image_extent.height, 4U) * layers / bpp_div;
         } else {
@@ -1109,8 +1104,7 @@ void ConvertImage(std::span<const u8> input, const ImageInfo& info, std::span<u8
         } else if (astc) {
             // BC1 uses 0.5 bytes per texel
             // BC3 uses 1 byte per texel
-            const bool bc1 =
-                recompression_setting == Settings::AstcRecompression::Bc1 || info.astc_opaque;
+            const bool bc1 = info.astc_opaque;
             const auto compress =
                 bc1 ? Tegra::Texture::BCN::CompressBC1 : Tegra::Texture::BCN::CompressBC3;
             const auto bpp_div = bc1 ? 2 : 1;

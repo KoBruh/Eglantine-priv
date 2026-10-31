@@ -2070,8 +2070,10 @@ bool TextureCacheRuntime::UseOpaqueAstcFormat() const {
         const char* value = std::getenv("EDEN_NX2_ASTC_BC1");
         return value == nullptr || value[0] != '0';
     }();
+    // BC1 cannot keep partial alpha: in both compressed modes only images whose data is opaque
+    // use BC1, the rest BC3.
     return enabled && !device.IsOptimalAstcSupported() &&
-           Settings::GetAstcRecompression() == Settings::AstcRecompression::Bc3;
+           Settings::GetAstcRecompression() != Settings::AstcRecompression::Uncompressed;
 }
 
 void TextureCacheRuntime::FlushDeferredClear() {
@@ -3804,8 +3806,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         map, swizzles);
 
     // Encode every level into one buffer, then copy it into the image.
-    const bool bc3 = !IsOpaqueBc1Astc(device, info) &&
-                     Settings::GetAstcRecompression() != Settings::AstcRecompression::Bc1;
+    const bool bc3 = !IsOpaqueBc1Astc(device, info);
     const u64 block_bytes = bc3 ? 16 : 8;
     boost::container::small_vector<VideoCommon::BufferImageCopy, 16> copies;
     u64 total = 0;
