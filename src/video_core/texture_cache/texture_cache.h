@@ -1289,8 +1289,14 @@ void TextureCache<P>::PopAsyncFlushes() {
 }
 
 template <class P>
-ImageId TextureCache<P>::DmaImageId(const Tegra::DMA::ImageOperand& operand, bool is_upload) {
+ImageId TextureCache<P>::DmaImageId(const Tegra::DMA::ImageOperand& operand, bool is_upload,
+                                    const Tegra::DMA::ImageCopy& copy_info,
+                                    const Tegra::DMA::BufferOperand& buffer_operand) {
     const ImageInfo dst_info(operand);
+    if (dst_info.format == PixelFormat::Invalid) {
+        // Pixel sizes without a matching format (e.g. 3 or 12 bytes) take the software path.
+        return NULL_IMAGE_ID;
+    }
     const ImageId dst_id = FindDMAImage(dst_info, operand.address);
     if (!dst_id) {
         return NULL_IMAGE_ID;
@@ -1311,6 +1317,14 @@ ImageId TextureCache<P>::DmaImageId(const Tegra::DMA::ImageOperand& operand, boo
     }
     const auto base = image.TryFindBase(operand.address);
     if (!base) {
+        return NULL_IMAGE_ID;
+    }
+    // DmaBufferImageCopy rescales x coordinates from the copy's pixel size to the image's block
+    // size; a remainder would shift the copied texels, so let the software path handle it.
+    const u64 old_bpp = operand.bytes_per_pixel;
+    const u64 bpp = VideoCore::Surface::BytesPerBlock(image.info.format);
+    if (bpp == 0 || (old_bpp * operand.params.origin.x.Value()) % bpp != 0 ||
+        (old_bpp * copy_info.length_x) % bpp != 0 || (old_bpp * buffer_operand.pitch) % bpp != 0) {
         return NULL_IMAGE_ID;
     }
     return dst_id;
