@@ -364,10 +364,10 @@ struct Memory::Impl {
             std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
         },
         [&](const Common::ProcessAddress current_vaddr, const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
+            std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
             if (!unsafe) {
                 HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
             }
-            std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
         });
     }
 
@@ -380,8 +380,8 @@ struct Memory::Impl {
             std::memset(ptr, 0, copy_amount);
         },
         [&](const Common::ProcessAddress current_vaddr, const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
-            HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
             std::memset(ptr, 0, copy_amount);
+            HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
         });
     }
 
@@ -795,37 +795,54 @@ struct Memory::Impl {
     template <typename T>
     inline void Write(Common::ProcessAddress vaddr, const T data) noexcept requires(std::is_trivially_copyable_v<T>) {
         const u64 addr = GetInteger(vaddr);
+        bool cached = false;
         if (auto const ptr = GetPointerImpl(addr, [addr, data]() {
             LOG_ERROR(HW_Memory, "Unmapped Write{} @ {:#016x} = {:#016x}", sizeof(T) * 8, addr, u64(data));
-        }, [&]() { HandleRasterizerWrite(addr, sizeof(T)); }); ptr) [[likely]]
+        }, [&]() { cached = true; }); ptr) [[likely]] {
             std::memcpy(ptr, &data, sizeof(T));
+            // Report the write after the store. The GPU thread can apply a report at any time. It
+            // reads the bytes then and keeps the page protected, so an earlier report can lose them.
+            if (cached) [[unlikely]] {
+                HandleRasterizerWrite(addr, sizeof(T));
+            }
+        }
     }
 
     template <typename T>
     bool WriteExclusive(Common::ProcessAddress vaddr, const T data, const T expected) {
+        bool cached = false;
         u8* const ptr = GetPointerImpl(
             GetInteger(vaddr),
             [vaddr, data]() {
                 LOG_ERROR(HW_Memory, "Unmapped WriteExclusive{} @ {:#016x} = {:#016x}",
                           sizeof(T) * 8, GetInteger(vaddr), static_cast<u64>(data));
             },
-            [&]() { HandleRasterizerWrite(GetInteger(vaddr), sizeof(T)); });
+            [&]() { cached = true; });
         if (ptr) {
-            return Common::AtomicCompareAndSwap(reinterpret_cast<T*>(ptr), data, expected);
+            const bool result = Common::AtomicCompareAndSwap(reinterpret_cast<T*>(ptr), data, expected);
+            if (cached && result) {
+                HandleRasterizerWrite(GetInteger(vaddr), sizeof(T));
+            }
+            return result;
         }
         return true;
     }
 
     bool WriteExclusive128(Common::ProcessAddress vaddr, const u128 data, const u128 expected) {
+        bool cached = false;
         u8* const ptr = GetPointerImpl(
             GetInteger(vaddr),
             [vaddr, data]() {
                 LOG_ERROR(HW_Memory, "Unmapped WriteExclusive128 @ {:#016x} = {:#016x}{:016X}",
                           GetInteger(vaddr), static_cast<u64>(data[1]), static_cast<u64>(data[0]));
             },
-            [&]() { HandleRasterizerWrite(GetInteger(vaddr), sizeof(u128)); });
+            [&]() { cached = true; });
         if (ptr) {
-            return Common::AtomicCompareAndSwap(reinterpret_cast<u64*>(ptr), data, expected);
+            const bool result = Common::AtomicCompareAndSwap(reinterpret_cast<u64*>(ptr), data, expected);
+            if (cached && result) {
+                HandleRasterizerWrite(GetInteger(vaddr), sizeof(u128));
+            }
+            return result;
         }
         return true;
     }
