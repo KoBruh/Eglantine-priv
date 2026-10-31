@@ -1644,13 +1644,22 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             // Lane t (group g = t/4, i = t%4): A regs hold rows g / g+8 at k 2i..2i+1 (a0, a1) and
             // 8+2i.. (a2, a3); B regs hold k 2i.. (b0) / 8+2i.. (b1) of column g; D holds rows
             // g / g+8 at columns 2i, 2i+1. Rebuilt from shuffles with HFMA2, accumulating in R252/R253.
-            // This software expansion is large and remains opt-in for bounded validation runs.
-            // On by default for Donkey Kong Bananza on desktop: rejected, its 3D scene stays blue.
-            // EDEN_NX2_TENSOR=fast uses the cooperative-matrix path, =stub makes every HMMA D = C.
+            // The expansion is correct but large: title 4's 372-HMMA network takes the host driver
+            // minutes to compile, once (the pipeline is cached). Rejecting the program instead left
+            // Donkey Kong Bananza's whole scene flat lilac and Splatoon Raiders washed out, because the
+            // compute pass that composes it never ran, so emulation is the default on desktop. Not
+            // on Android, where the expansion ran Donkey Kong at about one frame a second on Adreno.
+            // EDEN_NX2_TENSOR=fast uses the cooperative-matrix path, =stub makes every HMMA D = C,
+            // =off or =0 rejects the program, and =emulate emulates everywhere.
             const char* env_mode = std::getenv("EDEN_NX2_TENSOR");
             const std::string_view mode = env_mode ? env_mode : "";
-            const bool emulate_by_default = Settings::GetCurrentProgramID() == 0x040074A01BF12000ULL;
-            const bool emulate = env_mode ? mode == "emulate" : emulate_by_default;
+#ifdef __ANDROID__
+            constexpr bool emulate_by_default = false;
+#else
+            constexpr bool emulate_by_default = true;
+#endif
+            const bool emulate = mode == "emulate" ||
+                                 (emulate_by_default && mode != "off" && mode != "0");
             const u32 a = insn.Bits(24, 8), b = insn.Bits(32, 8), c = insn.Bits(64, 8);
             if ((insn.words[1] & ~0xffU) || (insn.words[2] & ~0x8ffU) > 0x800 || dest + 2 > 246 ||
                 a + 4 > 246 || b + 2 > 246 || (c != 255 && c + 2 > 246))
@@ -1681,7 +1690,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 break;
             }
             if (!emulate)
-                return fail(index, "native matrix multiply (set EDEN_NX2_TENSOR=emulate)");
+                return fail(index, "native matrix multiply (EDEN_NX2_TENSOR off, or emulation off by default)");
             const auto shuffle = [&](u32 target, u32 source_reg) {
                 emit(0xef10000000000000ULL | predicate | target | (u64{source_reg} << 8) | (u64{246} << 20) |
                      (u64{1} << 29) | (u64{31} << 34) | (u64{7} << 48));
