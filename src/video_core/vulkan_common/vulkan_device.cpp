@@ -1705,6 +1705,11 @@ u64 Device::GetDeviceMemoryBudget() const {
             result += AllocatedUsage(budget.heapUsage[heap], heap_budgets[heap]);
         }
     }
+    if (is_integrated) {
+        // The heaps of an iGPU are host RAM, which the guest shares: stay within the capped
+        // figure from CollectPhysicalMemoryInfo (Steam Deck: 8 GiB budget, 4 GiB cap).
+        result = (std::min)(result, device_access_memory);
+    }
     return result;
 }
 
