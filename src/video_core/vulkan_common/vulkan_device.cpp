@@ -1046,6 +1046,14 @@ bool Device::GetSuitability(bool requires_swapchain) {
         supported_extensions.insert(property.extensionName);
     }
 
+    // EDEN_NX2_NO_NV_GEOMETRY=1 hides the NVIDIA geometry extensions. An NVIDIA card then takes the
+    // shader paths of AMD and Intel, so a fault on those cards can be tested on an NVIDIA card.
+    if (std::getenv("EDEN_NX2_NO_NV_GEOMETRY") != nullptr) {
+        supported_extensions.erase(VK_NV_GEOMETRY_SHADER_PASSTHROUGH_EXTENSION_NAME);
+        supported_extensions.erase(VK_NV_VIEWPORT_ARRAY2_EXTENSION_NAME);
+        supported_extensions.erase(VK_NV_VIEWPORT_SWIZZLE_EXTENSION_NAME);
+    }
+
     // Generate list of extensions to load.
     loaded_extensions.clear();
 
