@@ -238,6 +238,12 @@ void MemoryManager::BindRasterizer(VideoCore::RasterizerInterface* rasterizer_) 
 }
 
 GPUVAddr MemoryManager::Map(GPUVAddr gpu_addr, DAddr dev_addr, std::size_t size, PTEKind kind, bool is_big_pages) {
+    // A Switch 2 mapping can reach every address space, including smaller ones it lies past.
+    if (gpu_addr >= address_space_size || size > address_space_size - gpu_addr) [[unlikely]] {
+        LOG_WARNING(HW_GPU, "Ignoring GPU mapping {:#x}+{:#x} past the {:#x}-byte address space",
+                    gpu_addr, size, address_space_size);
+        return gpu_addr;
+    }
     if (is_big_pages)
         return BigPageTableOp(gpu_addr, dev_addr, size, kind, EntryType::Mapped);
     return PageTableOp(gpu_addr, dev_addr, size, kind, EntryType::Mapped);
@@ -250,7 +256,7 @@ GPUVAddr MemoryManager::MapSparse(GPUVAddr gpu_addr, std::size_t size, bool is_b
 }
 
 void MemoryManager::Unmap(GPUVAddr gpu_addr, std::size_t size) {
-    if (size == 0) {
+    if (size == 0 || gpu_addr >= address_space_size || size > address_space_size - gpu_addr) {
         return;
     }
     GetSubmappedRangeImpl<false>(gpu_addr, size, page_stash);
