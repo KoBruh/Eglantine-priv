@@ -350,7 +350,10 @@ GraphicsPipeline::GraphicsPipeline(
         }
         // The modules are only needed to create the pipeline. Kept, the driver holds every
         // pipeline's SPIR-V for the whole session (thousands of pipelines from the disk cache).
-        spv_modules = {};
+        // A fast-linked pipeline still needs them for its optimized compile, which drops them.
+        if (!fast_linked) {
+            spv_modules = {};
+        }
         if (pipeline_statistics) {
             pipeline_statistics->Collect(device, *pipeline);
         }
@@ -1252,6 +1255,7 @@ GraphicsPipeline::DriverPipeline GraphicsPipeline::MakePipeline(VkRenderPass ren
 
 void GraphicsPipeline::QueueOptimizedPipeline(VkRenderPass render_pass) {
     if (optimize_worker == nullptr) {
+        spv_modules = {};
         return;
     }
     // A fast-linked pipeline may run slower on the GPU than one compiled whole, where the driver
@@ -1269,8 +1273,10 @@ void GraphicsPipeline::QueueOptimizedPipeline(VkRenderPass render_pass) {
             LOG_WARNING(Render_Vulkan,
                         "Optimized graphics pipeline {:016X} failed ({}), keeping the linked one",
                         key.Hash(), exception.what());
+            spv_modules = {};
             return;
         }
+        spv_modules = {};
         // Draws recorded from now on bind it (BoundPipeline, read on the command thread).
         optimized_ready.store(true, std::memory_order_release);
         PipelineStats::NoteLibrary(PipelineStats::Registry::LibraryEvent::Optimized);
