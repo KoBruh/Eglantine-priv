@@ -6,11 +6,11 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <utility>
 #include <vector>
 
-#include "common/alignment.h"
 #include "common/common_types.h"
 
 namespace VideoCommon {
@@ -32,6 +32,9 @@ public:
     }
 
     void Track(u64 offset, u64 size) noexcept {
+        if (size == 0) {
+            return;
+        }
         // Tracking is idempotent until Reset: skip ranges tracked just before. Draws bind the
         // same (often multi-megabyte) storage buffers again and again, and each Track wrote a
         // word per 4 KiB of the range.
@@ -41,30 +44,42 @@ public:
             }
         }
         recent[recent_cursor++ % recent.size()] = {offset, size};
+        const u64 last = offset + size - 1;
         const size_t page = offset >> BUFFER_PAGE_SHIFT;
-        const size_t page_end = (offset + size) >> BUFFER_PAGE_SHIFT;
-        if (page_end < page || page_end >= pages.size()) {
+        const size_t page_end = last >> BUFFER_PAGE_SHIFT;
+        if (last < offset || page_end >= pages.size()) {
+            std::ranges::fill(pages, ~u64{0});
             return;
         }
-        TrackPage(page, offset, size);
+        const size_t first_bit = (offset % BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
+        const size_t last_bit = (last % BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
         if (page == page_end) {
+            pages[page] |= RangeMask(first_bit, last_bit);
             return;
         }
+        pages[page] |= ~u64{0} << first_bit;
         for (size_t i = page + 1; i < page_end; i++) {
             pages[i] = ~u64{0};
         }
-        const size_t offset_end = offset + size;
-        const size_t offset_end_page_aligned = Common::AlignDown(offset_end, BUFFER_PAGE_BYTES);
-        TrackPage(page_end, offset_end_page_aligned, offset_end - offset_end_page_aligned);
+        pages[page_end] |= ~u64{0} >> (63 - last_bit);
     }
 
     [[nodiscard]] bool IsUsed(u64 offset, u64 size) const noexcept {
-        const size_t page = offset >> BUFFER_PAGE_SHIFT;
-        const size_t page_end = (offset + size) >> BUFFER_PAGE_SHIFT;
-        if (page_end < page || page_end >= pages.size()) {
+        if (size == 0) {
             return false;
         }
-        if (IsPageUsed(page, offset, size)) {
+        const u64 last = offset + size - 1;
+        const size_t page = offset >> BUFFER_PAGE_SHIFT;
+        const size_t page_end = last >> BUFFER_PAGE_SHIFT;
+        if (last < offset || page_end >= pages.size()) {
+            return true;
+        }
+        const size_t first_bit = (offset % BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
+        const size_t last_bit = (last % BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
+        if (page == page_end) {
+            return (pages[page] & RangeMask(first_bit, last_bit)) != 0;
+        }
+        if ((pages[page] & (~u64{0} << first_bit)) != 0) {
             return true;
         }
         for (size_t i = page + 1; i < page_end; i++) {
@@ -72,27 +87,12 @@ public:
                 return true;
             }
         }
-        const size_t offset_end = offset + size;
-        const size_t offset_end_page_aligned = Common::AlignDown(offset_end, BUFFER_PAGE_BYTES);
-        return IsPageUsed(page_end, offset_end_page_aligned, offset_end - offset_end_page_aligned);
+        return (pages[page_end] & (~u64{0} >> (63 - last_bit))) != 0;
     }
 
 private:
-    void TrackPage(u64 page, u64 offset, u64 size) noexcept {
-        const size_t offset_in_page = offset % BUFFER_PAGE_BYTES;
-        const size_t first_bit = offset_in_page >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t num_bits = std::min<size_t>(size, BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t mask = ~u64{0} >> (64 - num_bits);
-        pages[page] |= (~u64{0} & mask) << first_bit;
-    }
-
-    bool IsPageUsed(u64 page, u64 offset, u64 size) const noexcept {
-        const size_t offset_in_page = offset % BUFFER_PAGE_BYTES;
-        const size_t first_bit = offset_in_page >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t num_bits = std::min<size_t>(size, BUFFER_PAGE_BYTES) >> BUFFER_BYTES_PER_BITSHIFT;
-        const size_t mask = ~u64{0} >> (64 - num_bits);
-        const size_t mask2 = (~u64{0} & mask) << first_bit;
-        return (pages[page] & mask2) != 0;
+    static u64 RangeMask(size_t first_bit, size_t last_bit) noexcept {
+        return (~u64{0} << first_bit) & (~u64{0} >> (63 - last_bit));
     }
 
 private:
