@@ -1208,7 +1208,7 @@ else()
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wconversion>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-sign-conversion>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-cast-function-type>
-        $<$<CXX_COMPILER_ID:Clang>:-fsized-deallocation>)
+        $<$<CXX_COMPILER_ID:AppleClang,Clang>:-fsized-deallocation>)
     # pre-clang19 will spam with "OH DID YOU MEAN THIS?" otherwise...
     if (CXX_CLANG AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 20)
         target_compile_options(core PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-cast-function-type-mismatch>)
