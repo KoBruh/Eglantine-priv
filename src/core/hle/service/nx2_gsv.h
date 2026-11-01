@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <thread>
 #include <chrono>
 #include <condition_variable>
@@ -118,6 +119,45 @@ public:
     explicit INx2NvsrvSession(Core::System& system_) : ServiceFramework{system_, "nx2:nvsrv"} {}
 };
 
+// EDEN_NX2_SYNCPT_SUMMARY: every 5 s, per syncpoint, how many waits clients requested (TIPC 201),
+// how many the counter reached, and how many were cancelled still pending (the client's wait timed
+// out): a syncpoint nothing advances paces whoever waits on it by their timeout.
+inline void Nx2SyncptSummary(u32 syncpoint, size_t what, u64 value = 0, u64 current = 0) {
+    static const bool enabled = std::getenv("EDEN_NX2_SYNCPT_SUMMARY") != nullptr;
+    if (!enabled) {
+        return;
+    }
+    struct Stats {
+        std::array<u64, 3> counts{};
+        u64 value{};
+        u64 current{};
+    };
+    static std::mutex mutex;
+    static std::map<u32, Stats> stats;
+    static auto last = std::chrono::steady_clock::now();
+    std::scoped_lock lk{mutex};
+    auto& entry = stats[syncpoint];
+    ++entry.counts[what];
+    if (what == 0) {
+        entry.value = value;
+        entry.current = current;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last < std::chrono::seconds{5}) {
+        return;
+    }
+    last = now;
+    std::string text;
+    for (const auto& [id, value_stats] : stats) {
+        text += fmt::format(" | syncpoint {}: {} waits, {} reached, {} cancelled pending (last wait for "
+                            "{:#x}, counter {:#x})",
+                            id, value_stats.counts[0], value_stats.counts[1], value_stats.counts[2],
+                            value_stats.value, value_stats.current);
+    }
+    LOG_INFO(Service, "nx2:syncpt summary (5 s){}", text);
+    stats.clear();
+}
+
 // Placeholder for the Switch 2 syncpoint server (nn::syncpt), handed out by gsv 202. TIPC 1
 // returns a u32 the SDK requires to be < 0x400 and then passes min(value, 63) to TIPC 21.
 // Everything else is auto-stubbed through the nx2: prefix.
@@ -226,7 +266,11 @@ private:
             return;
         }
         auto& request = m_requests[slot];
-        Cancel(request);
+        if (Cancel(request)) {
+            Nx2SyncptSummary(request.syncpoint, 2);
+        }
+        Nx2SyncptSummary(syncpoint, 0, value,
+                         system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(syncpoint));
         // A new request starts unsignalled. Slots are reused by different client objects: title 1's
         // movie player got slot 0 after NVN's fence waits had left it signalled, took that as a
         // decoded frame and aborted when the decoder had none.
@@ -238,12 +282,13 @@ private:
         // already reached.
         request.handle = manager.RegisterGuestAction(
             syncpoint, static_cast<u32>(value),
-            [shared = m_shared, &kernel = system.Kernel(), &request, event] {
+            [shared = m_shared, &kernel = system.Kernel(), &request, event, syncpoint] {
                 std::scoped_lock lk{shared->mutex};
                 if (!shared->alive) {
                     return;
                 }
                 request.pending = false;
+                Nx2SyncptSummary(syncpoint, 1);
                 event->Signal(kernel);
             });
         TipcReplyWords(ctx, {});
@@ -253,7 +298,9 @@ private:
         const u32 slot = ctx.CommandBuffer()[2];
         LOG_DEBUG(Service, "nx2:syncpt TIPC 202 slot={:#x}", slot);
         if (auto it = m_requests.find(slot); it != m_requests.end()) {
-            Cancel(it->second);
+            if (Cancel(it->second)) {
+                Nx2SyncptSummary(it->second.syncpoint, 2);
+            }
         }
         // nn::syncpt::sdk's cancel always waits on the slot's event after this reply, so a cancel
         // signals it like a completion, also when nothing was pending; the client rechecks the
@@ -1176,16 +1223,18 @@ private:
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
 
-    // The console flips one frame per 60 Hz vblank and keeps the rest queued, so a game can't
-    // present faster than that. Every slot is reported free here: hold each present until the
-    // next vblank instead (title 4 ran at up to 160 fps, its timing and audio with it).
+    // The console flips one frame per vblank (nx2_refresh_rate, 60 Hz by default) and keeps the
+    // rest queued, so a game can't present faster than that. Every slot is reported free here:
+    // hold each present until the next vblank instead (title 4 ran at up to 160 fps, its timing
+    // and audio with it).
     std::chrono::steady_clock::time_point m_next_vblank{};
 
     void PaceToVblank() {
         if (!Settings::values.use_speed_limit.GetValue() || Settings::SpeedLimit() == 0) {
             return;
         }
-        const auto interval = std::chrono::nanoseconds{100'000'000'000LL / 60 / Settings::SpeedLimit()};
+        const long long refresh = std::max<long long>(Settings::values.nx2_refresh_rate.GetValue(), 1);
+        const auto interval = std::chrono::nanoseconds{100'000'000'000LL / refresh / Settings::SpeedLimit()};
         const auto now = std::chrono::steady_clock::now();
         if (now > m_next_vblank + interval) {
             // Running slower than 60 fps: show at once and don't bank the lost time.
@@ -1551,9 +1600,13 @@ private:
                 });
             // EDEN_NX2_VSYNC_HZ=<rate> (experiment): the game starts frames on this event, so a
             // frame that misses a 60 Hz tick idles until the next one.
-            static const std::chrono::nanoseconds VblankInterval{[] {
+            // Fires at the display's refresh rate (nx2_refresh_rate) unless EDEN_NX2_VSYNC_HZ says
+            // otherwise.
+            const std::chrono::nanoseconds VblankInterval{[] {
                 const char* text = std::getenv("EDEN_NX2_VSYNC_HZ");
-                const long long hz = text ? (std::max)(std::strtoll(text, nullptr, 10), 1LL) : 60LL;
+                const long long hz =
+                    text ? (std::max)(std::strtoll(text, nullptr, 10), 1LL)
+                         : (std::max)(static_cast<long long>(Settings::values.nx2_refresh_rate.GetValue()), 1LL);
                 return 1'000'000'000LL / hz;
             }()};
             system.CoreTiming().ScheduleLoopingEvent(VblankInterval, VblankInterval, m_vsync_timer);
@@ -2291,6 +2344,34 @@ private:
         UpdateSyncptValues();
         bool acked = false;
         const u32 words = (m_syncpt_count + 63) / 64;
+        static const bool summary = std::getenv("EDEN_NX2_SYNCPT_SUMMARY") != nullptr;
+        for (u32 w = 0; w < words; ++w) {
+            const u64 rw_bits = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
+            if (summary) {
+                // EDEN_NX2_SYNCPT_SUMMARY: which syncpoints clients wait on through the shared
+                // pages (their request bits), and whether those advance.
+                auto& manager = system.Host1x().GetSyncpointManager();
+                for (u64 bits = rw_bits; bits != 0; bits &= bits - 1) {
+                    const u32 id = w * 64 + static_cast<u32>(std::countr_zero(bits));
+                    auto& entry = m_syncpt_waits[id];
+                    const u32 value = id < HostSyncpoints ? manager.GetGuestSyncpointValue(id) : 0;
+                    if (entry.polls++ == 0) {
+                        entry.first = value;
+                    }
+                    entry.last = value;
+                }
+            }
+        }
+        if (summary && std::chrono::steady_clock::now() - m_syncpt_summary_time >= std::chrono::seconds{5}) {
+            m_syncpt_summary_time = std::chrono::steady_clock::now();
+            std::string text;
+            for (const auto& [id, entry] : m_syncpt_waits) {
+                text += fmt::format(" | syncpoint {}: waited on in {} polls, value {:#x} -> {:#x}", id,
+                                    entry.polls, entry.first, entry.last);
+            }
+            LOG_INFO(Service, "nx2:gsv shared-page syncpoint waits (5 s){}", text);
+            m_syncpt_waits.clear();
+        }
         for (u32 w = 0; w < words; ++w) {
             const u64 rw_bits = m_syncpt_memory->Read64(m_syncpt_rw + SyncptRwBitsOffset + w * 8);
             const u64 ro_address = m_syncpt_ro + SyncptRoBitsOffset + w * 8;
@@ -2603,6 +2684,13 @@ private:
     }
 
     static constexpr std::chrono::nanoseconds SyncptPollInterval{std::chrono::microseconds{500}};
+    struct SyncptWaitStats {
+        u64 polls{};
+        u32 first{};
+        u32 last{};
+    };
+    std::map<u32, SyncptWaitStats> m_syncpt_waits;
+    std::chrono::steady_clock::time_point m_syncpt_summary_time{};
 
     std::shared_ptr<Nx2NativeObjects> m_objects{std::make_shared<Nx2NativeObjects>()};
     KernelHelpers::ServiceContext m_context;

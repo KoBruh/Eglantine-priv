@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -18,6 +19,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "common/cpu_features.h"
 #include "core/arm/arm_interface.h"
 #include "core/arm/debug.h"
 #include "core/core.h"
@@ -2653,6 +2655,66 @@ void ProfileSvc(u64 thread_id, s32 priority, u32 imm, u64 ns, bool timed_out) {
 }
 } // namespace
 
+// EDEN_NX2_SVC_TIMELINE=<first present>:<last present>: record every SVC in that range (thread,
+// entry and exit time, arguments, result, return address) in memory, and write it as CSV to
+// EDEN_NX2_SVC_TIMELINE_FILE when the range ends. Logging each call slows a frame to seconds;
+// this keeps the timing of a few frames intact, to see which thread releases which.
+struct SvcTimelineEvent {
+    u64 begin_ns;
+    u64 end_ns;
+    u64 thread_id;
+    u32 imm;
+    u32 result;
+    std::array<u64, 4> args;
+    u64 lr;
+};
+
+std::pair<u64, u64> SvcTimelineRange() {
+    static const std::pair<u64, u64> range = [] {
+        const char* text = std::getenv("EDEN_NX2_SVC_TIMELINE");
+        if (text == nullptr || std::strchr(text, ':') == nullptr) {
+            return std::pair<u64, u64>{1, 0};
+        }
+        return std::pair<u64, u64>{std::strtoull(text, nullptr, 10),
+                                   std::strtoull(std::strchr(text, ':') + 1, nullptr, 10)};
+    }();
+    return range;
+}
+
+void RecordSvcTimeline(const SvcTimelineEvent& event) {
+    static std::mutex mutex;
+    static std::vector<SvcTimelineEvent> events;
+    static bool written = false;
+    std::scoped_lock lock{mutex};
+    if (written) {
+        return;
+    }
+    const u64 presents = Core::g_nx2_present_count.load(std::memory_order_relaxed);
+    if (presents <= SvcTimelineRange().second) {
+        events.push_back(event);
+        return;
+    }
+    written = true;
+    const char* path = std::getenv("EDEN_NX2_SVC_TIMELINE_FILE");
+    std::FILE* file = path ? std::fopen(path, "w") : nullptr;
+    if (file == nullptr) {
+        LOG_ERROR(Kernel_SVC, "svc timeline: set EDEN_NX2_SVC_TIMELINE_FILE to a writable path");
+        return;
+    }
+    std::fprintf(file, "begin_ns,end_ns,thread,svc,result,arg0,arg1,arg2,arg3,lr\n");
+    for (const auto& e : events) {
+        std::fprintf(file, "%llu,%llu,%llu,%u,%#x,%#llx,%#llx,%#llx,%#llx,%#llx\n",
+                     static_cast<unsigned long long>(e.begin_ns), static_cast<unsigned long long>(e.end_ns),
+                     static_cast<unsigned long long>(e.thread_id), e.imm, e.result,
+                     static_cast<unsigned long long>(e.args[0]), static_cast<unsigned long long>(e.args[1]),
+                     static_cast<unsigned long long>(e.args[2]), static_cast<unsigned long long>(e.args[3]),
+                     static_cast<unsigned long long>(e.lr));
+    }
+    std::fclose(file);
+    LOG_INFO(Kernel_SVC, "svc timeline: wrote {} events to {}", events.size(), path);
+    events = {};
+}
+
 void Call(Core::System& system, u32 imm) {
     const auto profile_start =
         SvcProfileEnabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -2664,6 +2726,19 @@ void Call(Core::System& system, u32 imm) {
     std::array<u64, 3> call_sites{};
     if (SvcProfileCallSites()) {
         call_sites = SvcCallSites(kernel, process);
+    }
+    const u64 timeline_presents = Core::g_nx2_present_count.load(std::memory_order_relaxed);
+    const bool timeline = timeline_presents >= SvcTimelineRange().first &&
+                          timeline_presents <= SvcTimelineRange().second + 1;
+    SvcTimelineEvent timeline_event{};
+    if (timeline) {
+        Svc::ThreadContext ctx{};
+        process.GetArmInterface(kernel.CurrentPhysicalCore().CoreIndex())->GetContext(ctx);
+        timeline_event.begin_ns = static_cast<u64>(Common::g_wall_clock.GetTimeNS().count());
+        timeline_event.thread_id = GetCurrentThread(kernel).GetThreadId();
+        timeline_event.imm = imm;
+        timeline_event.args = {GetArg64(args, 0), GetArg64(args, 1), GetArg64(args, 2), GetArg64(args, 3)};
+        timeline_event.lr = ctx.lr;
     }
     if (imm == 0x0b) {
         sleep_request = static_cast<s64>(GetArg64(args, 0));
@@ -2742,6 +2817,11 @@ void Call(Core::System& system, u32 imm) {
     }
     //kernel.ExitSVCProfile();
     kernel.CurrentPhysicalCore().LoadSvcArguments(process, args);
+    if (timeline) {
+        timeline_event.end_ns = static_cast<u64>(Common::g_wall_clock.GetTimeNS().count());
+        timeline_event.result = static_cast<u32>(GetArg64(args, 0));
+        RecordSvcTimeline(timeline_event);
+    }
     if (SvcProfileEnabled()) {
         const auto& thread = GetCurrentThread(kernel);
         const u32 key = imm == 0x0b ? imm | SleepBucket(sleep_request) << 8 : imm;

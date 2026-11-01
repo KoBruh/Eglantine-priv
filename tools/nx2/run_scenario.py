@@ -75,7 +75,14 @@ def run_config(source, destination, overrides):
     for name, value in overrides.items():
         # A setting with \default=true ignores its value line, so both lines are set.
         if not re.search(rf"^{re.escape(name)}=", text, re.M):
-            sys.exit(f"{source} has no {name} setting")
+            # A setting newer than the config (the CLI writes it on its next exit): add it to
+            # [Renderer], where the emulator's newer settings live.
+            if not re.search(r"^\[Renderer\]$", text, re.M):
+                sys.exit(f"{source} has no {name} setting and no [Renderer] section to add it to")
+            print(f"note: {name} is not in {source.name}; adding it to [Renderer]")
+            text = re.sub(r"^\[Renderer\]$", lambda _: f"[Renderer]\n{name}\\default=false\n{name}={value}",
+                          text, count=1, flags=re.M)
+            continue
         text = re.sub(rf"^{re.escape(name)}\\default=.*$", lambda _: f"{name}\\default=false", text, flags=re.M)
         text = re.sub(rf"^{re.escape(name)}=.*$", lambda _: f"{name}={value}", text, flags=re.M)
     destination.write_text(text, encoding="utf-8")
