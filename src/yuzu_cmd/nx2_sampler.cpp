@@ -207,7 +207,8 @@ struct Symbolizer {
 
 void Report(const std::vector<Target>& targets, const std::vector<Sample>& samples,
             const char* path) {
-    Symbolizer symbolizer;
+    // One for the whole run: a second SymInitialize on the process fails and names nothing.
+    static Symbolizer symbolizer;
     std::FILE* const file = std::fopen(path, "w");
     if (file == nullptr) {
         return;
@@ -277,17 +278,42 @@ void Report(const std::vector<Target>& targets, const std::vector<Sample>& sampl
 
 void Run(std::vector<std::string> patterns, double start, double seconds, std::string out) {
     std::this_thread::sleep_for(std::chrono::duration<double>(start));
-    const std::vector<Target> targets = FindThreads(patterns);
+    std::vector<Target> targets = FindThreads(patterns);
     std::fprintf(stderr, "nx2 sampler: %zu threads match, sampling %.0f s\n", targets.size(),
                  seconds);
     if (targets.empty()) {
         return;
     }
+    // EDEN_NX2_SAMPLE_SLICE=<s>: write a report every <s> seconds (<out>.<n>.txt and .folded)
+    // and start over, so a long play session can be cut into the parts worth reading.
+    const double slice = EnvSeconds("EDEN_NX2_SAMPLE_SLICE", 0.0);
     std::vector<Sample> samples;
-    samples.reserve(static_cast<size_t>(seconds * 1100.0) * targets.size() + 16);
+    samples.reserve(static_cast<size_t>((slice > 0 ? slice : seconds) * 1100.0) *
+                        (std::max)(targets.size(), patterns.size()) +
+                    16);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
-    while (std::chrono::steady_clock::now() < deadline &&
-           samples.size() + targets.size() <= samples.capacity()) {
+    auto slice_end = std::chrono::steady_clock::now() + std::chrono::duration<double>(slice);
+    unsigned slice_index = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (slice > 0 && std::chrono::steady_clock::now() >= slice_end) {
+            const std::string name = out + "." + std::to_string(slice_index++) + ".txt";
+            Report(targets, samples, name.c_str());
+            samples.clear();
+            // Threads started after the last look (the GPU split's back thread) join the next
+            // slice.
+            for (const auto& target : targets) {
+                CloseHandle(target.handle);
+            }
+            targets = FindThreads(patterns);
+            slice_end = std::chrono::steady_clock::now() + std::chrono::duration<double>(slice);
+        }
+        if (samples.size() + targets.size() > samples.capacity()) {
+            if (slice > 0) {
+                Sleep(1);
+                continue;
+            }
+            break;
+        }
         for (unsigned i = 0; i < targets.size(); ++i) {
             const HANDLE handle = targets[i].handle;
             if (SuspendThread(handle) == static_cast<DWORD>(-1)) {

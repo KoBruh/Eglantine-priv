@@ -189,10 +189,18 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     // that many vblanks a frame. Forcing 2 gives a steady 30 fps at normal game speed. The mode's
     // load is found by its code (same in 1.0.0 at 0x3A9EC8 and 1.8.0 at 0x69CC54):
     //   cmp w9, w1; b.ne; ldr w8, [x19, #0x210]; cbnz w8; ... mov w8, #0x42700000 (60.0f)
-    if (Settings::values.mkw_30fps.GetValue() && name == "main" &&
+    //
+    // Dynamic mode (mkw_dynamic_fps) forces mode 0. The game then sets each frame's interval (1 or
+    // 2 vblanks) from how late its frames run, but it times only its own CPU work ([fw+0x128],
+    // calc), which is fast under emulation where the GPU thread is the slow part: it stayed at 1
+    // and the game ran in slow motion. The same loop also stores the whole frame's time
+    // ([fw+0xe8], calc + draw + present), so the interval code is pointed at that one.
+    const bool mkw_dynamic = Settings::values.mkw_dynamic_fps.GetValue();
+    if ((mkw_dynamic || Settings::values.mkw_30fps.GetValue()) && name == "main" &&
         process.GetProgramId() == 0x0400C3F00006E000ULL) {
         constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
-        constexpr u32 Force30Insn = 0x52800048;  // mov w8, #2
+        const u32 Force30Insn = mkw_dynamic ? 0x52800008U  // mov w8, #0
+                                            : 0x52800048U; // mov w8, #2
         const auto& text = nso_header.segments[0];
         u8* const code = codeset.memory.data() + module_start + text.location;
         const size_t count = text.size / sizeof(u32);
@@ -217,9 +225,26 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
                 }
             }
         }
-        if (matches == 1) {
+        // Dynamic: the frame time load after it, ldr xN, [x19, #0x128] -> [x19, #0xe8].
+        size_t frame_time = 0;
+        if (matches == 1 && mkw_dynamic) {
+            for (size_t j = found + 1; j < found + 32 && j < count; ++j) {
+                if ((word(j) & 0xFFFFFFE0) == 0xF9409660) {
+                    frame_time = j;
+                    break;
+                }
+            }
+        }
+        if (matches == 1 && mkw_dynamic && frame_time == 0) {
+            LOG_WARNING(Loader, "Mario Kart World: dynamic FPS not applied (frame time not found)");
+        } else if (matches == 1) {
             std::memcpy(code + found * sizeof(u32), &Force30Insn, sizeof(Force30Insn));
-            LOG_INFO(Loader, "Mario Kart World: 30 FPS mode on (main+{:#x})",
+            if (mkw_dynamic) {
+                const u32 whole_frame = 0xF9407660 | (word(frame_time) & 0x1F);
+                std::memcpy(code + frame_time * sizeof(u32), &whole_frame, sizeof(whole_frame));
+            }
+            LOG_INFO(Loader, "Mario Kart World: {} on (main+{:#x})",
+                     mkw_dynamic ? "dynamic FPS" : "30 FPS mode",
                      text.location + found * sizeof(u32));
         } else {
             LOG_WARNING(Loader, "Mario Kart World: 30 FPS mode not applied ({} matches)", matches);
