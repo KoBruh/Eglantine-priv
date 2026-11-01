@@ -66,6 +66,7 @@ add_executable(tests
     video_core/ampere_release_f2i.cpp
     video_core/usage_tracker.cpp
     video_core/sparse_tiles.cpp
+    video_core/descriptor_table.cpp
     input_common/calibration_configuration_job.cpp
 )
 
