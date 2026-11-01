@@ -13,6 +13,7 @@ add_executable(tests
     common/host_memory.cpp
     common/host_memory_fallback.cpp
     common/param_package.cpp
+    common/path_defaults.cpp
     common/range_map.cpp
     common/ring_buffer.cpp
     common/scratch_buffer.cpp
@@ -20,6 +21,8 @@ add_executable(tests
     common/unique_function.cpp
     common/game_presets.cpp
     core/core_timing.cpp
+    core/deconstructed_rom_directory.cpp
+    core/dynarmic_code_memory.cpp
     core/edenpack_writer.cpp
     core/nx2_gpu_memory.cpp
     core/nrr.cpp
@@ -29,8 +32,14 @@ add_executable(tests
     core/nx2_core_readback_capacity.cpp
     core/nso.cpp
     core/ncz_decompressor.cpp
+    core/romfs_build_memory.cpp
+    core/vfs_real_cache.cpp
     core/internal_network/network.cpp
+    shader_recompiler/compilation_memory.cpp
     video_core/memory_tracker.cpp
+    video_core/cache_entry.cpp
+    video_core/staging_buffer_policy.cpp
+    video_core/transcode_budget_policy.cpp
     video_core/memory_budget.cpp
     video_core/astc_recompression_override.cpp
     video_core/nx2_video_configuration.cpp
@@ -80,6 +89,9 @@ endif()
 
 target_link_libraries(tests PRIVATE common core input_common video_core)
 target_link_libraries(tests PRIVATE ${PLATFORM_LIBRARIES} Catch2::Catch2WithMain Threads::Threads)
+if (TARGET dynarmic)
+    target_link_libraries(tests PRIVATE dynarmic)
+endif()
 
 add_test(NAME tests COMMAND tests)
 
