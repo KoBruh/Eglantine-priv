@@ -1967,6 +1967,13 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         QtCommon::system->ApplySettings();
     }
 
+    if (const char* preset = std::getenv("EGLANTINE_MKW_1X");
+        preset && preset[0] == '1' && title_id == 0x0400C3F00006E000ULL) {
+        LOG_INFO(Config, "MKW performance launcher: using session-only 1x (saved resolution: {})",
+                 Settings::values.resolution_setup.Canonicalize());
+        Settings::values.resolution_setup.SetGlobal(false);
+        Settings::values.resolution_setup.SetValue(Settings::ResolutionSetup::Res1X);
+    }
     Settings::LogSettings();
 
     if (UISettings::values.select_user_on_boot && !user_flag_cmd_line) {
