@@ -7,6 +7,7 @@
 // DO NOT MODIFY IT MANUALLY
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -20,6 +21,7 @@
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/svc.h"
+#include "core/hle/kernel/svc_results.h"
 
 namespace Kernel::Svc {
 
@@ -2513,10 +2515,21 @@ bool SvcProfileEnabled() {
     return enabled;
 }
 
-void ProfileSvc(u64 thread_id, s32 priority, u32 imm, u64 ns) {
+// svcSleepThread (0x0b) is profiled per requested length: key 0x0b | bucket << 8.
+constexpr std::array<const char*, 6> SleepBuckets{"", "yield", "<100us", "<1ms", "<10ms", ">=10ms"};
+
+u32 SleepBucket(s64 requested_ns) {
+    if (requested_ns <= 0) {
+        return 1;
+    }
+    return requested_ns < 100'000 ? 2 : requested_ns < 1'000'000 ? 3 : requested_ns < 10'000'000 ? 4 : 5;
+}
+
+void ProfileSvc(u64 thread_id, s32 priority, u32 imm, u64 ns, bool timed_out) {
     struct Entry {
         u64 count{};
         u64 ns{};
+        u64 timeouts{};
     };
     static std::mutex mutex;
     static std::map<std::pair<u64, u32>, Entry> entries;
@@ -2526,6 +2539,7 @@ void ProfileSvc(u64 thread_id, s32 priority, u32 imm, u64 ns) {
     auto& entry = entries[{thread_id, imm}];
     ++entry.count;
     entry.ns += ns;
+    entry.timeouts += timed_out ? 1 : 0;
     priorities[thread_id] = priority;
     const auto now = std::chrono::steady_clock::now();
     if (now - window_start < std::chrono::seconds{10}) {
@@ -2539,9 +2553,15 @@ void ProfileSvc(u64 thread_id, s32 priority, u32 imm, u64 ns) {
     for (const auto& [key, value] : entries) {
         threads[key.first].first += value.ns;
         threads[key.first].second += value.count;
-        lines.emplace_back(value.ns, fmt::format("t{} svc {:#04x} {}x {:.0f} ms", key.first,
-                                                 key.second, value.count,
-                                                 static_cast<double>(value.ns) / 1e6));
+        const u32 svc = key.second & 0xff;
+        const u32 bucket = key.second >> 8;
+        std::string name = bucket != 0 ? fmt::format("sleep {}", SleepBuckets[bucket])
+                                       : fmt::format("svc {:#04x}", svc);
+        std::string timeouts = value.timeouts != 0 ? fmt::format(" ({} timed out)", value.timeouts)
+                                                   : std::string{};
+        lines.emplace_back(value.ns, fmt::format("t{} {} {}x {:.0f} ms{}", key.first, name,
+                                                 value.count, static_cast<double>(value.ns) / 1e6,
+                                                 timeouts));
     }
     std::sort(lines.begin(), lines.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
     std::string text;
@@ -2568,9 +2588,13 @@ void Call(Core::System& system, u32 imm) {
     const auto profile_start =
         SvcProfileEnabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     auto& kernel = system.Kernel();
+    s64 sleep_request{};
     auto& process = GetCurrentProcess(kernel);
     std::array<uint64_t, 8> args;
     kernel.CurrentPhysicalCore().SaveSvcArguments(process, args);
+    if (imm == 0x0b) {
+        sleep_request = static_cast<s64>(GetArg64(args, 0));
+    }
     //kernel.EnterSVCProfile();
     LOG_TRACE(Kernel_SVC, "{} [0]={:#x} [1]={:#x} [2]={:#x} [3]={:#x} [4]={:#x} [5]={:#x} [6]={:#x}",
         imm, GetArg64(args, 0), GetArg64(args, 1), GetArg64(args, 2),
@@ -2633,10 +2657,12 @@ void Call(Core::System& system, u32 imm) {
     kernel.CurrentPhysicalCore().LoadSvcArguments(process, args);
     if (SvcProfileEnabled()) {
         const auto& thread = GetCurrentThread(kernel);
-        ProfileSvc(thread.GetThreadId(), thread.GetPriority(), imm,
+        const u32 key = imm == 0x0b ? imm | SleepBucket(sleep_request) << 8 : imm;
+        ProfileSvc(thread.GetThreadId(), thread.GetPriority(), key,
                    static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                         std::chrono::steady_clock::now() - profile_start)
-                                        .count()));
+                                        .count()),
+                   static_cast<u32>(GetArg64(args, 0)) == ResultTimedOut.raw);
     }
 }
 

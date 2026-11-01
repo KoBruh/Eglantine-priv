@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <limits>
 #include <map>
+#include <mutex>
+#include <string>
 #include <vector>
 #include <optional>
 #include <bit>
@@ -35,6 +37,57 @@
 #include "video_core/textures/decoders.h"
 
 namespace VideoCommon {
+
+// EDEN_NX2_UPLOAD_TRACE: count full uploads from guest memory per image and list the most
+// uploaded ones with the 600-frame texture cache report (finds textures re-uploaded every frame).
+namespace Nx2UploadTrace {
+struct Entry {
+    u32 count{};
+    u64 bytes{};
+    std::string what;
+};
+
+inline bool Enabled() {
+    static const bool enabled = std::getenv("EDEN_NX2_UPLOAD_TRACE") != nullptr;
+    return enabled;
+}
+
+inline std::mutex& Mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+inline std::map<u64, Entry>& Entries() {
+    static std::map<u64, Entry> entries;
+    return entries;
+}
+
+inline void Note(u64 gpu_addr, u64 bytes, std::string&& what) {
+    std::scoped_lock lock{Mutex()};
+    auto& entry = Entries()[gpu_addr];
+    ++entry.count;
+    entry.bytes += bytes;
+    if (entry.what.empty()) {
+        entry.what = std::move(what);
+    }
+}
+
+inline void Report() {
+    std::scoped_lock lock{Mutex()};
+    std::vector<std::pair<u64, const Entry*>> sorted;
+    for (const auto& [address, entry] : Entries()) {
+        sorted.emplace_back(address, &entry);
+    }
+    std::sort(sorted.begin(), sorted.end(),
+              [](const auto& a, const auto& b) { return a.second->count > b.second->count; });
+    for (size_t i = 0; i < std::min<size_t>(sorted.size(), 12); ++i) {
+        const auto& [address, entry] = sorted[i];
+        LOG_INFO(HW_GPU, "  upload trace: {:#x} {}x {} MiB {}", address, entry->count,
+                 entry->bytes >> 20, entry->what);
+    }
+    Entries().clear();
+}
+} // namespace Nx2UploadTrace
 
 using Tegra::Texture::TICEntry;
 using Tegra::Texture::TSCEntry;
@@ -299,6 +352,9 @@ void TextureCache<P>::TickFrame() {
                  images_uploaded, uploaded_bytes >> 20, largest_upload >> 20, layer_uploads);
         images_uploaded = uploaded_bytes = largest_upload = layer_uploads = 0;
         astc_opaque_images = astc_alpha_images = 0;
+        if (Nx2UploadTrace::Enabled()) {
+            Nx2UploadTrace::Report();
+        }
         std::vector<std::pair<u32, u64>> shapes;
         for (const auto& [key, value] : created_shapes) shapes.emplace_back(value.first, key);
         std::sort(shapes.rbegin(), shapes.rend());
@@ -1374,6 +1430,17 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
     ++images_uploaded;
     uploaded_bytes += image.guest_size_bytes;
     largest_upload = (std::max<u64>)(largest_upload, image.guest_size_bytes);
+    if (Nx2UploadTrace::Enabled()) {
+        Nx2UploadTrace::Note(image.gpu_addr, image.guest_size_bytes,
+                             fmt::format("{}x{}x{} format {} levels {} layers {} flags {:#x} "
+                                         "native {} linear {}",
+                                         image.info.size.width, image.info.size.height,
+                                         image.info.size.depth, static_cast<u32>(image.info.format),
+                                         image.info.resources.levels, image.info.resources.layers,
+                                         static_cast<u32>(image.flags),
+                                         gpu_memory->UsesNativeTiling(),
+                                         image.info.type == ImageType::Linear));
+    }
     if (!UploadInChunks(image)) {
         auto staging = runtime.UploadStagingBuffer(MapSizeBytes(image));
         UploadImageContents(image, staging);
