@@ -32,6 +32,14 @@ def read_tga(path):
     return width, height, bytes(rgba)
 
 
+def mean_luma(path, step=16):
+    """Average brightness (0-255) of a capture, from every step-th pixel."""
+    width, height, rgba = read_tga(path)
+    pixels = rgba[::4 * step], rgba[1::4 * step], rgba[2::4 * step]
+    count = len(pixels[0])
+    return (0.299 * sum(pixels[0]) + 0.587 * sum(pixels[1]) + 0.114 * sum(pixels[2])) / max(1, count)
+
+
 def write_png(path, width, height, rgba):
     stride = width * 4
     raw = b"".join(b"\x00" + rgba[y * stride:(y + 1) * stride] for y in range(height))

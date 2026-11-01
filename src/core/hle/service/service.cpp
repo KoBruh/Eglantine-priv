@@ -154,35 +154,63 @@ void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
 }
 
 namespace {
-// EDEN_NX2_IPC_SUMMARY: every 5 s, log how often each service command ran and with which result
-// since the last summary (finds a game polling something that never becomes ready).
-void CountRequest(const std::string& service, u32 command, u32 type, u32 result) {
+bool IpcSummaryEnabled() {
     static const bool enabled = std::getenv("EDEN_NX2_IPC_SUMMARY") != nullptr;
-    if (!enabled) {
+    return enabled;
+}
+
+// EDEN_NX2_IPC_SUMMARY: every 5 s, log how often each service command ran and with which result
+// since the last summary (finds a game polling something that never becomes ready), then the
+// commands that took the most time to handle (the calling guest thread waits for all of it).
+void CountRequest(const std::string& service, u32 command, u32 type, u32 result, u64 handle_ns) {
+    if (!IpcSummaryEnabled()) {
         return;
     }
+    struct Entry {
+        u32 count{};
+        u64 ns{};
+    };
     static std::mutex mutex;
-    static std::map<std::tuple<std::string, u32, u32, u32>, u32> counts;
+    static std::map<std::tuple<std::string, u32, u32, u32>, Entry> counts;
     static auto last = std::chrono::steady_clock::now();
     std::scoped_lock lock{mutex};
-    ++counts[{service, command, type, result}];
+    auto& entry = counts[{service, command, type, result}];
+    ++entry.count;
+    entry.ns += handle_ns;
     const auto now = std::chrono::steady_clock::now();
     if (now - last < std::chrono::seconds{5}) {
         return;
     }
+    const double window_ms =
+        std::chrono::duration<double, std::milli>(now - last).count();
     last = now;
-    std::vector<std::pair<u32, std::string>> lines;
-    for (const auto& [key, count] : counts) {
-        lines.emplace_back(count, fmt::format("{}::{}{} -> {:#x}", std::get<0>(key), std::get<1>(key),
-                                              std::get<2>(key) >= 16 ? " (tipc)" : "",
-                                              std::get<3>(key)));
+    struct Line {
+        u32 count;
+        u64 ns;
+        std::string text;
+    };
+    std::vector<Line> lines;
+    u64 total_ns{};
+    for (const auto& [key, value] : counts) {
+        lines.push_back({value.count, value.ns,
+                         fmt::format("{}::{}{} -> {:#x}", std::get<0>(key), std::get<1>(key),
+                                     std::get<2>(key) >= 16 ? " (tipc)" : "", std::get<3>(key))});
+        total_ns += value.ns;
     }
-    std::sort(lines.begin(), lines.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::sort(lines.begin(), lines.end(), [](const auto& a, const auto& b) { return a.count > b.count; });
     std::string text;
     for (size_t i = 0; i < std::min<size_t>(lines.size(), 24); ++i) {
-        text += fmt::format(" | {}x {}", lines[i].first, lines[i].second);
+        text += fmt::format(" | {}x {}", lines[i].count, lines[i].text);
     }
     LOG_INFO(Service, "ipc summary ({} kinds){}", lines.size(), text);
+    std::sort(lines.begin(), lines.end(), [](const auto& a, const auto& b) { return a.ns > b.ns; });
+    text.clear();
+    for (size_t i = 0; i < std::min<size_t>(lines.size(), 16); ++i) {
+        text += fmt::format(" | {:.1f} ms {}x {}", static_cast<double>(lines[i].ns) / 1e6,
+                            lines[i].count, lines[i].text);
+    }
+    LOG_INFO(Service, "ipc time: {:.1f} ms handling in {:.0f} ms{}",
+             static_cast<double>(total_ns) / 1e6, window_ms, text);
     counts.clear();
 }
 } // Anonymous namespace
@@ -190,6 +218,8 @@ void CountRequest(const std::string& service, u32 command, u32 type, u32 result)
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
     const auto guard = LockService();
+    const auto handle_start =
+        IpcSummaryEnabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     SCOPE_EXIT {
         const auto* cmd_buf = ctx.CommandBuffer();
         u32 result_word = 0;
@@ -204,7 +234,12 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                 }
             }
         }
-        CountRequest(service_name, ctx.GetCommand(), type, result_word);
+        CountRequest(service_name, ctx.GetCommand(), type, result_word,
+                     IpcSummaryEnabled()
+                         ? static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                std::chrono::steady_clock::now() - handle_start)
+                                                .count())
+                         : 0);
     };
 
     Result result = ResultSuccess;

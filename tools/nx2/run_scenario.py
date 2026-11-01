@@ -23,6 +23,7 @@ dispatches, unimplemented services, assertions and frame times.
 """
 import argparse
 import collections
+import csv
 import datetime
 import json
 import os
@@ -83,7 +84,7 @@ def run_config(source, destination, overrides):
 def parse_scenario(path, keys):
     settings = {"duration": 120.0, "capture_every": 120, "env": {}, "game": None, "until_frame": 0}
     events = []  # (sort key, "when:code")
-    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for number, raw in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
@@ -162,7 +163,31 @@ def analyze(log_text, err_text):
     return found, presents, exceptions
 
 
-def write_report(out, scenario, settings, events, result, found, presents, exceptions, frame_list):
+# The boot loading screen is dark; the first capture brighter than this ends it (Pokopia: title).
+BRIGHT_LUMA = 60
+
+
+def loading_milestone(out, lumas):
+    """(frame, seconds) of the first bright capture after a dark start, or None. Seconds come
+    from threads.csv: the first sample whose latest captured frame had reached it."""
+    frames = sorted(lumas)
+    dark_seen = False
+    for frame in frames:
+        if lumas[frame] < BRIGHT_LUMA / 2:
+            dark_seen = True
+        elif dark_seen and lumas[frame] >= BRIGHT_LUMA:
+            break
+    else:
+        return None
+    try:
+        with open(out / "threads.csv", newline="", encoding="utf-8") as file:
+            reached = [float(row["seconds"]) for row in csv.DictReader(file) if int(row["frame"]) >= frame]
+    except OSError:
+        reached = []
+    return frame, (min(reached) if reached else None)
+
+
+def write_report(out, scenario, settings, events, result, found, presents, exceptions, frame_list, lumas):
     sections = [
         ("shader_rejected", "Shaders rejected before translation (their draws/dispatches never run)"),
         ("pipeline_error", "Pipelines that failed to build"),
@@ -180,6 +205,11 @@ def write_report(out, scenario, settings, events, result, found, presents, excep
              f"- Extra environment: {', '.join(f'`{k}={v}`' for k, v in settings['env'].items()) or 'none'}",
              f"- Config changes: {', '.join(f'`{k}={v}`' for k, v in settings.get('config', {}).items()) or 'none'}",
              f"- Frames captured: {len(frame_list)} (every {settings['capture_every']} presents) -> `frames/sheet.png`", ""]
+    milestone = loading_milestone(out, lumas)
+    if milestone:
+        frame, seconds = milestone
+        when = f"{seconds:.0f} s into the run" if seconds is not None else "time unknown"
+        lines += [f"- Boot loading screen ends (first bright capture): frame {frame}, {when}"]
     if presents:
         worst = max(presents, key=lambda p: p["max_frame_us"])
         lines += [f"- Frame time: last window avg {presents[-1]['avg_frame_us'] / 1000:.1f} ms; worst stall "
@@ -209,6 +239,7 @@ def write_report(out, scenario, settings, events, result, found, presents, excep
         "scenario": str(scenario), "result": result, "settings": settings,
         "issues": {key: dict(counter) for key, counter in found.items()},
         "exceptions": dict(exceptions), "presents": presents, "frames": frame_list,
+        "brightness": {str(frame): luma for frame, luma in sorted(lumas.items())},
     }, indent=2), encoding="utf-8")
 
 
@@ -304,6 +335,8 @@ def main():
               "exit_code": f"{exit_code & 0xffffffff:#x}" if exit_code is not None else None}
 
     frame_list = sorted(path.stem.removeprefix("nx2-frame-") for path in frames_dir.glob("nx2-frame-*.tga"))
+    lumas = {int(tga.stem.removeprefix("nx2-frame-")): round(frame_tools.mean_luma(tga), 1)
+             for tga in frames_dir.glob("nx2-frame-*.tga")}
     if frame_list:
         rows = frame_tools.convert(frames_dir, columns=6)
         (frames_dir / "sheet.txt").write_text("\n".join("  ".join(row) for row in rows), encoding="ascii")
@@ -312,7 +345,7 @@ def main():
     log_text = (out / "log.txt").read_text(encoding="utf-8", errors="replace")
     err_text = (out / "err.txt").read_text(encoding="utf-8", errors="replace")
     found, presents, exceptions = analyze(log_text, err_text)
-    write_report(out, args.scenario, settings, events, result, found, presents, exceptions, frame_list)
+    write_report(out, args.scenario, settings, events, result, found, presents, exceptions, frame_list, lumas)
 
     print(f"{'CRASHED' if crashed else 'ok'} after {seconds:.0f} s; report: {out / 'report.md'}")
     for key in ("shader_rejected", "pipeline_error", "draw_skipped", "dispatch_failed"):
