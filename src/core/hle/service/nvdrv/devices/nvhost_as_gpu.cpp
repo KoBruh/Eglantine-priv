@@ -21,6 +21,7 @@
 #include "core/hle/service/nvdrv/core/heap_mapper.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/hle/service/nvdrv/devices/ioctl_serialization.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/hle/service/nvdrv/devices/nvhost_as_gpu.h"
 #include "core/hle/service/nvdrv/devices/nvhost_gpu.h"
 #include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
@@ -60,7 +61,12 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
             return WrapFixed(this, &nvhost_as_gpu::GetVARegions1, input, output);
         case 0x9: {
             const auto result = WrapFixed(this, &nvhost_as_gpu::AllocAsEx, input, output);
-            if (result == NvResult::Success && g_nx2_driver) {
+            // Only a Switch 2 program's address spaces take its GPU mappings: an address space
+            // another process opens (Kirby Air Riders has a 37-bit one) maps them under that
+            // process's ASID, where the program's memory isn't.
+            const auto* session = container.GetSession(nx2_session);
+            if (result == NvResult::Success && g_nx2_driver && session != nullptr &&
+                session->process != nullptr && session->process->IsSwitch2()) {
                 Nx2GpuMemoryRegistry::Get().AddListener(
                     this,
                     [this](u64 gpu_address, u64 cpu_address, u64 size) {
