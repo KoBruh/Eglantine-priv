@@ -233,10 +233,12 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkQueueBindSparse);
     X(vkQueueSubmit);
     X(vkQueueSubmit2);
+    X(vkResetCommandBuffer);
     X(vkResetFences);
     X(vkResetQueryPool);
     X(vkSetDebugUtilsObjectNameEXT);
     X(vkSetDebugUtilsObjectTagEXT);
+    X(vkTrimCommandPool);
     X(vkUnmapMemory);
     X(vkUpdateDescriptorSetWithTemplate);
     X(vkUpdateDescriptorSets);
