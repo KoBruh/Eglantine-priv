@@ -67,6 +67,7 @@ add_executable(tests
     video_core/usage_tracker.cpp
     video_core/sparse_tiles.cpp
     video_core/descriptor_table.cpp
+    video_core/shader_invalidation.cpp
     input_common/calibration_configuration_job.cpp
 )
 
