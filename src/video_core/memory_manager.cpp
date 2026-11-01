@@ -68,6 +68,10 @@ void MemoryManager::SetNativeSyncpointShim(GPUVAddr address) {
 MemoryManager::~MemoryManager() = default;
 
 MemoryManager::EntryType MemoryManager::GetEntry(size_t position, bool is_big_page) const {
+    // Ranges that run past the address space (Mario Kart World asks for some) are unmapped there.
+    if (position >= address_space_size) [[unlikely]] {
+        return EntryType::Free;
+    }
     if (is_big_page) {
         position = position >> big_page_bits;
         const u64 entry_mask = big_entries[position / 32];
