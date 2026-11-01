@@ -28,6 +28,8 @@ private:
 
     const Device& device;
     std::vector<Pool> pools;
+    u32 pressure_check{};
+    bool commit_pressure{};
 };
 
 } // namespace Vulkan
