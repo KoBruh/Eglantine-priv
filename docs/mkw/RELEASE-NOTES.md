@@ -1,19 +1,18 @@
-MKW Windows PGO conservative cache pass, continuing your existing Windows branch. Experimental prerelease; gameplay on the target VM remains unverified here.
+MKW Windows PGO: automatic game settings and further bounded CPU optimizations.
 
-Extract the **whole ZIP** and run **MKW-Performance.cmd**. This uses the session-only MKW 1x override and clears an inherited detailed GPU-profiler setting. Regular session diagnostics remain enabled. Use MKW-Diagnostics.cmd when detailed profiling is wanted.
+Extract the **whole ZIP** and run **eglantine.exe**. No CMD launcher is required.
 
-This pass reduces repeated CPU bookkeeping:
+When MKW launches, the executable automatically applies **Vulkan, 1x resolution, Fast GPU mode, asynchronous shaders on, ASTC BC3, conservative VRAM, reactive flushing off and FIFO Relaxed** after saved per-game settings load. These session values override conflicting saved settings. The preset does not rewrite saved preferences, restores global setting selection after stop/failed startup, and leaves other title IDs alone. The log records the automatic preset and effective settings.
 
-- Integrates Takoroka's upstream #209: coalesce texture descriptor bitmap invalidations and keep the full diagnostic ID-poisoning walk in debug builds. Image/view removal and descriptor refresh still run.
-- Adapts shader invalidation batching from ymatrix1's #237: process every memory-write range under one lock and remove pending shaders once per batch. The CPU-invalidation bypass from that proposal is excluded.
-- Adds actual-cache differential tests covering descriptor mutations, table switches, repeated image deletion, overlapping shader writes, duplicate ranges and pending removals.
-- Adds CPU, busiest-thread and peak GPU-engine utilization to the optional memory recorder, tested with Windows PowerShell 5.1 and PowerShell 7.
-- Includes the scanner directory-type lifetime fix submitted in PR #253.
+Further CPU work:
 
-Local native PGO build and **84 regression cases** pass, as do the two explicit CPU bookkeeping benchmarks. The bitmap workload measured 467.006 to 9.899 ms and the shader workload 7.615 to 3.997 ms. These are synthetic CPU workloads, **not gameplay FPS measurements**.
+- Descriptor invalidation clears active bitmap words instead of unused preallocation. Growing the table limit clears newly exposed slots before use. Added shrink/regrowth and allocation-boundary regressions.
+- Large shader-removal batches use sorted membership searches; small removals retain the linear path. Existing randomized real-cache comparisons verify the same survivors as sequential removal.
 
-This update preserves the existing rendering, GPU synchronization, readback, graphics settings and bounded cache policies. Locked 60 FPS and absence of gameplay regressions cannot be established without running the game on your VM.
+The native Windows PGO build, **87 regular regression cases**, two explicit CPU benchmark cases, and isolated portable startup check pass locally. Synthetic CPU workloads improved; **gameplay FPS on the target VM is unmeasured**. This pass retains the existing rendering, synchronization, readback and allocation policies.
 
-See PERFORMANCE-INVESTIGATION.md for the ranked optimization ideas, source attribution and measurement limits. Run record-memory.ps1 during a comparison and collect-debug.ps1 afterward to gather the log and optional CSV. The source commit and pinned PGO profile are recorded in the package. No game, keys, firmware, saves or personal settings are included.
+CMD files remain optional helpers: MKW-Performance.cmd clears inherited detailed profiling; MKW-Diagnostics.cmd enables it. Neither is required for the game preset. The optional record-memory.ps1 and collect-debug.ps1 remain included.
 
-Implementation, selective upstream integration, commit/release text and automated validation were assisted by Codex.
+See PERFORMANCE-INVESTIGATION.md and TESTING.md for source history, benchmark limits and comparisons. Matching source and checksums accompany this release. No game, firmware, keys, saves or personal settings are included.
+
+Implementation, commit/release text and automated validation were assisted by Codex.

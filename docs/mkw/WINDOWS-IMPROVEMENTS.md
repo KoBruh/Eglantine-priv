@@ -1,5 +1,10 @@
 # Windows MKW follow-up, 1 November 2026
 
+Current package: run `eglantine.exe` directly. A native MKW session preset now
+enforces the eight requested settings after per-game configuration is read.
+The original implementation notes below describe the earlier defaults-only pass;
+see `PERFORMANCE-INVESTIGATION.md` for the subsequent automatic preset and CPU work.
+
 ## Baseline inspected
 
 Repository: https://github.com/snowstormxd/Eglantine

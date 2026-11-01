@@ -7,20 +7,21 @@ the dedicated/shared memory CSV counters when evaluating this virtualized system
 It is built natively on Windows with upstream's UCRT64 clang PGO toolchain. The
 profile is Eden's published `v020525` profile, not a newly trained MKW profile.
 
-Fresh-config defaults: Vulkan, 1x, Fast, asynchronous shaders on, BC3, conservative
-VRAM, reactive flushing off, FIFO Relaxed. Explicit existing settings and per-game
-overrides are preserved. Check them before comparing builds.
+Launch **eglantine.exe** directly. MKW automatically receives Vulkan, 1x, Fast,
+asynchronous shaders on, BC3, conservative VRAM, reactive flushing off and FIFO
+Relaxed after per-game settings load. The preset overrides those saved values for
+the session without rewriting saved preferences. Other title IDs are unchanged.
 
-The supplied session log used a saved **2x** resolution override. Launch
-**MKW-Performance.cmd** to apply **1x for the current MKW session** without
-rewriting the saved preference. Use the same effective 1x setting in the normal
-Eglantine comparison. `MKW-Diagnostics.cmd` also enables the detailed GPU profiler;
-use it for debugging, then return to the performance launcher for timing. See
+The supplied session log used a saved **2x** resolution override. The native
+preset now enforces **1x for MKW**, with no launcher or environment variable needed.
+Use the same effective 1x setting in the normal Eglantine comparison.
+`MKW-Diagnostics.cmd` optionally enables the detailed GPU profiler; use it for
+debugging, then return to the executable for timing. See
 `PERFORMANCE-INVESTIGATION.md` for findings and the local recording benchmark.
 
 The performance launcher now clears an inherited detailed-profiler environment
 setting. The Vulkan startup log states whether the detailed GPU profiler is on.
-For the 40–55 FPS follow-up, compare the same warm-cache route using this launcher.
+For the 40–55 FPS follow-up, compare the same warm-cache route using the executable.
 `record-memory.ps1` also records process CPU, busiest-thread CPU and the busiest
 reported GPU engine. Blank GPU fields mean counters were unavailable; the first
 row has no CPU delta. The GPU number is one engine's peak, not total GPU usage.

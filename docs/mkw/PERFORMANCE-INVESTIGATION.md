@@ -106,21 +106,22 @@ This is a specific lifetime fix, not evidence that all memory leaks are gone.
 
 ## Running this package
 
-Extract the whole ZIP and launch **MKW-Performance.cmd**. It applies a session-only
-1x override to MKW program `0400C3F00006E000`, after saved per-game settings load.
-It does not rewrite your saved resolution. Other requested defaults remain
-Vulkan, Fast, asynchronous shaders, BC3, conservative VRAM, reactive flushing off
-and FIFO Relaxed; check explicit overrides in an existing profile.
+Extract the whole ZIP and launch **eglantine.exe**. When MKW program
+`0400C3F00006E000` launches, the executable applies Vulkan, 1x, Fast, asynchronous
+shaders, BC3, conservative VRAM, reactive flushing off and FIFO Relaxed after
+saved per-game settings load. Those session values win over saved overrides.
+Saved preferences are not rewritten by the preset, global settings are restored
+after stop or failed startup, and other titles are unaffected. No CMD is needed.
 
 Use **MKW-Diagnostics.cmd** only for a diagnostic run: it also enables the existing
 fine-grained GPU profiler, whose timing overhead may affect results. Collect the
 result using `collect-debug.ps1`, optionally with the memory CSV. Regular session
-samples remain enabled in the performance launcher. See `TESTING.md` for the
+samples remain enabled in the executable. See `TESTING.md` for the
 controlled route and warm/cold shader-cache comparison.
 
 For a single-variable comparison, set
 `EDEN_NX2_COMMAND_POOL_RELEASE_INTERVAL=1` before running the performance launcher
-to restore the previous release cadence. `EDEN_NX2_COMMAND_POOL_RELEASE=0`
+or the executable to restore the previous release cadence. `EDEN_NX2_COMMAND_POOL_RELEASE=0`
 disables explicit releases. Remove the variables to restore the default cadence.
 
 ## Validation and limits
@@ -197,3 +198,32 @@ with Windows PowerShell 5.1 and PowerShell 7.
 The fork also receives the directory-type snapshot fix from upstream PR #253,
 preventing the scanner from reading a directory row after a flat view discards it.
 This is a lifetime correction, not an FPS optimization.
+
+## Automatic preset and bounded CPU optimizations
+
+The profile now lives in `Settings::ApplyMarioKartWorldPreset` and is called
+unconditionally after reading per-game configuration, before creating the render
+target and loading the core. The old `EGLANTINE_MKW_1X` environment condition is
+removed. Tests apply conflicting global/per-game preferences, verify all eight
+effective settings, restore the original globals, reapply, and check unrelated
+program IDs. Failed or cancelled startup also restores global setting selection.
+
+Two further CPU bookkeeping reductions preserve the same cache decisions:
+
+- Descriptor tables clear the bitmap words exposed by their current limit,
+  rather than spare preallocation. A later limit increase clears the newly
+  exposed words before they can be read. Tests cover 64-bit word boundaries,
+  preallocation boundaries, shrinking to zero and regrowing beyond one million
+  entries, plus the existing 40,000-operation comparison.
+- Shader-removal batches larger than sixteen sort the removed pointer list and
+  use binary search while pruning storage. Small batches retain the linear scan.
+  This reduces large-batch membership work from O(N*M) to O(M log M + N log M).
+  The randomized real-cache comparison still matches sequential small removals.
+
+The native PGO GUI and all **87 regular cases** pass, along with the two explicit
+CPU benchmark cases. In the latest synthetic run, eager versus deferred active
+descriptor invalidation measured 457.809 versus 0.523 ms; sequential versus
+batched shader invalidation measured 7.370 versus 1.934 ms. These are the same
+synthetic workload shapes described above, not game frame times. They do not
+establish a gameplay FPS improvement. Rendering, synchronization, readback and
+cache allocation policies retain their existing behavior.
