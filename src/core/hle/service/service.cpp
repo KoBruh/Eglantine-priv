@@ -161,9 +161,8 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
         static std::set<std::pair<std::string, u32>> reported;
         std::scoped_lock lk{reported_mutex};
         if (!reported.emplace(service_name, ctx.GetCommand()).second) {
-            IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords};
+            IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ResultSuccess);
-            PushStubZeroes(rb);
             return;
         }
     }
