@@ -129,6 +129,14 @@ inline void TipcReplyWords(HLERequestContext& ctx, std::initializer_list<u32> wo
     TipcReplyWords(ctx, std::span<const u32>{words.begin(), words.size()});
 }
 
+// TIPC 0(u64 token) on the Switch 2 sessions: a handshake newer SDKs send first; the reply echoes
+// the token. (The auto stub's reply only echoed it by leaving the request's words in place.)
+inline void TipcHandshake(HLERequestContext& ctx, std::string_view session) {
+    const auto* w = ctx.CommandBuffer();
+    LOG_INFO(Service, "{} TIPC 0 handshake {:#x}", session, u64{w[2]} | (u64{w[3]} << 32));
+    TipcReplyWords(ctx, {w[2], w[3]});
+}
+
 // Replies with success and a copied handle to a new session served by `iface`.
 template <class T>
 inline void ReturnRawSession(Core::System& system, HLERequestContext& ctx, std::shared_ptr<T> iface) {
@@ -220,9 +228,7 @@ public:
 private:
     // Newer SDKs (title 1) open with TIPC 0(u64 token) and abort unless the reply echoes it.
     void Handshake(HLERequestContext& ctx) {
-        const auto* w = ctx.CommandBuffer();
-        LOG_INFO(Service, "nx2:syncpt TIPC 0 handshake {:#x}", u64{w[2]} | (u64{w[3]} << 32));
-        TipcReplyWords(ctx, {w[2], w[3]});
+        TipcHandshake(ctx, "nx2:syncpt");
     }
 
     void GetCount(HLERequestContext& ctx) {
@@ -359,6 +365,7 @@ public:
     explicit INx2GpuSession(Core::System& system_)
         : ServiceFramework{system_, "nx2:gpu"}, m_context{system_, "nx2:gpu"} {
         RegisterHandlersTipc({
+            {0, &INx2GpuSession::Handshake, "Handshake"},
             {11, &INx2GpuSession::GetIdRange, "GetIdRange (guessed)"},
             {12, &INx2GpuSession::GetIdEvent, "GetIdEvent (guessed)"},
             {21, &INx2GpuSession::Start, "Start (guessed)"},
@@ -396,6 +403,10 @@ public:
     }
 
 private:
+    void Handshake(HLERequestContext& ctx) {
+        TipcHandshake(ctx, "nx2:gpu");
+    }
+
     static constexpr u32 NumIds = 32;
 
     Kernel::KEvent* EventFor(u32 id) {
@@ -1494,6 +1505,7 @@ public:
         : ServiceFramework{system_, "nx2:vi2"}, m_context{system_, "nx2:vi2"},
           m_objects{std::move(objects_)} {
         RegisterHandlersTipc({
+            {0, &INx2Vi2Session::Handshake, "Handshake"},
             {1, &INx2Vi2Session::ReturnOne, "Unknown1"},
             {3, &INx2Vi2Session::ReturnOne, "GetDisplayCount (guessed)"},
             {5, &INx2Vi2Session::GetTimestampRecorderCount, "GetTimestampRecorderCount (guessed)"},
@@ -1502,11 +1514,10 @@ public:
             {21, &INx2Vi2Session::GetNotifications, "GetNotifications"},
             {31, &INx2Vi2Session::GetVsyncEvent, "GetVsyncEvent (guessed)"},
             {32, &INx2Vi2Session::GetVsyncEvent, "GetDisplayVsyncEvent (guessed)"},
-            // Title 1 calls these ~75 times a second with the display name "default"; the
-            // auto stub's empty success reply works, but logged two lines per call (a 50 MB log
-            // in an 18 minute session).
-            {104, &INx2Vi2Session::SucceedQuietly, "Unknown104 (display \"default\")"},
-            {105, &INx2Vi2Session::SucceedQuietly, "Unknown105 (display \"default\")"},
+            // Title 1 calls these ~75 times a second with the display name "default".
+            {103, &INx2Vi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
+            {104, &INx2Vi2Session::QueryDisplayHdrStatus, "QueryDisplayHdrStatus"},
+            {105, &INx2Vi2Session::QueryDisplayHdrPaperWhite, "QueryDisplayHdrPaperWhite"},
             // Display/client setup (title 2): nothing to track while presents composite directly.
             {51, &INx2Vi2Session::SucceedQuietly, "ConfigureRequestGroups"},
             {101, &INx2Vi2Session::OpenDisplay, "OpenDisplay"},
@@ -1539,6 +1550,10 @@ public:
     }
 
 private:
+    void Handshake(HLERequestContext& ctx) {
+        TipcHandshake(ctx, "nx2:vi2");
+    }
+
     // 229(u64 client token, u32 slot, u32 image, ...fences): result, u64 mask of buffer slots the
     // client may acquire next, four zero words. Nothing is shown yet; every slot is handed back
     // at once (changes.patch's default mask is 0x7fff).
@@ -1973,6 +1988,24 @@ private:
                 LOG_INFO(Service, "nx2: dumped {:#x} bytes at {:#x} to {}", size, address, path);
             }));
         }
+    }
+
+    // nn::vi2::QueryDisplayRefreshRate(display name): u32 refresh rate in Hz, then a bool. The sdk
+    // takes only -1, 60 or 120; Minecraft polled it forever on the empty reply.
+    void QueryDisplayRefreshRate(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {60, 0});
+    }
+
+    // nn::vi2::QueryDisplayHdrStatus(display name): u64 output format (1 SDR, 2 HDR), u16 peak
+    // luminance in nits. On the empty reply Kirby Air Riders read leftover words as the format
+    // and rebuilt its window images every few frames, which showed black.
+    void QueryDisplayHdrStatus(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {1, 0, 400});
+    }
+
+    // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 paper white in nits (BT.2408).
+    void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {203});
     }
 
     // 212(u64 client token): u64 mask of the buffer slots the client may acquire. The auto stub's

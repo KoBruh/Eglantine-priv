@@ -74,12 +74,12 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {70, C<&IHidServer::SetSixAxisSensorFusionParameters>, "SetSixAxisSensorFusionParameters"},
         {71, C<&IHidServer::GetSixAxisSensorFusionParameters>, "GetSixAxisSensorFusionParameters"},
         {72, C<&IHidServer::ResetSixAxisSensorFusionParameters>, "ResetSixAxisSensorFusionParameters"},
-        {73, nullptr, "SetAccelerometerParameters"},
-        {74, nullptr, "GetAccelerometerParameters"},
-        {75, nullptr, "ResetAccelerometerParameters"},
-        {76, nullptr, "SetAccelerometerPlayMode"},
-        {77, nullptr, "GetAccelerometerPlayMode"},
-        {78, nullptr, "ResetAccelerometerPlayMode"},
+        {73, &IHidServer::StubReplyZeroed, "SetAccelerometerParameters"},
+        {74, &IHidServer::StubReplyZeroed, "GetAccelerometerParameters"},
+        {75, &IHidServer::StubReplyZeroed, "ResetAccelerometerParameters"},
+        {76, &IHidServer::StubReplyZeroed, "SetAccelerometerPlayMode"},
+        {77, &IHidServer::StubReplyZeroed, "GetAccelerometerPlayMode"},
+        {78, &IHidServer::StubReplyZeroed, "ResetAccelerometerPlayMode"},
         {79, C<&IHidServer::SetGyroscopeZeroDriftMode>, "SetGyroscopeZeroDriftMode"},
         {80, C<&IHidServer::GetGyroscopeZeroDriftMode>, "GetGyroscopeZeroDriftMode"},
         {81, C<&IHidServer::ResetGyroscopeZeroDriftMode>, "ResetGyroscopeZeroDriftMode"},
@@ -87,7 +87,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {83, C<&IHidServer::IsFirmwareUpdateAvailableForSixAxisSensor>, "IsFirmwareUpdateAvailableForSixAxisSensor"},
         {84, C<&IHidServer::EnableSixAxisSensorUnalteredPassthrough>, "EnableSixAxisSensorUnalteredPassthrough"},
         {85, C<&IHidServer::IsSixAxisSensorUnalteredPassthroughEnabled>, "IsSixAxisSensorUnalteredPassthroughEnabled"},
-        {86, nullptr, "StoreSixAxisSensorCalibrationParameter"},
+        {86, &IHidServer::StubReplyZeroed, "StoreSixAxisSensorCalibrationParameter"},
         {87, C<&IHidServer::LoadSixAxisSensorCalibrationParameter>, "LoadSixAxisSensorCalibrationParameter"},
         {88, C<&IHidServer::GetSixAxisSensorIcInformation>, "GetSixAxisSensorIcInformation"},
         {89, C<&IHidServer::ResetIsSixAxisSensorDeviceNewlyAssigned>, "ResetIsSixAxisSensorDeviceNewlyAssigned"},
@@ -119,7 +119,13 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {134, C<&IHidServer::SetNpadAnalogStickUseCenterClamp>, "SetNpadAnalogStickUseCenterClamp"},
         {135, C<&IHidServer::SetNpadCaptureButtonAssignment>, "SetNpadCaptureButtonAssignment"},
         {136, C<&IHidServer::ClearNpadCaptureButtonAssignment>, "ClearNpadCaptureButtonAssignment"},
+        {137, &IHidServer::StubReplyZeroed, "Unknown137"},
         {138, C<&IHidServer::SetNativeInputValue138>, "SetNativeInputValue138"},
+        {139, &IHidServer::StubReplyZeroed, "Unknown139"},
+        {140, &IHidServer::StubReplyZeroed, "Unknown140"},
+        {150, &IHidServer::StubReplyZeroed, "Unknown150"},
+        {151, &IHidServer::StubReplyZeroed, "Unknown151"},
+        {160, &IHidServer::StubReplyZeroed, "Unknown160"},
         {200, C<&IHidServer::GetVibrationDeviceInfo>, "GetVibrationDeviceInfo"},
         {201, C<&IHidServer::SendVibrationValue>, "SendVibrationValue"},
         {202, C<&IHidServer::GetActualVibrationValue>, "GetActualVibrationValue"},
@@ -133,6 +139,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {210, C<&IHidServer::EndPermitVibrationSession>, "EndPermitVibrationSession"},
         {211, C<&IHidServer::IsVibrationDeviceMounted>, "IsVibrationDeviceMounted"},
         {212, C<&IHidServer::SendVibrationValueInBool>, "SendVibrationValueInBool"},
+        {213, C<&IHidServer::Unknown213>, "Unknown213"},
         {214, C<&IHidServer::SendNx2VibrationValues>, "SendNx2VibrationValues (guessed)"},
         {220, C<&IHidServer::GetNativeInputFlag220>, "GetNativeInputFlag220"},
         {300, C<&IHidServer::ActivateConsoleSixAxisSensor>, "ActivateConsoleSixAxisSensor"},
@@ -143,19 +150,24 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {305, C<&IHidServer::StopSevenSixAxisSensor>, "StopSevenSixAxisSensor"},
         {306, C<&IHidServer::InitializeSevenSixAxisSensor>, "InitializeSevenSixAxisSensor"},
         {307, C<&IHidServer::FinalizeSevenSixAxisSensor>, "FinalizeSevenSixAxisSensor"},
-        {308, nullptr, "SetSevenSixAxisSensorFusionStrength"},
-        {309, nullptr, "GetSevenSixAxisSensorFusionStrength"},
+        {308, &IHidServer::StubReplyZeroed, "SetSevenSixAxisSensorFusionStrength"},
+        {309, &IHidServer::StubReplyZeroed, "GetSevenSixAxisSensorFusionStrength"},
         {310, C<&IHidServer::ResetSevenSixAxisSensorTimestamp>, "ResetSevenSixAxisSensorTimestamp"},
-        {320, nullptr, "EnableNpadImu"}, //21.0.0+
-        {321, nullptr, "DisableNpadImu"}, //21.0.0+
+        {311, &IHidServer::StubReplyZeroed, "Unknown311"},
+        {312, &IHidServer::StubReplyZeroed, "Unknown312"},
+        {320, &IHidServer::StubReplyZeroed, "EnableNpadImu"}, //21.0.0+
+        {321, &IHidServer::StubReplyZeroed, "DisableNpadImu"}, //21.0.0+
+        {322, &IHidServer::StubReplyZeroed, "Unknown322"},
+        {323, &IHidServer::StubReplyZeroed, "Unknown323"},
+        {324, &IHidServer::StubReplyZeroed, "Unknown324"},
         {400, C<&IHidServer::IsUsbFullKeyControllerEnabled>, "IsUsbFullKeyControllerEnabled"},
-        {401, nullptr, "EnableUsbFullKeyController"},
-        {402, nullptr, "IsUsbFullKeyControllerConnected"},
-        {403, nullptr, "HasBattery"},
-        {404, nullptr, "HasLeftRightBattery"},
-        {405, nullptr, "GetNpadInterfaceType"},
-        {406, nullptr, "GetNpadLeftRightInterfaceType"},
-        {407, nullptr, "GetNpadOfHighestBatteryLevel"},
+        {401, &IHidServer::StubReplyZeroed, "EnableUsbFullKeyController"},
+        {402, &IHidServer::StubReplyZeroed, "IsUsbFullKeyControllerConnected"},
+        {403, &IHidServer::StubReplyZeroed, "HasBattery"},
+        {404, &IHidServer::StubReplyZeroed, "HasLeftRightBattery"},
+        {405, &IHidServer::StubReplyZeroed, "GetNpadInterfaceType"},
+        {406, &IHidServer::StubReplyZeroed, "GetNpadLeftRightInterfaceType"},
+        {407, &IHidServer::StubReplyZeroed, "GetNpadOfHighestBatteryLevel"},
         {408, nullptr, "GetNpadOfHighestBatteryLevelForJoyRight"},
         {500, C<&IHidServer::GetPalmaConnectionHandle>, "GetPalmaConnectionHandle"},
         {501, C<&IHidServer::InitializePalma>, "InitializePalma"},
@@ -187,11 +199,13 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {527, C<&IHidServer::EnablePalmaBoostMode>, "EnablePalmaBoostMode"},
         {528, C<&IHidServer::GetPalmaBluetoothAddress>, "GetPalmaBluetoothAddress"},
         {529, C<&IHidServer::SetDisallowedPalmaConnection>, "SetDisallowedPalmaConnection"},
+        {550, &IHidServer::StubReplyZeroed, "Unknown550"},
         {1000, C<&IHidServer::SetNpadCommunicationMode>, "SetNpadCommunicationMode"},
         {1001, C<&IHidServer::GetNpadCommunicationMode>, "GetNpadCommunicationMode"},
         {1002, C<&IHidServer::SetTouchScreenConfiguration>, "SetTouchScreenConfiguration"},
         {1003, C<&IHidServer::IsFirmwareUpdateNeededForNotification>, "IsFirmwareUpdateNeededForNotification"},
         {1004, C<&IHidServer::SetTouchScreenResolution>, "SetTouchScreenResolution"},
+        {1005, &IHidServer::StubReplyZeroed, "Unknown1005"},
         {1270, nullptr, "DeleteButtonConfigStorageRight"},
         {1271, nullptr, "IsUsingCustomButtonConfig"},
         {1272, nullptr, "IsAnyCustomButtonConfigEnabled"},
@@ -245,9 +259,12 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {3111, C<&IHidServer::NativeInputCommand3111>, "NativeInputCommand3111"},
         {3112, C<&IHidServer::SetNativeInputFlags3112>, "SetNativeInputFlags3112"},
         {3113, C<&IHidServer::SetNativeInputFlags3113>, "SetNativeInputFlags3113"},
+        {3114, &IHidServer::StubReplyZeroed, "Unknown3114"},
+        {3130, &IHidServer::StubReplyZeroed, "Unknown3130"},
         {3131, C<&IHidServer::NativeInputCommand3131>, "NativeInputCommand3131"},
         {3132, C<&IHidServer::SetNativeInputParameters>, "SetNativeInputParameters"},
         {3133, C<&IHidServer::GetNativeInputState3133>, "GetNativeInputState3133"},
+        {3134, &IHidServer::StubReplyZeroed, "Unknown3134"},
         {3135, C<&IHidServer::SetNativeInputEnabled3135>, "SetNativeInputEnabled3135"},
         {3136, C<&IHidServer::SetNmouseButtonConfigJoyLeftJcms>, "SetNmouseButtonConfigJoyLeftJcms"},
         {3137, C<&IHidServer::SetNmouseButtonConfigJoyRightJcms>, "SetNmouseButtonConfigJoyRightJcms"},
@@ -257,7 +274,14 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {3141, C<&IHidServer::SetNativeInputValues3141>, "SetNativeInputValues3141"},
         {3142, C<&IHidServer::SetNativeInputFloats3142>, "SetNativeInputFloats3142"},
         {3143, C<&IHidServer::SetNativeInputValue3143>, "SetNativeInputValue3143"},
+        {3144, &IHidServer::StubReplyZeroed, "Unknown3144"},
+        {3145, &IHidServer::StubReplyZeroed, "Unknown3145"},
+        {3146, &IHidServer::StubReplyZeroed, "Unknown3146"},
+        {3147, &IHidServer::StubReplyZeroed, "Unknown3147"},
+        {3148, &IHidServer::StubReplyZeroed, "Unknown3148"},
+        {3149, &IHidServer::StubReplyZeroed, "Unknown3149"},
         {3150, C<&IHidServer::SetMouseLibraryVersion>, "SetMouseLibraryVersion"}, //21.0.0+
+        {5000, &IHidServer::StubReplyZeroed, "Unknown5000"},
         // What? -- {12010, nullptr, "SetButtonConfigLeft"},
     };
     // clang-format on
@@ -1095,6 +1119,17 @@ Result IHidServer::IsVibrationDeviceMounted(
 
 Result IHidServer::SendNx2VibrationValues() {
     LOG_DEBUG(Service_HID, "(STUBBED) called");
+    R_SUCCEED();
+}
+
+Result IHidServer::Unknown213() {
+    LOG_DEBUG(Service_HID, "(STUBBED) called");
+    R_SUCCEED();
+}
+
+Result IHidServer::Unknown220(Out<u8> out) {
+    LOG_DEBUG(Service_HID, "(STUBBED) called");
+    *out = 0;
     R_SUCCEED();
 }
 
