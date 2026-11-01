@@ -493,6 +493,8 @@ struct System::Impl {
     }
 
     void ShutdownMainProcess() {
+        LOG_INFO(Core, "Shutdown phase: request GPU and socket cancellation");
+        Common::Log::Flush();
         SetShuttingDown(true);
         Common::ADPF::Shutdown();
 
@@ -508,8 +510,12 @@ struct System::Impl {
         stop_event.request_stop();
         core_timing.SyncPause(false);
         Network::CancelPendingSocketOperations();
+        LOG_INFO(Core, "Shutdown phase: suspend guest and close services");
+        Common::Log::Flush();
         kernel.SuspendEmulation(true);
         kernel.CloseServices();
+        LOG_INFO(Core, "Shutdown phase: stop guest cores");
+        Common::Log::Flush();
         kernel.ShutdownCores();
         services.reset();
         service_manager.reset();
@@ -518,9 +524,13 @@ struct System::Impl {
         core_timing.ClearPendingEvents();
         app_loader.reset();
         audio_core.reset();
+        LOG_INFO(Core, "Shutdown phase: destroy renderer and GPU resources");
+        Common::Log::Flush();
         gpu_core.reset();
         host1x_core.reset();
         perf_stats.reset();
+        LOG_INFO(Core, "Shutdown phase: stop CPU manager and kernel");
+        Common::Log::Flush();
         cpu_manager.Shutdown();
         debugger.reset();
         kernel.Shutdown();
@@ -535,7 +545,8 @@ struct System::Impl {
         // Reset all glue registrations
         arp_manager.ResetAll();
 
-        LOG_DEBUG(Core, "Shutdown OK");
+        LOG_INFO(Core, "Shutdown complete");
+        Common::Log::Flush();
     }
 
     bool IsShuttingDown() const {

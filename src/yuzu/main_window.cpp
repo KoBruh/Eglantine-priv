@@ -204,6 +204,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include <QSettings>
 #include <dwmapi.h>
 #include <windows.h>
+#include <psapi.h>
 #ifdef _MSC_VER
 #pragma comment(lib, "Dwmapi.lib")
 #endif
@@ -2125,6 +2126,7 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     loading_screen->show();
 
     emulation_running = true;
+    diagnostic_timer.start();
     if (ui->action_Fullscreen->isChecked()) {
         ShowFullscreen();
     } else {
@@ -3183,6 +3185,7 @@ bool MainWindow::ConfirmShutdownGame() {
 }
 
 void MainWindow::OnLoadComplete() {
+    LOG_INFO(Frontend, "First game frame displayed");
     loading_screen->OnLoadComplete();
 
     perf_overlay = new PerformanceOverlay(this);
@@ -4490,6 +4493,27 @@ void MainWindow::UpdateStatusBar() {
     auto results = QtCommon::system->GetAndResetPerfStats();
     auto& shader_notify = QtCommon::system->GPU().ShaderNotify();
     const int shaders_building = shader_notify.ShadersBuilding();
+
+    if (diagnostic_timer.isValid() && diagnostic_timer.elapsed() >= 10'000) {
+        diagnostic_timer.restart();
+        LOG_INFO(Frontend, "Session sample: fps={:.2f} frame_ms={:.2f} speed={:.3f} shaders={}",
+                 results.average_game_fps, results.frametime * 1000.0, results.emulation_speed,
+                 shaders_building);
+#ifdef _WIN32
+        PROCESS_MEMORY_COUNTERS_EX counters{};
+        counters.cb = sizeof(counters);
+        if (GetProcessMemoryInfo(GetCurrentProcess(),
+                                 reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                                 sizeof(counters))) {
+            LOG_INFO(Frontend,
+                     "Memory sample: private_mib={} working_set_mib={} peak_working_set_mib={} "
+                     "available_system_commit_mib={}",
+                     counters.PrivateUsage >> 20, counters.WorkingSetSize >> 20,
+                     counters.PeakWorkingSetSize >> 20, Common::GetAvailableCommitMemory() >> 20);
+        }
+#endif
+        Common::Log::Flush();
+    }
 
     emit statsUpdated(results, shader_notify);
 

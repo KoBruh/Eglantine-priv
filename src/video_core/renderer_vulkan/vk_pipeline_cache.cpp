@@ -480,6 +480,9 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
                                    GetTotalOptimizeWorkers())
                      : std::string{"and kept so (EDEN_NX2_GPL_OPTIMIZE=0)"});
     }
+    LOG_INFO(Render_Vulkan, "Shader pipeline workers={} host_threads={} async_shaders={}",
+             device.HasBrokenParallelShaderCompiling() ? 1ULL : GetTotalPipelineWorkers(),
+             std::thread::hardware_concurrency(), use_asynchronous_shaders);
     const auto& float_control{device.FloatControlProperties()};
     const VkDriverId driver_id{device.GetDriverID()};
     const VkShaderStageFlags subgroup_stages{device.GetSubgroupSupportedStages()};

@@ -413,6 +413,7 @@ if (APPLE)
         XCODE_FILE_ATTRIBUTES "CodeSignOnCopy")
     target_sources(yuzu PRIVATE ${MOLTENVK_LIBRARY})
 elseif(WIN32)
+    target_link_libraries(yuzu PRIVATE psapi)
     # compile as a win32 gui application instead of a console application
     set_target_properties(yuzu PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(yuzu PRIVATE Qt6::EntryPointPrivate)
