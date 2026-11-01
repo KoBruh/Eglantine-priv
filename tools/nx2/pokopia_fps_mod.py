@@ -3,6 +3,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Write a frame-rate mod (exefs IPS patch) for Pokemon Pokopia (0400A3A01EE4C000).
 
+EXPERIMENTAL, NOT FOR PLAYING: the game does not keep its speed above 60 fps. Its engine scales
+time by a frame scale that only works for 1 and up (60 fps and slower): some systems step once
+per update whatever the scale and run twice as fast at 120 fps, others convert the scale to whole
+frames (trunc(0.5) = 0) and stall. Players saw the whole game run fast. Kept as a record of where
+the frame clock is and to measure what the emulator could render; for a 120 Hz picture use frame
+generation at 60 fps instead.
+
     python tools/nx2/pokopia_fps_mod.py <...\\exefs\\main> [--fps 120] [--load-dir DIR]
 
 How the game paces itself (KTGL engine, update 655360's main module): its frame clock thread
