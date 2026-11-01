@@ -12,6 +12,7 @@
 #include <tuple>
 #include <set>
 #include <fstream>
+#include <vector>
 #include <mutex>
 #include <unordered_map>
 

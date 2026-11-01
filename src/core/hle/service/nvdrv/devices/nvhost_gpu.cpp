@@ -189,7 +189,7 @@ NvResult nvhost_gpu::SetErrorNotifier(IoctlSetErrorNotifier& params) {
     // treats a non-zero value (whatever the buffer held before) as a channel error.
     if (const auto handle = nvmap.GetHandle(params.mem);
         handle && handle->address && params.size && params.size <= 0x10000 &&
-        params.offset + params.size <= handle->size) {
+        params.offset <= handle->size && params.size <= handle->size - params.offset) {
         const std::vector<u8> zeros(params.size);
         system.ApplicationMemory().WriteBlock(handle->address + params.offset, zeros.data(), zeros.size());
     }
