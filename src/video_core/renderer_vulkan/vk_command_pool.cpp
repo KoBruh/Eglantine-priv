@@ -39,7 +39,18 @@ VkCommandBuffer CommandPool::Commit() {
     const size_t index = CommitResource();
     const auto pool_index = index / COMMAND_BUFFER_POOL_SIZE;
     const auto sub_index = index % COMMAND_BUFFER_POOL_SIZE;
-    return pools[pool_index].cmdbufs[sub_index];
+    const Pool& pool = pools[pool_index];
+    const VkCommandBuffer cmdbuf = pool.cmdbufs[sub_index];
+    // The implicit reset at Begin keeps a command buffer's memory, so each one held on to its
+    // largest recording: title 1 grew ~200 of them, ~6 GB of mostly empty write-combined NVIDIA
+    // pushbuffer memory charged to the commit limit. Release it into the pool on reuse (the GPU is
+    // done with this buffer) and trim the pool once per round of its buffers.
+    const auto& dld = device.GetDispatchLoader();
+    dld.vkResetCommandBuffer(cmdbuf, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
+    if (sub_index == 0 && dld.vkTrimCommandPool) {
+        dld.vkTrimCommandPool(*device.GetLogical(), *pool.handle, 0);
+    }
+    return cmdbuf;
 }
 
 } // namespace Vulkan

@@ -102,12 +102,17 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
     Kernel::CodeSet codeset;
     codeset.memory.resize(module_start + last_segment_it->location + last_segment_it->size);
     {
-        std::vector<u8> compressed_data(*std::ranges::max_element(nso_header.segments_compressed_size));
-        std::vector<u8> decompressed_size(std::ranges::max_element(nso_header.segments, [](auto const& a, auto const& b) {
+        const size_t max_uncompressed_segment = std::ranges::max_element(nso_header.segments, [](auto const& a, auto const& b) {
             return a.size < b.size;
-        })->size);
+        })->size;
+        const size_t max_compressed_segment = *std::ranges::max_element(nso_header.segments_compressed_size);
+        std::vector<u8> compressed_data(std::max(max_compressed_segment, max_uncompressed_segment));
+        std::vector<u8> decompressed_size(max_uncompressed_segment);
         for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
-            nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset);
+            const size_t read_size = nso_header.IsSegmentCompressed(i)
+                                         ? static_cast<size_t>(nso_header.segments_compressed_size[i])
+                                         : static_cast<size_t>(nso_header.segments[i].size);
+            nso_file.Read(compressed_data.data(), read_size, nso_header.segments[i].offset);
             if (nso_header.IsSegmentCompressed(i)) {
                 if (nso_header.IsZBICCompressed()) {
                     // ZBIC compression

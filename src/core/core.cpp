@@ -351,6 +351,20 @@ struct System::Impl {
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
         }
 
+        // The GPU thread split (gpu_split.cpp) refuses to start under high GPU accuracy and read
+        // traps (memory.cpp) under reactive flushing. Both are on by default on desktop, so title 1
+        // ran on one GPU thread (~30 fps). Same per-game override as the memory layout above.
+        if (switch2_program && Settings::values.gpu_accuracy.GetValue() == Settings::GpuAccuracy::High) {
+            LOG_INFO(Core, "Switch 2 program: using low GPU accuracy (GPU thread split)");
+            Settings::values.gpu_accuracy.SetGlobal(false);
+            Settings::values.gpu_accuracy.SetValue(Settings::GpuAccuracy::Low);
+        }
+        if (switch2_program && Settings::values.use_reactive_flushing.GetValue()) {
+            LOG_INFO(Core, "Switch 2 program: reactive flushing off (read traps)");
+            Settings::values.use_reactive_flushing.SetGlobal(false);
+            Settings::values.use_reactive_flushing.SetValue(false);
+        }
+
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz
         // every tick-based time in the game was off by 1.63x: elapsed times read short and a frame
