@@ -1296,6 +1296,9 @@ void MainWindow::InitializeHotkeys() {
     hotkey_registry.LoadHotkeys();
 
     LinkActionShortcut(ui->action_Load_File, QStringLiteral("Load File"));
+#ifndef _WIN32
+    LinkActionShortcut(ui->action_Load_Amiibo, QStringLiteral("Load/Remove Amiibo"));
+#endif
     LinkActionShortcut(ui->action_Exit, QStringLiteral("Exit Eglantine"));
     LinkActionShortcut(ui->action_Restart, QStringLiteral("Restart Emulation"));
     LinkActionShortcut(ui->action_Pause, QStringLiteral("Continue/Pause Emulation"));
@@ -1971,11 +1974,13 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         QtCommon::system->ApplySettings();
     }
 
+#ifdef _WIN32
     if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id)) {
         Settings::UpdateGPUAccuracy();
         LOG_INFO(Config, "Automatic MKW preset: Vulkan, 1x, Fast, async shaders, BC3, "
                          "conservative VRAM, reactive flushing off, FIFO Relaxed");
     }
+#endif
     Settings::LogSettings();
 
     if (UISettings::values.select_user_on_boot && !user_flag_cmd_line) {
