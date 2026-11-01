@@ -19,6 +19,7 @@
 #include <boost/container/small_vector.hpp>
 
 #include "common/alignment.h"
+#include "common/memory_detect.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
 #include "video_core/control/channel_state.h"
@@ -273,6 +274,18 @@ void TextureCache<P>::TickFrame() {
                     const u64 margin = (std::min)(budget / 8, 1_GiB);
                     critical_memory = budget - margin;
                     expected_memory = budget - 2 * margin;
+                    // On Windows each GiB of VRAM is also charged to the system commit limit (the
+                    // process's private bytes grew 1:1 with VMA usage). On a 32 GB PC with its page
+                    // file on a full drive, title 1 reached that limit at 9 GB of VRAM, well under
+                    // the budget, and crashed (bad_alloc). Collect so that 2 GiB stay committable.
+                    if (const u64 free_commit = Common::GetAvailableCommitMemory(); free_commit != 0) {
+                        const u64 room = total_used_memory + free_commit;
+                        const u64 commit_critical = room > 3_GiB ? room - 2_GiB : 1_GiB;
+                        if (commit_critical < critical_memory) {
+                            critical_memory = commit_critical;
+                            expected_memory = (std::min)(expected_memory, critical_memory - critical_memory / 8);
+                        }
+                    }
                     // Log the first values and real changes (the budget moves by a few MiB all
                     // the time).
                     const u64 change = critical_memory > old_critical
