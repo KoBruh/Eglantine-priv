@@ -25,6 +25,7 @@ public:
     std::vector<std::pair<u64, VirtualFile>> Build();
 
 private:
+    friend struct RomFSBuildContextTestAccess;
     VirtualDir base;
     VirtualDir ext;
     std::shared_ptr<RomFSBuildDirectoryContext> root;
