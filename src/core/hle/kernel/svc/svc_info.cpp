@@ -5,7 +5,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cstdlib>
-#include <algorithm>
 
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -133,18 +132,9 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
         case InfoType::UserExceptionContextAddress:
             *result = GetInteger(process->GetProcessLocalRegionAddress());
             R_SUCCEED();
-        case InfoType::TotalNonSystemMemorySize: {
+        case InfoType::TotalNonSystemMemorySize:
             *result = process->GetTotalNonSystemUserPhysicalMemorySize(system.Kernel());
-            const u64 used = process->GetUsedNonSystemUserPhysicalMemorySize(system.Kernel());
-            const u64 heap_region = static_cast<u64>(process->GetPageTable().GetHeapRegionSize());
-            const u64 heap_max = (std::min)(heap_region, u64{0x200000000}) - u64{0x200000};
-            if (*result > used + heap_max) {
-                LOG_WARNING(Kernel_SVC, "Clamping TotalNonSystemMemorySize {:#x} -> {:#x} to fit the heap region",
-                            *result, used + heap_max);
-                *result = used + heap_max;
-            }
             R_SUCCEED();
-        }
         case InfoType::UsedNonSystemMemorySize:
             *result = process->GetUsedNonSystemUserPhysicalMemorySize(system.Kernel());
             R_SUCCEED();
