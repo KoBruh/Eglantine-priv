@@ -8,11 +8,15 @@
 #include <cstddef>
 #include <iterator>
 #include <utility>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "common/assert.h"
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
 #include "common/fs/path_util.h"
 #include "common/logging.h"
+#include "common/string_util.h"
 #include "core/file_sys/vfs/vfs.h"
 #include "core/file_sys/vfs/vfs_real.h"
 
@@ -258,7 +262,8 @@ std::unique_lock<std::mutex> RealVfsFilesystem::RefreshReference(const std::stri
     return lk;
 }
 
-void RealVfsFilesystem::DropReference(std::unique_ptr<FileReference>&& reference) {
+void RealVfsFilesystem::DropReference(std::unique_ptr<FileReference>&& reference,
+                                      const std::string& path) {
     if (in_dtor)
         return;
 
@@ -271,6 +276,11 @@ void RealVfsFilesystem::DropReference(std::unique_ptr<FileReference>&& reference
     if (reference->file) {
         reference->file.reset();
         num_open_files--;
+    }
+
+    const auto it = cache.find(path);
+    if (it != cache.end() && it->second.expired()) {
+        cache.erase(it);
     }
 }
 
@@ -314,19 +324,27 @@ RealVfsFile::RealVfsFile(RealVfsFilesystem& base_, std::unique_ptr<FileReference
                          std::optional<std::string> parent_path_)
     : base(base_), reference(std::move(reference_)), path(path_),
       parent_path(parent_path_ ? std::move(*parent_path_) : FS::GetParentPath(path_)),
-      path_components(FS::SplitPathComponentsCopy(path_)), size(size_), perms(perms_) {}
+      size(size_), perms(perms_) {}
 
 RealVfsFile::~RealVfsFile() {
-    base.DropReference(std::move(reference));
+    base.DropReference(std::move(reference), path);
 }
 
 std::string RealVfsFile::GetName() const {
 #ifdef __ANDROID__
-    if (path[0] != '/') {
+    if (!path.empty() && path[0] != '/') {
         return FS::Android::GetFilename(path);
     }
 #endif
-    return path_components.empty() ? "" : std::string(path_components.back());
+    // An extracted RomFS may keep hundreds of thousands of files alive. Find the
+    // last nonempty component without storing a separate vector of path copies.
+    const auto end = path.find_last_not_of("/\\");
+    if (end == std::string::npos) {
+        return {};
+    }
+    const auto separator = path.find_last_of("/\\", end);
+    const auto begin = separator == std::string::npos ? 0 : separator + 1;
+    return path.substr(begin, end - begin + 1);
 }
 
 std::size_t RealVfsFile::GetSize() const {
