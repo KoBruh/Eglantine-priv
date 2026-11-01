@@ -1,8 +1,25 @@
 # Mario Kart World Windows validation
 
-Experimental integration for MKW **1.0**, **Fast GPU accuracy**, Vulkan, Ryzen / NVIDIA.
+Experimental Windows integration focused on MKW, **Fast GPU accuracy** and Vulkan.
+The target system is the user's EPYC VM with 64 GiB RAM and an NVIDIA GPU reported
+as a 5080 with 45 GiB VRAM. Use the driver's reported memory budget in the log and
+the dedicated/shared memory CSV counters when evaluating this virtualized system.
 It is built natively on Windows with upstream's UCRT64 clang PGO toolchain. The
-profile is Eden's published profile, not a newly trained MKW profile.
+profile is Eden's published `v020525` profile, not a newly trained MKW profile.
+
+Fresh-config defaults: Vulkan, 1x, Fast, asynchronous shaders on, BC3, conservative
+VRAM, reactive flushing off, FIFO Relaxed. Explicit existing settings and per-game
+overrides are preserved. Check them before comparing builds.
+
+This follow-up starts at your existing Windows branch commit `0c2ecb55b1fc`.
+See `WINDOWS-IMPROVEMENTS.md` for the inspected baseline and selected Zortos patches.
+
+Check the new frontend behavior first: start with a deeply nested extracted-game
+library, confirm the entry appears without enumerating RomFS assets, launch it,
+and test close/stop/relaunch both while paused and while running. The size column
+intentionally says **Not scanned** for loose dumps. F2 and Home+A must not open amiibo.
+Keep `eden_log.txt` and `eden_log.txt.old.txt`, especially after a failed close.
+Use `collect-debug.ps1 -MemoryCsv mkw-memory.csv` to gather a report after testing.
 
 Extract the **whole** ZIP into a new directory and run `eglantine.exe`. Use a copy
 of your existing configuration and saves. Do not change the game update, driver,
@@ -17,7 +34,7 @@ The automatic BC3 threshold is raised to a driver-reported 20 GiB budget;
 
 Base: `adae7635708e155d967e84d7ad84bf63c5203409`.
 
-1. Use MKW 1.0 and run the same route/courses on each build for **at least 60
+1. Use the same MKW version and run the same route/courses on each build for **at least 60
    minutes**. Include the course transitions and foliage where you saw corruption.
 2. Record a first pass with an empty *copy* of the shader cache, then a warm-cache
    pass. Keep the original cache. Separating these distinguishes compilation

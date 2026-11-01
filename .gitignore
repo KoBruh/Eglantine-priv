@@ -67,3 +67,10 @@ vulkansdk*.exe
 
 # Build-time generated external sources
 externals/generated
+
+# Windows PGO build inputs and manifests
+/.ccache/
+/eden.profdata
+/pgo-profile.sha256
+/pgo-profile-source.txt
+/windows-dependencies.txt
