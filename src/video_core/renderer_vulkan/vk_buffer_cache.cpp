@@ -446,6 +446,18 @@ bool BufferCacheRuntime::CanReorderUpload(const Buffer& buffer,
     return can_use_upload_cmdbuf;
 }
 
+void BufferCacheRuntime::BindUniformBufferFromGpu(const Buffer& buffer, u32 offset, u32 size) {
+    const StagingBufferRef staging = staging_pool.Request(size, MemoryUsage::DeviceLocal);
+    const std::array copies{VideoCommon::BufferCopy{
+        .src_offset = offset,
+        .dst_offset = staging.offset,
+        .size = size,
+    }};
+    CopyBuffer(staging.buffer, buffer.Handle(), copies, true);
+    guest_descriptor_queue.AddBuffer(staging.buffer, staging.device_address,
+                                     static_cast<u32>(staging.offset), size);
+}
+
 void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
                                     std::span<const VideoCommon::BufferCopy> copies, bool barrier,
                                     bool can_reorder_upload) {
