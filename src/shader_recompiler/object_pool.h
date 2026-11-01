@@ -28,7 +28,7 @@ public:
             return;
         }
         Chunk& root{chunks.front()};
-        if (root.used_objects == root.num_objects) {
+        if (chunks.size() > 1 && root.used_objects == root.num_objects) {
             // Root chunk has been filled, squash allocations into it
             const size_t total_objects{root.num_objects + new_chunk_size * (chunks.size() - 1)};
             chunks.clear();
