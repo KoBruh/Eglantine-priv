@@ -18,6 +18,13 @@ Eglantine comparison. `MKW-Diagnostics.cmd` also enables the detailed GPU profil
 use it for debugging, then return to the performance launcher for timing. See
 `PERFORMANCE-INVESTIGATION.md` for findings and the local recording benchmark.
 
+The performance launcher now clears an inherited detailed-profiler environment
+setting. The Vulkan startup log states whether the detailed GPU profiler is on.
+For the 40–55 FPS follow-up, compare the same warm-cache route using this launcher.
+`record-memory.ps1` also records process CPU, busiest-thread CPU and the busiest
+reported GPU engine. Blank GPU fields mean counters were unavailable; the first
+row has no CPU delta. The GPU number is one engine's peak, not total GPU usage.
+
 This follow-up starts at your existing Windows branch commit `0c2ecb55b1fc`.
 See `WINDOWS-IMPROVEMENTS.md` for the inspected baseline and selected Zortos patches.
 

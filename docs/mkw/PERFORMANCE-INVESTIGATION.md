@@ -134,3 +134,66 @@ The game and target VM are unavailable here. Sustained 60 FPS, image correctness
 long-session memory stability and close-during-game remain unverified. No raw
 private log, game, firmware, keys, saves or personal settings are included.
 Implementation, integration and automated validation were assisted by Codex.
+
+## Conservative cache pass after the 40–55 FPS report
+
+The follow-up report says rendering is correct but remains around 40–55 FPS.
+There is no new session log or access to the VM, so the present limiting stage
+is still unmeasured. This pass targets repeated CPU bookkeeping and retains the
+existing rendering, readback and synchronization rules.
+
+| Candidate | Decision |
+| --- | --- |
+| Repeated texture descriptor invalidation during image deletion | Integrate upstream #209; invalidate immediately, clear the bitmap once before its next read. Keep debug poisoning in debug builds. |
+| Repeated shader-cache locking and removal for a list of memory writes | Batch the existing invalidations under one lock, removing pending shaders once at the end. Every supplied range is still processed. |
+| Detailed profiler accidentally active during normal play | The performance launcher clears an inherited `EDEN_NX2_GPU_PROFILE`; the diagnostics launcher enables it explicitly. The log reports the actual profiler state. |
+| CPU translation / VM scheduling / GPU execution bottleneck | Add process CPU, busiest-thread CPU and peak GPU-engine counters to the optional recorder before choosing more invasive changes. |
+| More aggressive DMA method batching | Defer. The reviewed proposal excludes active split-thread mode, which this fork uses; changing engine dispatch without game validation has wider correctness implications. |
+| MKW-specific PGO training | Needs an actual game workload. The existing checksum-pinned Eden profile remains in use. |
+| More overlapping readbacks, different barriers or larger unbounded caches | Needs GPU timing and sustained visual/memory testing. No such behavior change is included. |
+
+The texture change is attributed to Takoroka's
+[upstream #209](https://github.com/Djihads80/Eglantine/pull/209).
+The shader batching is adapted from ymatrix1's
+[#237](https://github.com/Djihads80/Eglantine/pull/237), selecting the batching
+only. Its unrelated CPU-invalidation bypass is not included. Upstream benchmark
+claims are not treated as measurements for this VM.
+
+The descriptor ID lookup always reads the descriptor table first. After deletion
+or scale invalidation that read must report a fresh descriptor, so the ID is
+rebuilt before it can be used. Release builds omit only the expensive diagnostic
+walk that poisons every cached ID; the table invalidation and actual image-view
+reference removal still run. Debug builds retain that diagnostic walk.
+
+New regression tests compare 40,000 descriptor operations against eager refresh,
+including descriptor mutations, address/limit changes and repeated invalidations.
+A five-channel test repeatedly invalidates all tables before checking that every
+cached view receives the current generation. Shader tests compare the actual
+batched and sequential caches through 600 randomized rounds with overlapping,
+duplicate and cross-page writes, including pending removals and empty batches.
+The complete native suite passes 84 cases; two explicit CPU benchmarks also pass.
+
+Local PGO-build CPU measurements, not gameplay frame times:
+
+| Synthetic workload | Previous bookkeeping | New bookkeeping |
+| --- | ---: | ---: |
+| 2,000 batches, 50 invalidations per batch, five descriptor tables | 467.006 ms | 9.899 ms |
+| 20 batches of 768 shader writes with 1,024 cached shaders | 7.615 ms | 3.997 ms |
+
+The descriptor benchmark covers bitmap invalidation only, not the removed
+diagnostic map walk or GPU rendering. It uses an indirect call to prevent the
+compiler from combining repeated invalidations itself. These timings cannot
+establish a gameplay improvement or locked 60 FPS.
+
+`record-memory.ps1` now records CPU core-equivalent utilization (100% means one
+fully occupied logical CPU), utilization normalized across logical processors,
+the busiest sampled thread, and the busiest reported GPU engine with its name.
+The GPU value is a single engine's peak, not total GPU utilization. Unsupported
+GPU counters remain blank. The first row has no CPU delta. Use this alongside the
+log's FPS and detailed-profiler samples to distinguish hypotheses; low GPU-engine
+utilization alone does not establish a CPU bottleneck. The recorder is compatible
+with Windows PowerShell 5.1 and PowerShell 7.
+
+The fork also receives the directory-type snapshot fix from upstream PR #253,
+preventing the scanner from reading a directory row after a flat view discards it.
+This is a lifetime correction, not an FPS optimization.
