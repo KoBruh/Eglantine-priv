@@ -2115,6 +2115,7 @@ template <class P>
 void BufferCache<P>::FinishDownloadBatch() {
     boost::container::small_vector<BatchedDownload, 4> downloads;
     downloads.swap(batched_downloads);
+    batched_download_bytes = 0;
     runtime.Finish();
     for (BatchedDownload& download : downloads) {
         const u8* const mapped_memory = download.staging.mapped_span.data();
@@ -2183,11 +2184,16 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
             runtime.CopyBuffer(batch_staging.buffer, buffer, batch_span, true);
             BatchedDownload& batched = batched_downloads.emplace_back();
             batched.staging = batch_staging;
+            batched_download_bytes += total_size_bytes;
             for (const BufferCopy& copy : copies) {
                 BufferCopy queued{copy};
                 // From here on src_offset is the guest address the data is written to.
                 queued.src_offset = static_cast<u64>(buffer.CpuAddr()) + copy.src_offset;
                 batched.copies.push_back(queued);
+            }
+            // A large flush may span many buffers: do not retain all their staging at once.
+            if (batched_download_bytes >= 64_MiB) {
+                FinishDownloadBatch();
             }
             return;
         }

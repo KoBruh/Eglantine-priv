@@ -627,6 +627,7 @@ private:
         Async_Buffer staging;
         boost::container::small_vector<BufferCopy, 4> copies;
     };
+    u64 batched_download_bytes{};
     u32 download_batch_depth{0};
     boost::container::small_vector<BatchedDownload, 4> batched_downloads;
 
