@@ -5,10 +5,13 @@
 // SPDX-FileCopyrightText: 2014 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "common/adpf.h"
 #include "common/error.h"
@@ -539,6 +542,62 @@ void SetCurrentThreadName(const char* name) {
 #endif
 }
 
+#ifdef _WIN32
+namespace {
+// CPU set ids of the most performant cores (highest EfficiencyClass), empty if every core is the
+// same kind. On hybrid CPUs (Intel 12th gen and later) Windows otherwise places the emulator's
+// busiest threads by its own heuristics, efficiency cores included. (The timing thread stays
+// with them: on an efficiency core its timer wake-ups came late and Pokopia ran ~13% slower.)
+const std::vector<ULONG>& PerformanceCpuSets() {
+    static const std::vector<ULONG> sets = [] {
+        std::vector<ULONG> ids;
+        ULONG length = 0;
+        GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
+        if (length == 0) {
+            return ids;
+        }
+        std::vector<u8> buffer(length);
+        if (!GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()),
+                                        length, &length, GetCurrentProcess(), 0)) {
+            return ids;
+        }
+        BYTE best = 0;
+        BYTE worst = 0xff;
+        for (size_t offset = 0; offset < length;) {
+            const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
+            if (info->Type == CpuSetInformation) {
+                best = (std::max)(best, info->CpuSet.EfficiencyClass);
+                worst = (std::min)(worst, info->CpuSet.EfficiencyClass);
+            }
+            offset += info->Size;
+        }
+        if (best == worst) {
+            return ids;
+        }
+        for (size_t offset = 0; offset < length;) {
+            const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
+            if (info->Type == CpuSetInformation && info->CpuSet.EfficiencyClass == best) {
+                ids.push_back(info->CpuSet.Id);
+            }
+            offset += info->Size;
+        }
+        LOG_INFO(Common, "Hybrid CPU: emulation threads run on {} performance core threads", ids.size());
+        return ids;
+    }();
+    return sets;
+}
+
+bool HybridPlacementEnabled() {
+    // EDEN_HYBRID_CORES=0 leaves placement to Windows.
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_HYBRID_CORES");
+        return value == nullptr || value[0] != '0';
+    }();
+    return enabled;
+}
+} // Anonymous namespace
+#endif
+
 void SetCurrentThreadToPerformanceCores() {
 #if defined(__ANDROID__)
     if (ADPF::AddCurrentThread(ADPF::Session::Render)) {
@@ -546,6 +605,19 @@ void SetCurrentThreadToPerformanceCores() {
         return;
     }
     SetCurrentThreadCoreGroup(CoreGroup::Performance);
+#elif defined(_WIN32)
+    if (!HybridPlacementEnabled()) {
+        return;
+    }
+    if (const auto& sets = PerformanceCpuSets(); !sets.empty()) {
+        SetThreadSelectedCpuSets(GetCurrentThread(), sets.data(), static_cast<ULONG>(sets.size()));
+    }
+    // Never throttled as background work (EcoQoS), which also steers a thread to efficiency cores.
+    THREAD_POWER_THROTTLING_STATE state{};
+    state.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    state.StateMask = 0;
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &state, sizeof(state));
 #endif
 }
 
