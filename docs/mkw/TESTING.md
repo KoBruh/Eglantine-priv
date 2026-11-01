@@ -11,6 +11,13 @@ Fresh-config defaults: Vulkan, 1x, Fast, asynchronous shaders on, BC3, conservat
 VRAM, reactive flushing off, FIFO Relaxed. Explicit existing settings and per-game
 overrides are preserved. Check them before comparing builds.
 
+The supplied session log used a saved **2x** resolution override. Launch
+**MKW-Performance.cmd** to apply **1x for the current MKW session** without
+rewriting the saved preference. Use the same effective 1x setting in the normal
+Eglantine comparison. `MKW-Diagnostics.cmd` also enables the detailed GPU profiler;
+use it for debugging, then return to the performance launcher for timing. See
+`PERFORMANCE-INVESTIGATION.md` for findings and the local recording benchmark.
+
 This follow-up starts at your existing Windows branch commit `0c2ecb55b1fc`.
 See `WINDOWS-IMPROVEMENTS.md` for the inspected baseline and selected Zortos patches.
 
@@ -58,6 +65,10 @@ Change **one** variable at a time, then restart the emulator:
 $env:EDEN_NX2_COMMAND_POOL_RELEASE = '0' # original driver command-memory reuse
 .\eglantine.exe
 ```
+
+The new default releases recording memory every eight uses. For the previous
+fork's every-reuse behavior, use `EDEN_NX2_COMMAND_POOL_RELEASE_INTERVAL=1`.
+Remove these variables after the comparison.
 
 `EDEN_NX2_UBOREUSE=0` disables small uniform allocation reuse.
 `EDEN_NX2_PB_SNAPSHOT=0` disables submitted CPU command snapshots; GPU-written

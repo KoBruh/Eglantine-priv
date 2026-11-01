@@ -1,15 +1,21 @@
-Experimental MKW Windows follow-up, based on snowstormxd/Eglantine mkw-windows-pgo at 0c2ecb55b1fcba5503f702e4ae09565b8ba6b21f.
+MKW Windows PGO performance follow-up, continuing snowstormxd/Eglantine's existing Windows fork. Experimental prerelease; target-VM gameplay remains unverified.
 
-Extract the entire ZIP and run **eglantine.exe**. Qt and MinGW runtime DLLs are included. No separate Visual C++ runtime is required.
+Extract the **whole ZIP** and run **MKW-Performance.cmd**. The supplied log showed a saved 2x resolution override. This launcher applies 1x to the current MKW session without rewriting that saved preference. Qt and native runtime DLLs are included.
 
-Loose-game discovery no longer constructs RomFS images or sums every asset's size. Launch prepares the image on a worker with a busy dialog. Closing keeps Qt responsive through emulation teardown. Amiibo keyboard/controller shortcuts are removed. Specific game-list and JIT-metadata retention paths are fixed; long-session memory stability remains unverified.
+Changes are published in individual commits:
 
-Fresh defaults: Vulkan, 1x, Fast GPU mode, asynchronous shaders, BC3, conservative VRAM, reactive flushing off, FIFO Relaxed. Existing explicit global/per-game settings take precedence. OpenGL is omitted from this Windows-only build.
+- Retains the earlier fast loose-game discovery, responsive preparation/teardown, amiibo shortcut removal, diagnostics and specific memory-lifetime fixes.
+- Integrates seven newer normal-Eglantine sparse-memory fixes, including guest tile mapping and partial uploads of large terrain textures. Adds empty/overflow range corrections and layout regressions.
+- Reuses Vulkan command-recording memory between periodic releases, with reclamation under system commit pressure. A local RTX 4070 CPU recording microbenchmark improved from 63.819 to 31.393 ms; this is **not a gameplay FPS measurement**.
+- Allows a larger native buffer working set when both driver budget and system commit have room, retaining the smaller threshold under pressure.
+- Reports actual driver heap budgets separately from the initial cache allowance.
+- Joins the touch-calibration worker before its owner is destroyed.
+- Keeps one Windows x64 Vulkan GUI PGO output, dependency/compiler caches, regression checks and an isolated portable startup check.
 
-Selected Zortos JIT range cleanup and ASID fixes are included alongside the Windows branch's existing readback, fiber and GPU coherency changes. The full Zortos rendering branch is not merged. See **WINDOWS-IMPROVEMENTS.md** for the source review and attribution.
+Requested fresh defaults remain Vulkan, 1x, Fast, async shaders, BC3, conservative VRAM, reactive flushing off and FIFO Relaxed. Existing explicit settings other than the performance launcher's session-only resolution override still apply. The pinned PGO profile is Eden's published v020525 profile, not an MKW-trained profile.
 
-Native **Windows x64 PGO GUI**, using MSYS2 UCRT64 clang/Qt and a checksum-pinned Eden profile. This is not an MKW-trained PGO profile. No CPU-specific instruction requirement was added. Regression tests and packaged startup checks do not establish gameplay performance or visual correctness.
+The native 80-case C++ suite and standalone regression checks pass locally. No game is available on this PC: **locked 60 FPS, visual correctness and long-session memory stability are not established**. The update preserves synchronization fixes rather than accepting missing graphics for higher FPS.
 
-See **TESTING.md** for the target-VM comparison. Run **record-memory.ps1** during gameplay, then **collect-debug.ps1** to gather logs, optional memory CSV and system/build details. No game, keys, firmware, saves or personal settings are included.
+Read **PERFORMANCE-INVESTIGATION.md** and **TESTING.md**. Use **MKW-Diagnostics.cmd** for a profiling run, then **collect-debug.ps1** with an optional memory CSV. Detailed profiling can affect timing. `source-commit.txt` identifies the corresponding source; no game, keys, firmware, saves or personal settings are distributed.
 
-Implementation and automated validation were assisted by Codex. Human review and gameplay validation remain required under the repository's contribution policy.
+Implementation, selective upstream integration and automated validation were assisted by Codex. Human review and gameplay validation remain required under the repository's contribution policy.
