@@ -28,6 +28,7 @@
 #include "common/div_ceil.h"
 #include "common/settings.h"
 #include "common/thread.h"
+#include "core/arm/debug.h"
 #include "core/core.h"
 #include "core/device_memory.h"
 #include "video_core/rasterizer_interface.h"
@@ -1197,14 +1198,17 @@ private:
                 LOG_INFO(Service,
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
-                         "pacing {} us{}",
+                         "pacing {} us{}{}",
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
                          m_stats.pace_us / 600,
-                         ab ? (Core::g_nx2_ab_variant_b.load() ? ", variant B" : ", variant A") : "");
+                         ab ? (Core::g_nx2_ab_variant_b.load() ? ", variant B" : ", variant A") : "",
+                         ab ? fmt::format(" up to present {}", m_presents) : std::string{});
                 if (ab) {
                     Core::g_nx2_ab_variant_b.store(!Core::g_nx2_ab_variant_b.load());
+                    ApplyAbPokes(Core::g_nx2_ab_variant_b.load());
                 }
+                PeekGuestValues();
                 m_stats = {.last_present = entered};
             }
         }
@@ -1227,6 +1231,88 @@ private:
     } m_stats{};
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
+
+    // EDEN_NX2_AB=poke, EDEN_NX2_AB_POKE=<main offset>=<A word>/<B word>[,...] (hex): write those
+    // instruction words into the main module at each A/B flip, so one run compares two versions of
+    // a game's code in the same scene (e.g. a frame-rate constant: 60 fps in A, 120 in B).
+    void ApplyAbPokes(bool variant_b) {
+        struct Poke {
+            u64 offset;
+            u32 a, b;
+        };
+        static const std::vector<Poke> pokes = [] {
+            std::vector<Poke> list;
+            const char* text = std::getenv("EDEN_NX2_AB_POKE");
+            while (text != nullptr && *text != '\0') {
+                char* end = nullptr;
+                Poke poke{};
+                poke.offset = std::strtoull(text, &end, 16);
+                if (*end != '=') {
+                    break;
+                }
+                poke.a = static_cast<u32>(std::strtoul(end + 1, &end, 16));
+                if (*end != '/') {
+                    break;
+                }
+                poke.b = static_cast<u32>(std::strtoul(end + 1, &end, 16));
+                list.push_back(poke);
+                text = *end == ',' ? end + 1 : end;
+            }
+            LOG_INFO(Service, "A/B pokes: {} instruction words", list.size());
+            return list;
+        }();
+        auto* process = system.ApplicationProcess();
+        if (Core::Nx2AbExperiment() != Core::Nx2Experiment::Poke || process == nullptr) {
+            return;
+        }
+        const u64 main_base = Core::g_main_module_base.load(std::memory_order_relaxed);
+        auto& memory = process->GetMemory();
+        for (const Poke& poke : pokes) {
+            const u64 address = main_base + poke.offset;
+            if (memory.IsValidVirtualAddressRange(address, 4)) {
+                memory.Write32(address, variant_b ? poke.b : poke.a);
+                Core::InvalidateInstructionCacheRange(process, address, 4);
+            }
+        }
+    }
+
+    // EDEN_NX2_PEEK=<main offset>[,<main offset>...]: log the u32/f32 at those offsets of the main
+    // module with every 600-present statistic (e.g. a game's frame-scale global).
+    void PeekGuestValues() {
+        static const std::vector<u64> offsets = [] {
+            std::vector<u64> list;
+            if (const char* text = std::getenv("EDEN_NX2_PEEK")) {
+                for (char* end = nullptr; *text; text = *end ? end + 1 : end) {
+                    list.push_back(std::strtoull(text, &end, 16));
+                    if (end == text) {
+                        break;
+                    }
+                }
+            }
+            return list;
+        }();
+        if (offsets.empty()) {
+            return;
+        }
+        auto* process = system.ApplicationProcess();
+        if (process == nullptr) {
+            return;
+        }
+        const u64 main_base = Core::g_main_module_base.load(std::memory_order_relaxed);
+        auto& memory = process->GetMemory();
+        std::string text;
+        for (const u64 offset : offsets) {
+            const u64 address = main_base + offset;
+            if (!memory.IsValidVirtualAddressRange(address, 4)) {
+                continue;
+            }
+            const u32 raw = memory.Read32(address);
+            float value;
+            std::memcpy(&value, &raw, sizeof(value));
+            text += fmt::format(" main+{:#x} = {} ({:#010x})", offset, value, raw);
+        }
+        LOG_INFO(Service, "peek:{}", text);
+    }
 
     // The console flips one frame per vblank (nx2_refresh_rate, 60 Hz by default) and keeps the
     // rest queued, so a game can't present faster than that. Every slot is reported free here:
@@ -1388,8 +1474,28 @@ private:
             const u64 parsed = value ? std::strtoull(value, nullptr, 10) : 0;
             return parsed != 0 ? parsed : u64{120};
         }();
-        if (directory == nullptr || (m_presents - 1) % every != 0 || m_capture_pending->exchange(true)) {
+        // EDEN_NX2_FRAME_CAPTURE_FROM=<present>[:<last present>]: only capture within that range
+        // (dense captures of one scene without writing every boot frame).
+        static const std::pair<u64, u64> range = [] {
+            const char* value = std::getenv("EDEN_NX2_FRAME_CAPTURE_FROM");
+            if (value == nullptr) {
+                return std::pair<u64, u64>{0, ~u64{}};
+            }
+            char* end = nullptr;
+            const u64 first = std::strtoull(value, &end, 10);
+            return std::pair<u64, u64>{first, *end == ':' ? std::strtoull(end + 1, nullptr, 10) : ~u64{}};
+        }();
+        if (directory == nullptr || m_presents < range.first || m_presents > range.second ||
+            (m_presents - 1) % every != 0 || m_capture_pending->exchange(true)) {
             return;
+        }
+        if (range.first != 0) {
+            // Dense captures of a scene compare animation speed between runs at different frame
+            // rates: their present times give the time axis.
+            LOG_INFO(Service, "capture present {} at {} us", m_presents,
+                     std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count());
         }
         const auto layout = Layout::DefaultFrameLayout(1280, 720);
         auto pixels = std::make_shared<std::vector<u8>>(layout.width * layout.height * 4);

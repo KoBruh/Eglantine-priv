@@ -248,6 +248,9 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
 
     // Load codeset for current process
     LOG_INFO(Loader, "Module {} loaded at {:#x} (size {:#x})", nso_file.GetName(), load_base, image_size);
+    if (nso_file.GetName() == "main") {
+        Core::g_main_module_base.store(load_base, std::memory_order_relaxed);
+    }
     process.LoadModule(system.Kernel(), std::move(codeset), load_base);
     return load_base + image_size;
 }

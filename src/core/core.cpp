@@ -83,6 +83,7 @@ Nx2Experiment Nx2AbExperiment() {
         const std::string_view name{value};
         return name == "spin"        ? Nx2Experiment::Spin
                : name == "hostcores" ? Nx2Experiment::HostCores
+               : name == "poke"      ? Nx2Experiment::Poke
                                      : Nx2Experiment::None;
     }();
     return experiment;

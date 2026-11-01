@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
+#include <thread>
 #include <atomic>
 #include <iterator>
 #include <fstream>
@@ -68,6 +70,7 @@
 #endif
 #include <windows.h>
 #include <dbghelp.h>
+#include <tlhelp32.h>
 #include <shellapi.h>
 #include "common/windows/timer_resolution.h"
 #endif
@@ -230,6 +233,129 @@ static LONG WINAPI ReportCxxThrow(EXCEPTION_POINTERS* exception) {
 }
 #endif
 
+#ifdef _WIN32
+// EDEN_NX2_HANG_DUMP=<seconds>: if no frame is presented for that long, write every thread's
+// stack to stderr once (a hang's who-waits-on-whom). Each thread's chain is captured while it is
+// suspended with RtlVirtualUnwind into preallocated arrays only (a suspended thread may hold the
+// heap lock); symbols are looked up after all threads are running again.
+static void DumpAllThreadStacks(u64 presents) {
+    struct Captured {
+        DWORD id;
+        std::wstring name;
+        std::array<DWORD64, 32> pcs{};
+        size_t count{};
+    };
+    std::vector<Captured> threads;
+    threads.reserve(512);
+    const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    THREADENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+    for (BOOL more = Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry)) {
+        if (entry.th32OwnerProcessID == GetCurrentProcessId() &&
+            entry.th32ThreadID != GetCurrentThreadId() && threads.size() < threads.capacity()) {
+            threads.push_back(Captured{entry.th32ThreadID});
+        }
+    }
+    CloseHandle(snapshot);
+    for (auto& thread : threads) {
+        const HANDLE handle = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT |
+                                             THREAD_QUERY_LIMITED_INFORMATION,
+                                         FALSE, thread.id);
+        if (handle == nullptr) {
+            continue;
+        }
+        PWSTR description = nullptr;
+        if (SUCCEEDED(GetThreadDescription(handle, &description)) && description != nullptr) {
+            thread.name = description;
+            LocalFree(description);
+        }
+        if (SuspendThread(handle) != static_cast<DWORD>(-1)) {
+            CONTEXT context{};
+            context.ContextFlags = CONTEXT_FULL;
+            if (GetThreadContext(handle, &context)) {
+                for (; thread.count < thread.pcs.size() && context.Rip != 0; ++thread.count) {
+                    thread.pcs[thread.count] = context.Rip;
+                    DWORD64 image_base = 0;
+                    auto* function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
+                    if (function == nullptr) {
+                        // A leaf (or code without unwind data, such as JIT output): return address
+                        // at the top of the stack.
+                        context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
+                        context.Rsp += 8;
+                    } else {
+                        PVOID handler_data = nullptr;
+                        DWORD64 establisher = 0;
+                        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
+                                         &handler_data, &establisher, nullptr);
+                    }
+                }
+            }
+            ResumeThread(handle);
+        }
+        CloseHandle(handle);
+    }
+    using SymSetOptionsFn = DWORD(WINAPI*)(DWORD);
+    using SymInitializeFn = BOOL(WINAPI*)(HANDLE, PCSTR, BOOL);
+    using SymFromAddrFn = BOOL(WINAPI*)(HANDLE, DWORD64, PDWORD64, PSYMBOL_INFO);
+    const HMODULE dbghelp = LoadLibraryA("dbghelp.dll");
+    const auto sym_from_addr =
+        dbghelp ? reinterpret_cast<SymFromAddrFn>(GetProcAddress(dbghelp, "SymFromAddr")) : nullptr;
+    if (dbghelp != nullptr) {
+        const auto set_options = reinterpret_cast<SymSetOptionsFn>(GetProcAddress(dbghelp, "SymSetOptions"));
+        const auto initialize = reinterpret_cast<SymInitializeFn>(GetProcAddress(dbghelp, "SymInitialize"));
+        if (set_options && initialize) {
+            set_options(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+            initialize(GetCurrentProcess(), nullptr, TRUE);
+        }
+    }
+    std::fprintf(stderr, "Hang: no frame presented for %s s (presents so far %llu); thread stacks:\n",
+                 std::getenv("EDEN_NX2_HANG_DUMP"), static_cast<unsigned long long>(presents));
+    for (const auto& thread : threads) {
+        std::fprintf(stderr, "thread %lu \"%ls\"\n", thread.id, thread.name.c_str());
+        for (size_t i = 0; i < thread.count; ++i) {
+            alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256]{};
+            auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+            symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+            symbol->MaxNameLen = 255;
+            DWORD64 displacement = 0;
+            if (sym_from_addr && sym_from_addr(GetCurrentProcess(), thread.pcs[i], &displacement, symbol)) {
+                std::fprintf(stderr, "  #%zu %s+%#llx\n", i, symbol->Name,
+                             static_cast<unsigned long long>(displacement));
+            } else {
+                std::fprintf(stderr, "  #%zu %#llx\n", i, static_cast<unsigned long long>(thread.pcs[i]));
+            }
+        }
+    }
+    std::fflush(stderr);
+}
+
+static void StartHangWatchdog() {
+    const char* text = std::getenv("EDEN_NX2_HANG_DUMP");
+    const long long seconds = text ? std::strtoll(text, nullptr, 10) : 0;
+    if (seconds <= 0) {
+        return;
+    }
+    std::thread([seconds] {
+        u64 last = ~u64{};
+        auto since = std::chrono::steady_clock::now();
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds{1});
+            const u64 now = Core::g_nx2_present_count.load(std::memory_order_relaxed);
+            if (now != last) {
+                last = now;
+                since = std::chrono::steady_clock::now();
+            } else if (std::chrono::steady_clock::now() - since >= std::chrono::seconds{seconds}) {
+                DumpAllThreadStacks(now);
+                return;
+            }
+        }
+    }).detach();
+}
+#endif
+
 static void OnStateChanged(const Network::RoomMember::State& state) {
     switch (state) {
     case Network::RoomMember::State::Idle:
@@ -338,6 +464,7 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     if (std::getenv("EDEN_NX2_CRASH_DUMP") != nullptr) {
         AddVectoredExceptionHandler(1, ReportCxxThrow);
     }
+    StartHangWatchdog();
 #endif
     Nx2Sampler::StartFromEnvironment();
     // SDL calls SDL_AppIterate back to back by default, which kept a host core at 100% polling
