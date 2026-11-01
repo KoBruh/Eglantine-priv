@@ -1629,6 +1629,10 @@ private:
                     LOG_INFO(Service, "nx2:vi2 slow frame #{}: {} us, of which GPU fence {} us",
                              m_presents, frame, to_us(m_last_fence_wait));
                 }
+                if (frame > 250'000) {
+                    LOG_INFO(Service, "nx2:vi2 long present interval #{}: {} us", m_presents,
+                             frame);
+                }
             }
             m_stats.last_present = entered;
             m_last_fence_wait = waited - entered;
