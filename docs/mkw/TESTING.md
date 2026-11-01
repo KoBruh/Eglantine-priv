@@ -10,6 +10,8 @@ resolution or settings between the upstream and integration runs. Start with you
 reported Fast configuration; leave GPU read tracking enabled. Frame generation
 should be off while comparing real frame pacing. BC3 recompression is a useful
 second comparison if you currently use uncompressed ASTC; record that setting.
+The automatic BC3 threshold is raised to a driver-reported 20 GiB budget;
+`EDEN_NX2_KEEP_ASTC=1` keeps uncompressed ASTC for a controlled comparison.
 
 ## Compare against the pinned upstream build
 
@@ -49,7 +51,7 @@ upstream issue #180 reports lost collision with that workaround.
 ## What the automated checks establish
 
 - Standalone tests use the actual uniform reuse, GPU-written bitmap/range and
-  buffer usage tracker headers. They cover mutation, scheduler/session reset,
+  buffer usage tracker headers, plus actual Ampere lowering with an FSEL/SEL reference interpreter. They cover mutation, scheduler/session reset,
   remapping, partial pages, integer overflow and 100,000 interval-oracle queries.
 - The native Windows build compiles and links the GUI, packages Qt/plugins/DLLs,
   checks the AMD64 PE header and starts the packaged GUI without MSYS2 on PATH.
