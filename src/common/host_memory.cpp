@@ -52,6 +52,7 @@
 
 #endif // ^^^ POSIX ^^^
 
+#include <cstdlib>
 #include <mutex>
 #include <new>
 #include <random>
@@ -169,7 +170,10 @@ public:
     {}
 
     bool Init(bool defer_commit) {
-        deferred_commit = defer_commit;
+        // EDEN_HOST_MEMORY_LAZY=0 restores eager commit (SEC_COMMIT), e.g. to compare against
+        // the lazy SEC_RESERVE path below or to work around a backing-commit regression.
+        const char* const lazy_override = std::getenv("EDEN_HOST_MEMORY_LAZY");
+        deferred_commit = defer_commit && (lazy_override == nullptr || lazy_override[0] != '0');
         if (!kernelbase_dll.IsOpen()) {
             LOG_CRITICAL(HW_Memory, "Failed to load Kernelbase.dll");
             return false;
