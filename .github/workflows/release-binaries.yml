@@ -3,12 +3,11 @@ name: release-binaries
 on:
   workflow_dispatch:
     inputs:
-      # The local runner (local-build.yml) normally covers Linux x86_64, Windows and Android, so
-      # these default to what it can't build.
+      # Defaults build the four release platforms on GitHub's runners in one run.
       linux_x86_64:
         description: Linux x86_64 PGO
         type: boolean
-        default: false
+        default: true
       linux_aarch64:
         description: Linux aarch64 PGO
         type: boolean
@@ -16,7 +15,7 @@ on:
       windows:
         description: Windows x86_64 PGO (MinGW)
         type: boolean
-        default: false
+        default: true
       macos:
         description: macOS arm64
         type: boolean
@@ -24,7 +23,11 @@ on:
       android:
         description: Android APK
         type: boolean
-        default: false
+        default: true
+      android_antutu:
+        description: Also an Android APK under AnTuTu's package name (com.antutu.ABenchMark)
+        type: boolean
+        default: true
       publish_release:
         description: Publish the binaries as a GitHub release
         type: boolean
@@ -592,15 +595,23 @@ jobs:
         working-directory: src/android
         run: |
           set -euo pipefail
-          ./gradlew --no-daemon "-PappId=${{ inputs.android_app_id || 'dev.eglantine.eglantine' }}" assembleMainlineRelease
-          apk=$(find app/build/outputs/apk/mainline/release -name '*.apk' | head -1)
-          cp "$apk" "$GITHUB_WORKSPACE/eglantine-${GITHUB_SHA}-android-arm64.apk"
+          variants=("${{ inputs.android_app_id || 'dev.eglantine.eglantine' }}:")
+          # Some GPU drivers run AnTuTu's package with higher clocks. Both APKs share the native
+          # build, so the second assemble only repackages.
+          if [ "${{ inputs.android_antutu }}" = "true" ]; then
+            variants+=("com.antutu.ABenchMark:-antutu")
+          fi
+          for variant in "${variants[@]}"; do
+            ./gradlew --no-daemon "-PappId=${variant%%:*}" assembleMainlineRelease
+            apk=$(find app/build/outputs/apk/mainline/release -name '*.apk' | head -1)
+            cp "$apk" "$GITHUB_WORKSPACE/eglantine-${GITHUB_SHA}-android-arm64${variant#*:}.apk"
+          done
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: eglantine-android-arm64-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-android-arm64.apk
+          path: eglantine-${{ github.sha }}-android-arm64*.apk
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
