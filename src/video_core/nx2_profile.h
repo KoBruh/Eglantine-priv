@@ -15,6 +15,9 @@
 
 // EDEN_NX2_GPU_PROFILE: time where the GPU thread spends its time. Each zone counts its own
 // (exclusive) time, nested zones excluded; every 10 s the thread logs each zone's share.
+// Each zone reads a fenced TSC twice (~30-50 ns per read) and that time lands in the enclosing
+// zone: with ~2 million method calls a second, "push" (their parent) shows hundreds of
+// milliseconds that are the profiler's own. Compare thread CPU time from a run without it.
 namespace VideoCommon::Nx2Profile {
 
 enum class Zone : u32 {
@@ -51,6 +54,9 @@ enum class Zone : u32 {
     Method,       ///< Engine method calls (what a split GPU thread's back half would run)
     SplitDrain,   ///< Split GPU thread: the front waits for the back (gpu_split.h)
     SplitWait,    ///< Split GPU thread: the back waits for work
+    GpuWait,      ///< Waiting for the host GPU to reach a tick (Scheduler::Wait)
+    WorkerWait,   ///< Waiting for the Vulkan worker thread to drain its queue
+    Invalidate,   ///< Applying held-back guest CPU writes (GPU::InvalidateGPUCache)
     Count,
 };
 
@@ -61,7 +67,8 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "sync descriptors", "read handles", "fill image views", "texture buffers", "update buffers",
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
-    "fence skipped", "method", "split drain", "split wait",
+    "fence skipped", "method", "split drain", "split wait", "gpu wait", "worker wait",
+    "invalidate",
 };
 
 // Read once at startup: Enabled() runs several times per method write (no guard to check).

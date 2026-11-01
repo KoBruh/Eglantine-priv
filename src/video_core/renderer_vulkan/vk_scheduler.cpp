@@ -77,6 +77,7 @@ void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore)
 
 void Scheduler::WaitWorker() {
     DispatchWork();
+    VideoCommon::Nx2Profile::Scope wait_scope{VideoCommon::Nx2Profile::Zone::WorkerWait};
 
     // Ensure the queue is drained.
     {

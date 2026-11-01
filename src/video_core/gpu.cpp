@@ -31,6 +31,7 @@
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/maxwell_dma.h"
 #include "video_core/gpu.h"
+#include "video_core/nx2_profile.h"
 #include "video_core/gpu_thread.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/host1x/syncpoint_manager.h"
@@ -113,6 +114,7 @@ struct GPU::Impl {
 
     /// Synchronizes CPU writes with Host GPU memory.
     void InvalidateGPUCache() {
+        VideoCommon::Nx2Profile::Scope scope{VideoCommon::Nx2Profile::Zone::Invalidate};
         std::function<void(PAddr, size_t)> callback_writes([this](PAddr address, size_t size) {
             renderer->ReadRasterizer()->OnCachedWrite(address, size);
         });
