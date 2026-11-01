@@ -11,6 +11,10 @@
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
+#ifdef HAS_HYPERVISOR
+#include "core/arm/hypervisor/arm_hypervisor.h"
+#include "core/arm/hypervisor/hv_vm.h"
+#endif
 #include "core/hle/kernel/k_scoped_resource_reservation.h"
 #include "core/hle/kernel/k_shared_memory.h"
 #include "core/hle/kernel/k_shared_memory_info.h"
@@ -27,6 +31,10 @@
 namespace Kernel {
 
 namespace {
+
+// Switch 2 titles size their heap as total memory minus ~6.3 GiB (~9.5 GiB), past the 8 GiB
+// 39-bit heap region of the Switch 1 layout.
+constexpr size_t Switch2ExtraHeapRegionSize = 8ULL << 30;
 
 Result TerminateChildren(KernelCore& kernel, KProcess* process, const KThread* thread_to_not_terminate) {
     // Request that all children threads terminate.
@@ -419,7 +427,8 @@ Result KProcess::Initialize(KernelCore& kernel, const Svc::CreateProcessParamete
             False(params.flags & Svc::CreateProcessFlag::DisableDeviceAddressSpaceMerge);
         R_TRY(m_page_table.Initialize(as_type, enable_aslr, enable_das_merge, !enable_aslr, pool,
                                       params.code_address, code_size, m_system_resource, res_limit,
-                                      m_memory, aslr_space_start));
+                                      m_memory, aslr_space_start,
+                                      m_is_switch2 ? Switch2ExtraHeapRegionSize : 0));
     }
     ON_RESULT_FAILURE_2 {
         m_page_table.Finalize();
@@ -1255,7 +1264,9 @@ Result KProcess::LoadFromMetadata(KernelCore& kernel, const FileSys::ProgramMeta
     static_assert(sizeof(params.name) <= sizeof(name));
     std::memcpy(params.name.data(), name.data(), sizeof(params.name));
 
-    // Initialize for application process.
+    // Initialize for application process. Switch 2 needs its flag first: the page table sizes
+    // the heap region from it.
+    m_is_switch2 = metadata.IsSwitch2();
     R_TRY(this->Initialize(kernel, params, metadata.GetKernelCapabilities(), res_limit, pool, aslr_space_start));
 
     // Assign remaining properties.
@@ -1264,8 +1275,7 @@ Result KProcess::LoadFromMetadata(KernelCore& kernel, const FileSys::ProgramMeta
     // Switch 2 applications get more memory than a 64-bit heap region holds (nninitStartup sizes
     // its heap as total memory minus ~6.3 GiB), so count the alias region as well, bounded by the
     // pool through the resource limit.
-    if (metadata.IsSwitch2()) {
-        m_is_switch2 = true;
+    if (m_is_switch2) {
         m_max_process_memory = m_page_table.GetHeapRegionSize() + m_page_table.GetAliasRegionSize();
     }
 
@@ -1313,6 +1323,20 @@ void KProcess::LoadModule(KernelCore& kernel, CodeSet code_set, KProcessAddress 
 void KProcess::InitializeInterfaces(KernelCore& kernel) {
     m_exclusive_monitor =
         Core::MakeExclusiveMonitor(this->GetMemory(), Core::Hardware::NUM_CPU_CORES);
+
+#ifdef HAS_HYPERVISOR
+    // EDEN_NX2_HYPERVISOR=1: run the application natively when its VM is ready (Core::Memory
+    // attached it to this page table at initialization).
+    if (this->IsApplication() && this->Is64Bit() && kernel.IsMulticore() &&
+        Core::Hv::Vm::Get().IsAttached(this->GetPageTable().GetImpl()) &&
+        Core::Hv::Vm::Get().IsReady()) {
+        for (size_t i = 0; i < Core::Hardware::NUM_CPU_CORES; i++) {
+            m_arm_interfaces[i] = std::make_unique<Core::ArmHypervisor>(kernel.System(), this, i);
+        }
+        LOG_INFO(Kernel, "Running the application natively through Hypervisor.framework");
+        return;
+    }
+#endif
 
 #ifdef HAS_NCE
     if (this->IsApplication() && Settings::IsNceEnabled()) {

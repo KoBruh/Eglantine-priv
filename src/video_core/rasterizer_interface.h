@@ -114,6 +114,17 @@ public:
     /// Notify rasterizer that any caches of the specified region are desync with guest
     virtual void OnCacheInvalidation(PAddr addr, u64 size) = 0;
 
+    /// A guest CPU write to GPU-written memory, held back until now (InvalidateGPUCache, on the
+    /// GPU thread): only those bytes changed.
+    virtual void OnCachedWrite(DAddr addr, u64 size) {
+        OnCacheInvalidation(addr, size);
+    }
+
+    /// Value of a release the GPU already processed whose write may still be in flight on the host.
+    virtual std::optional<u32> PendingSemaphoreRelease(DAddr addr) {
+        return std::nullopt;
+    }
+
     virtual bool TryCacheInvalidation(DAddr addr, u64 size) {
         if (MustFlushRegion(addr, size, VideoCommon::CacheType::BufferCache)) return false;
         OnCacheInvalidation(addr, size);
@@ -138,6 +149,9 @@ public:
 
     /// Notify the host renderer to wait for previous primitive and compute operations.
     virtual void WaitForIdle() = 0;
+
+    /// Emulate the NX2 PBDMA memory barrier when the backend requires an explicit barrier.
+    virtual void Nx2Membar() {}
 
     /// Notify the host renderer to wait for reads and writes to render targets and flush caches.
     virtual void FragmentBarrier() = 0;

@@ -241,6 +241,13 @@ add_executable(yuzu
 
 set_target_properties(yuzu PROPERTIES OUTPUT_NAME "eglantine")
 
+# Shipped next to the executable: the NX2 switches a GUI launch cannot set another way. Read at
+# startup (LoadNx2Switches in main.cpp); a user copy in %APPDATA%\eden overrides it.
+add_custom_command(TARGET yuzu PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${PROJECT_SOURCE_DIR}/dist/nx2_switches.txt" "$<TARGET_FILE_DIR:yuzu>/nx2_switches.txt"
+    VERBATIM)
+
 if (YUZU_CRASH_DUMPS)
     target_sources(yuzu PRIVATE
         breakpad.cpp
@@ -382,6 +389,20 @@ if (APPLE)
 
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE TRUE)
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist)
+
+    # Hypervisor.framework (native execution, EDEN_NX2_HYPERVISOR=1) needs this entitlement; an
+    # ad-hoc signature carries it for local builds.
+    if (NOT CMAKE_GENERATOR MATCHES "Xcode")
+        # Signed outside the bundle: in place, codesign checks the bundle, whose MacOS folder
+        # holds non-code files (nx2_switches.txt), and refuses.
+        add_custom_command(TARGET yuzu POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:yuzu> ${CMAKE_CURRENT_BINARY_DIR}/eglantine-sign
+            COMMAND codesign --force --sign - --entitlements
+                    ${CMAKE_CURRENT_SOURCE_DIR}/hypervisor.entitlements
+                    ${CMAKE_CURRENT_BINARY_DIR}/eglantine-sign
+            COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/eglantine-sign $<TARGET_FILE:yuzu>
+            COMMENT "Signing with the hypervisor entitlement")
+    endif()
 
     set(CMAKE_FIND_LIBRARY_SUFFIXES ".dylib")
     find_library(MOLTENVK_LIBRARY MoltenVK REQUIRED)

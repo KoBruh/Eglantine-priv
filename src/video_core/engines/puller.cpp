@@ -94,6 +94,14 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     if (pending_acquire->Matches(current)) {
         return true;
     }
+    // A release the GPU already processed may only wait for the host GPU to write it (accurate
+    // GPU mode): work after this acquire runs after the work before that release on the host.
+    if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(pending_acquire->address)) {
+        if (const auto pending = dma_pusher.rasterizer->PendingSemaphoreRelease(*device);
+            pending && pending_acquire->Matches(*pending)) {
+            return true;
+        }
+    }
     if (!pending_acquire->reported &&
         std::chrono::steady_clock::now() - pending_acquire->since > std::chrono::seconds{2}) {
         pending_acquire->reported = true;
@@ -217,15 +225,8 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
         const auto properties = g_nx2_ampere && (regs.semaphore_trigger & (1U << 24)) != 0
                                     ? VideoCommon::QueryPropertiesFlags::IsAFence
                                     : VideoCommon::QueryPropertiesFlags::HasTimeout;
-        const GPUVAddr mirror = g_nx2_ampere ? Nx2SemaphoreMirror(sequence_address) : 0;
-        if (mirror != 0) {
-            LOG_DEBUG(HW_GPU, "Switch 2 semaphore {:#x}={:#x} mirrored to {:#x}", sequence_address, payload, mirror);
-        }
-        OnBack([rasterizer = dma_pusher.rasterizer, sequence_address, mirror, properties, payload] {
+        OnBack([rasterizer = dma_pusher.rasterizer, sequence_address, properties, payload] {
             rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload, properties, payload, 0);
-            if (mirror != 0) {
-                rasterizer->Query(mirror, VideoCommon::QueryType::Payload, properties, payload, 0);
-            }
         });
     } else if (g_nx2_ampere) {
         // Switch 2 waits on semaphores the CPU (or another channel) releases, e.g. once it has
@@ -264,9 +265,26 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
     } else {
         DrainBack();
         do {
-            const u32 word = dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress());
+            u32 word = dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress());
             regs.acquire_source = true;
             regs.acquire_value = regs.semaphore_sequence;
+            // A release the GPU already processed may only wait for the host GPU to write it
+            // (accurate GPU mode). Work after this acquire runs after the work before that
+            // release on the host anyway: no need to wait for the host GPU.
+            if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(
+                    regs.semaphore_address.SemaphoreAddress())) {
+                if (const auto pending = dma_pusher.rasterizer->PendingSemaphoreRelease(*device)) {
+                    const bool satisfies =
+                        op == GpuSemaphoreOperation::AcquireEqual
+                            ? *pending == regs.semaphore_sequence
+                        : op == GpuSemaphoreOperation::AcquireGequal
+                            ? *pending >= regs.semaphore_sequence
+                            : false;
+                    if (satisfies) {
+                        word = *pending;
+                    }
+                }
+            }
             if (op == GpuSemaphoreOperation::AcquireEqual) {
                 regs.acquire_active = true;
                 regs.acquire_mode = false;
@@ -398,9 +416,22 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
         OnBack([rasterizer = dma_pusher.rasterizer] { rasterizer->InvalidateGPUCache(); });
         break;
     }
-    case BufferMethods::MemOpC:
+    case BufferMethods::MemOpC: {
+        LOG_TRACE(HW_GPU, "Memory Operation C: argument={:#x}", method_call.argument);
+        break;
+    }
     case BufferMethods::MemOpD: {
-        LOG_TRACE(HW_GPU, "Memory Operation C,D");
+        LOG_TRACE(HW_GPU, "Memory Operation D: argument={:#x}", method_call.argument);
+
+        // MEM_OP_D executes the operation prepared by MEM_OP_A/B/C. Operation 5 is MEMBAR:
+        // draws after it must observe GPU-written vertex, index and indirect buffers.
+        constexpr u32 OperationShift = 27;
+        constexpr u32 OperationMask = 0x1f;
+        constexpr u32 MembarOperation = 5;
+        if (g_nx2_ampere &&
+            ((method_call.argument >> OperationShift) & OperationMask) == MembarOperation) {
+            OnBack([rasterizer = dma_pusher.rasterizer] { rasterizer->Nx2Membar(); });
+        }
         break;
     }
     case BufferMethods::SemaphoreAcquire: {
