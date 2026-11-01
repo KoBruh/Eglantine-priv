@@ -1518,6 +1518,8 @@ public:
             {103, &INx2Vi2Session::QueryDisplayRefreshRate, "QueryDisplayRefreshRate"},
             {104, &INx2Vi2Session::QueryDisplayHdrStatus, "QueryDisplayHdrStatus"},
             {105, &INx2Vi2Session::QueryDisplayHdrPaperWhite, "QueryDisplayHdrPaperWhite"},
+            {106, &INx2Vi2Session::QueryDisplayBufferMaxResolution, "QueryDisplayBufferMaxResolution"},
+            {107, &INx2Vi2Session::QueryDisplayModeCapability, "QueryDisplayModeCapability"},
             // Display/client setup (title 2): nothing to track while presents composite directly.
             {51, &INx2Vi2Session::SucceedQuietly, "ConfigureRequestGroups"},
             {101, &INx2Vi2Session::OpenDisplay, "OpenDisplay"},
@@ -2006,6 +2008,23 @@ private:
     // nn::vi2::QueryDisplayHdrPaperWhite(display name): u16 paper white in nits (BT.2408).
     void QueryDisplayHdrPaperWhite(HLERequestContext& ctx) {
         TipcReplyWords(ctx, {203});
+    }
+
+    // nn::vi2 106(display name): u64 maximum buffer resolution mode. FastFusion panics on the
+    // zero mode. Observed by eden-fefw (Duck912) in Fire Emblem: Fortune's Weave: 1 is 720p, 2
+    // 1080p, 4 and 8 1440p. Docked reports 1440p, handheld the 1080p screen;
+    // EDEN_VI2_MAX_RESOLUTION_MODE=<n> overrides.
+    void QueryDisplayBufferMaxResolution(HLERequestContext& ctx) {
+        static const char* const forced = std::getenv("EDEN_VI2_MAX_RESOLUTION_MODE");
+        const u64 mode = forced ? std::strtoull(forced, nullptr, 0)
+                                : (Settings::IsDockedMode() ? 4 : 2);
+        TipcReplyWords(ctx, {static_cast<u32>(mode), static_cast<u32>(mode >> 32)});
+    }
+
+    // nn::vi2 107(display name): display mode capability, two u64 flags and a zero word (from
+    // eden-fefw); both set means the display can show its modes.
+    void QueryDisplayModeCapability(HLERequestContext& ctx) {
+        TipcReplyWords(ctx, {1, 0, 1, 0, 0, 0});
     }
 
     // 212(u64 client token): u64 mask of the buffer slots the client may acquire. The auto stub's
