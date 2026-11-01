@@ -52,6 +52,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # Clang major the Linux PGO build uses, from apt.llvm.org. Eden's profile is written by a current
 # clang and an older reader refuses it, so this has to stay at or above whatever produced
@@ -59,8 +60,10 @@ permissions:
 env:
   PGO_LLVM_VERSION: '23'
 
+# Scheduled runs get their own group so they never cancel a push build; the plan job makes them
+# skip a commit that a push run already built or is building.
 concurrency:
-  group: release-binaries-${{ github.ref }}
+  group: release-binaries-${{ github.ref }}${{ github.event_name == 'schedule' && '-schedule' || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -69,10 +72,13 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      skip: ${{ steps.plan.outputs.skip }}
     steps:
       - id: plan
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           LINUX_X86_64: ${{ github.event_name != 'workflow_dispatch' || inputs.linux_x86_64 }}
           LINUX_AARCH64: ${{ github.event_name != 'workflow_dispatch' || inputs.linux_aarch64 }}
           WINDOWS: ${{ github.event_name != 'workflow_dispatch' || inputs.windows }}
@@ -96,6 +102,16 @@ jobs:
           matrix=$(jq -c --argjson on "$enabled" '{include: [.[] | select($on[.group] == "true") | del(.group)]}' <<< "$all")
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "$matrix"
+          skip=false
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            pushed=$(gh run list --workflow release-binaries.yml --commit "$GITHUB_SHA" --event push \
+              --json status,conclusion -q '[.[] | select(.status != "completed" or .conclusion == "success")] | length')
+            if [ "$pushed" != 0 ]; then
+              echo "A push run already built or is building $GITHUB_SHA; skipping."
+              skip=true
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.platform }} binary
@@ -105,7 +121,7 @@ jobs:
       CCACHE_MAXSIZE: 1500M
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
     needs: plan
-    if: needs.plan.outputs.matrix != '{"include":[]}'
+    if: needs.plan.outputs.skip != 'true' && needs.plan.outputs.matrix != '{"include":[]}'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -583,7 +599,8 @@ jobs:
 
   android:
     name: android-arm64 apk
-    if: github.event_name != 'workflow_dispatch' || inputs.android
+    needs: plan
+    if: needs.plan.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.android)
     runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -661,8 +678,8 @@ jobs:
   # shared with local-build.yml: whichever run publishes first creates it, the other adds to it.
   release:
     name: Publish releases
-    needs: [build, android]
-    if: ${{ !cancelled() && !failure() && (github.event_name != 'workflow_dispatch' || inputs.publish_release) }}
+    needs: [plan, build, android]
+    if: ${{ !cancelled() && !failure() && needs.plan.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish_release) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
