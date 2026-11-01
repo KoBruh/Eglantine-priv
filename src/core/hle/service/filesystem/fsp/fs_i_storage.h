@@ -19,11 +19,14 @@ class IStorage final : public ServiceFramework<IStorage> {
 public:
     explicit IStorage(Core::System& system_, FileSys::VirtualFile backend_);
 
+    /// Switch 1 game card pacing (see ReadThrottle in fs_i_storage.cpp).
+    static constexpr s64 ReadBytesPerSecond = 40'000'000;
+    static constexpr s64 MaxChargedReadSize = 64 * 1024;
+
 private:
     FileSys::VirtualFile backend;
 
-    static constexpr s64 ReadBytesPerSecond = 40'000'000;
-    static constexpr s64 MaxChargedReadSize = 64 * 1024;
+    s64 read_bytes_per_second; ///< 0: reads are not paced
     std::chrono::steady_clock::time_point next_read_tick{};
 
     Result Read(
