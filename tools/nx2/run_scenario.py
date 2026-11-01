@@ -34,6 +34,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import frames as frame_tools  # noqa: E402
+import thread_cpu  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 DEFAULT_EXE = REPO / "build" / "bin" / ("eden-cli.exe" if os.name == "nt" else "eden-cli")
@@ -63,15 +64,19 @@ def key_map(config_path):
     return keys
 
 
-def run_config(source, destination, mute):
-    """Copy the CLI config for this run (the CLI writes its config back), muted unless asked."""
+# --uncapped: no frame limiter and no vsync, so frame times show what a frame costs.
+UNCAPPED = {"use_speed_limit": "false", "use_vsync": "0"}
+
+
+def run_config(source, destination, overrides):
+    """Copy the CLI config for this run (the CLI writes its config back) with settings changed."""
     text = source.read_text(encoding="utf-8", errors="replace")
-    if mute:
+    for name, value in overrides.items():
         # A setting with \default=true ignores its value line, so both lines are set.
-        if not re.search(r"^audio_muted=", text, re.M):
-            sys.exit(f"{source} has no audio_muted setting to turn on; run with --sound")
-        text = re.sub(r"^audio_muted\\default=.*$", lambda _: "audio_muted\\default=false", text, flags=re.M)
-        text = re.sub(r"^audio_muted=.*$", lambda _: "audio_muted=true", text, flags=re.M)
+        if not re.search(rf"^{re.escape(name)}=", text, re.M):
+            sys.exit(f"{source} has no {name} setting")
+        text = re.sub(rf"^{re.escape(name)}\\default=.*$", lambda _: f"{name}\\default=false", text, flags=re.M)
+        text = re.sub(rf"^{re.escape(name)}=.*$", lambda _: f"{name}={value}", text, flags=re.M)
     destination.write_text(text, encoding="utf-8")
 
 
@@ -173,11 +178,23 @@ def write_report(out, scenario, settings, events, result, found, presents, excep
              f"{'**exited before the end** (exit code ' + str(result['exit_code']) + ')' if result['crashed'] else 'no crash (stopped by the harness)'}",
              f"- Game: `{settings['game']}`",
              f"- Extra environment: {', '.join(f'`{k}={v}`' for k, v in settings['env'].items()) or 'none'}",
+             f"- Config changes: {', '.join(f'`{k}={v}`' for k, v in settings.get('config', {}).items()) or 'none'}",
              f"- Frames captured: {len(frame_list)} (every {settings['capture_every']} presents) -> `frames/sheet.png`", ""]
     if presents:
         worst = max(presents, key=lambda p: p["max_frame_us"])
         lines += [f"- Frame time: last window avg {presents[-1]['avg_frame_us'] / 1000:.1f} ms; worst stall "
                   f"{worst['max_frame_us'] / 1000:.0f} ms at {worst['time']:.0f} s", ""]
+    if presents:
+        lines += ["## Frame time per 600 presents", "", "| seconds | avg ms | max ms | over 100 ms |",
+                  "| ---: | ---: | ---: | ---: |"]
+        lines += [f"| {p['time']:.0f} | {p['avg_frame_us'] / 1000:.1f} | {p['max_frame_us'] / 1000:.0f} | "
+                  f"{p['over_100ms']} |" for p in presents] + [""]
+    if (out / "threads.csv").exists():
+        busiest = thread_cpu.summarize(out / "threads.csv")[:12]
+        lines += ["## Busiest threads (% of one host core; `threads.csv` has every second)", "",
+                  "| thread | count | avg % | peak % |", "| --- | ---: | ---: | ---: |"]
+        lines += [f"| {name} | {count} | {average:.0f} | {peak:.0f} |" for name, count, average, peak in busiest]
+        lines += [""]
     if exceptions:
         lines += ["## C++ exceptions thrown (first chance; caught ones included)", ""]
         lines += [f"- {count}x {text}" for text, count in exceptions.most_common()] + [""]
@@ -205,6 +222,10 @@ def main():
     parser.add_argument("--env", action="append", default=[], help="extra NAME=VALUE (repeatable)")
     parser.add_argument("--duration", type=float, help="override the scenario's duration (seconds)")
     parser.add_argument("--sound", action="store_true", help="keep the game's audio (muted by default)")
+    parser.add_argument("--uncapped", action="store_true",
+                        help="turn off the speed limit and vsync (benchmarks: frame times are real costs)")
+    parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
+                        help="change a setting in this run's copy of the config (repeatable)")
     parser.add_argument("--foreground", action="store_true",
                         help="show the game window normally (by default it renders off-screen and "
                              "never takes focus)")
@@ -227,7 +248,14 @@ def main():
     frames_dir = out / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
     (out / "keys.txt").write_text(",".join(events), encoding="ascii")
-    run_config(config, out / "sdl2-config.ini", mute=not args.sound)
+    overrides = {} if args.sound else {"audio_muted": "true"}
+    if args.uncapped:
+        overrides.update(UNCAPPED)
+    for item in args.set:
+        name, _, value = item.partition("=")
+        overrides[name] = value
+    run_config(config, out / "sdl2-config.ini", overrides)
+    settings["config"] = overrides
 
     env = dict(os.environ)
     env.update({
@@ -251,6 +279,7 @@ def main():
         process = subprocess.Popen([str(args.exe), "-c", str(out / "sdl2-config.ini"), "-g", settings["game"]],
                                    env=env, stdout=log, stderr=err, creationflags=flags)
         exit_code, crashed = None, False
+        sampler = thread_cpu.Sampler(process.pid, out / "threads.csv")
         # Stop at until_frame (the capture of that present exists) or at the duration, whichever
         # comes first: emulation speed varies between runs, frames do not.
         while time.monotonic() - started < settings["duration"]:
@@ -260,11 +289,13 @@ def main():
                 break
             except subprocess.TimeoutExpired:
                 pass
-            if settings["until_frame"] and any(
-                    int(path.stem.removeprefix("nx2-frame-")) >= settings["until_frame"]
-                    for path in frames_dir.glob("nx2-frame-*.tga")):
+            latest = max((int(path.stem.removeprefix("nx2-frame-")) for path in frames_dir.glob("nx2-frame-*.tga")),
+                         default=0)
+            sampler.sample(time.monotonic() - started, latest)
+            if settings["until_frame"] and latest >= settings["until_frame"]:
                 time.sleep(1)  # let the last capture finish writing
                 break
+        sampler.close()
         if not crashed:
             process.kill()
             process.wait()
