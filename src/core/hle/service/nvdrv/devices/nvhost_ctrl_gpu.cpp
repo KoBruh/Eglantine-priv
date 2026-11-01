@@ -223,13 +223,8 @@ void ApplyNx2Characteristics(GC& gc) {
     }
 
     // Bits 40..43: the 2D, 3D, compute and inline-to-memory class families. The SDK filters its
-    // class enumeration by them; without them Fire Emblem: Fortune's Weave aborts at boot.
-
-
-    // Bits 40..43: some NVN2 drivers (e.g. the Yoshi demo's) filter the 2D/3D/compute/inline
-    // engine classes with these before picking their contexts. Without them NVN2Manager::
-    // CreateDevice fails (2162-0001) right after GetEngineInfo. Values from the NS2 patch.
-
+    // class enumeration by them; without them Fire Emblem: Fortune's Weave aborts at boot and
+    // the Yoshi demo's NVN2Manager::CreateDevice fails (2162-0001) right after GetEngineInfo.
     gc.flags |= 0xfULL << 40;
 
     // The Switch 2 layout keeps nine s16 interface versions at 0x70..0x80 (like nvgpu's

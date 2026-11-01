@@ -187,8 +187,8 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 // Image::BindLayers. Only formats uploaded layer by layer: huge ASTC arrays (GPU decode) and
 // formats the host samples as they are.
 [[nodiscard]] bool UsesSparseLayers(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {
-    if (!device.CanUseUnbackedSparseImages() || !device.IsSparseResidencyImage2DSupported() ||
-        info.type != ImageType::e2D ||
+    if (!device.CanUseUnbackedSparseImages() ||
+        !device.IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D) || info.type != ImageType::e2D ||
         info.resources.layers <= 1 || info.num_samples != 1 ||
         VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {
         return false;
@@ -244,7 +244,7 @@ enum class SparseTilesMode {
         const char* value = std::getenv("EDEN_NX2_SPARSE_ALIASED");
         return value == nullptr ? '\0' : value[0];
     }();
-    if (!device.IsSparseResidencyImage2DSupported()) {
+    if (!device.IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D)) {
         return SparseTilesMode::None;
     }
     const bool aliased = device.IsSparseResidencyAliasedSupported() && force_aliased != '0';
@@ -1724,6 +1724,9 @@ void TextureCacheRuntime::ConvertImage(Framebuffer* dst, ImageView& dst_view, Im
         }
         break;
     case PixelFormat::A8B8G8R8_UNORM:
+        if (src_view.format == PixelFormat::X8_D24_UNORM) {
+            return blit_image_helper.ConvertX8D24ToABGR8(dst, src_view);
+        }
         if (src_view.format == PixelFormat::S8_UINT_D24_UNORM) {
             return blit_image_helper.ConvertD24S8ToABGR8(dst, src_view);
         }
@@ -1742,6 +1745,11 @@ void TextureCacheRuntime::ConvertImage(Framebuffer* dst, ImageView& dst_view, Im
     case PixelFormat::D16_UNORM:
         if (src_view.format == PixelFormat::R16_UNORM) {
             return blit_image_helper.ConvertR16ToD16(dst, src_view);
+        }
+        break;
+    case PixelFormat::X8_D24_UNORM:
+        if (src_view.format == PixelFormat::A8B8G8R8_UNORM) {
+            return blit_image_helper.ConvertABGR8ToX8D24(dst, src_view);
         }
         break;
     case PixelFormat::S8_UINT_D24_UNORM:

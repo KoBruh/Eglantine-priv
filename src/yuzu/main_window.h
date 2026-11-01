@@ -37,9 +37,8 @@
 #endif
 
 #ifdef ENABLE_UPDATE_CHECKER
-#include <QFuture>
 #include <QFutureWatcher>
-#include "common/net/net.h"
+#include "frontend_common/update_checker.h"
 #endif
 
 class QtConfig;
@@ -437,7 +436,9 @@ private slots:
     void OnEmulationStopTimeExpired();
 
 #ifdef ENABLE_UPDATE_CHECKER
-    void OnEmulatorUpdateAvailable();
+    // `requested` is true when the user asked, so every outcome gets reported, not only updates.
+    void CheckForUpdates(bool requested);
+    void OnUpdateCheckFinished(const UpdateChecker::Result& result, bool requested);
 #endif
 
 private:
@@ -492,11 +493,6 @@ private:
     std::unique_ptr<DiscordRPC::DiscordInterface> discord_rpc;
     std::unique_ptr<PlayTime::PlayTimeManager> play_time_manager;
     std::shared_ptr<InputCommon::InputSubsystem> input_subsystem;
-
-#ifdef ENABLE_UPDATE_CHECKER
-    QFuture<std::optional<Common::Net::Release>> update_future;
-    QFutureWatcher<std::optional<Common::Net::Release>> update_watcher;
-#endif
 
     MultiplayerState* multiplayer_state = nullptr;
 

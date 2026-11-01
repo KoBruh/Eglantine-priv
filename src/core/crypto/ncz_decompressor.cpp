@@ -179,6 +179,7 @@ private:
         }
         std::vector<u8> buffer;
         buffer.swap(slot.data);  // reuse existing allocation
+        slot.id = ~0ULL;
         if (!DecodeBlock(id, buffer)) {
             return nullptr;
         }
@@ -221,39 +222,54 @@ private:
     std::vector<Slot> cache;  // direct-mapped, CacheSlots entries
 };
 
+struct BlockNczContents {
+    std::vector<u8> hdr;
+    std::vector<Section> sections;
+    std::unique_ptr<BlockReader> body;
+    std::mutex mutex;
+    u64 nca_size{};
+    bool has_plain_view{};
+};
+
 class BlockNczFile final : public FileSys::VfsFile {
 public:
-    BlockNczFile(std::string name_, std::vector<u8> hdr_, std::vector<Section> sections_,
-                 std::unique_ptr<BlockReader> body_)
-        : name{std::move(name_)}, hdr{std::move(hdr_)}, sections{std::move(sections_)},
-          body{std::move(body_)} {
-        nca_size = HeaderSize;
-        for (const auto& s : sections)
-            nca_size = std::max<u64>(nca_size, static_cast<u64>(s.offset + s.size));
+    BlockNczFile(std::string name_, std::shared_ptr<BlockNczContents> contents_, bool decrypted_)
+        : name{std::move(name_)}, contents{std::move(contents_)}, decrypted{decrypted_} {
+        if (!decrypted) {
+            ciphers.reserve(contents->sections.size());
+            for (const auto& s : contents->sections)
+                ciphers.push_back(s.Ctr() ? std::make_unique<AESCipher<Key128>>(s.key, Mode::CTR)
+                                          : nullptr);
+        }
     }
 
     std::string GetName() const override { return name; }
-    std::size_t GetSize() const override { return static_cast<std::size_t>(nca_size); }
+    std::size_t GetSize() const override { return static_cast<std::size_t>(contents->nca_size); }
     bool Resize(std::size_t) override { return false; }
     FileSys::VirtualDir GetContainingDirectory() const override { return nullptr; }
     bool IsWritable() const override { return false; }
     bool IsReadable() const override { return true; }
 
-    // NCZ stores CTR sections decrypted; this file serves them as-is, and NcaFileSystemDriver
-    // skips its AES layers because of this flag.
-    bool HasDecryptedSections() const override { return true; }
+    FileSys::VirtualFile GetDecryptedView() const override {
+        if (decrypted || !contents->has_plain_view) {
+            return nullptr;
+        }
+        return std::make_shared<BlockNczFile>(name, contents, true);
+    }
 
     std::size_t Read(u8* data, std::size_t len, std::size_t off) const override {
+        const u64 nca_size = contents->nca_size;
         if (off >= nca_size) return 0;
         len = static_cast<std::size_t>(std::min<u64>(len, nca_size - off));
         const u64 end = off + len;
         u64 pos = off;
         if (pos < HeaderSize) {
             const u64 n = std::min<u64>(end, HeaderSize) - pos;
-            std::memcpy(data, hdr.data() + pos, static_cast<std::size_t>(n));
+            std::memcpy(data, contents->hdr.data() + pos, static_cast<std::size_t>(n));
             pos += n;
         }
-        std::scoped_lock lock{mutex};
+        const auto& sections = contents->sections;
+        std::scoped_lock lock{contents->mutex};
         // Sections are sorted by offset; find the first one whose stop > pos.
         auto it = std::lower_bound(
             sections.begin(), sections.end(), pos, [](const Section& s, u64 p) {
@@ -274,9 +290,31 @@ public:
             }
             const u64 pe = std::min(end, stop);
             const std::span<u8> piece(data + (pos - off), static_cast<std::size_t>(pe - pos));
-            if (body->ReadAt(pos - HeaderSize, piece) != piece.size())
+            if (contents->body->ReadAt(pos - HeaderSize, piece) != piece.size())
                 return static_cast<std::size_t>(pos - off);
-            // No CTR here: NCZ body is already decrypted, and NcaFileSystemDriver skips AES.
+            if (!decrypted) {
+                if (const auto& cipher = ciphers[static_cast<std::size_t>(it - sections.begin())]) {
+                    const std::size_t skip = static_cast<std::size_t>(pos & 0xF);
+                    const std::size_t head =
+                        skip == 0 ? 0 : std::min<std::size_t>(0x10 - skip, piece.size());
+                    Key128 iv{};
+                    if (head != 0) {
+                        std::array<u8, 0x10> partial{};
+                        std::memcpy(partial.data() + skip, piece.data(), head);
+                        SetIv(iv, s.counter, pos);
+                        cipher->SetIV(iv);
+                        cipher->Transcode(partial.data(), partial.size(), partial.data(),
+                                          Op::Encrypt);
+                        std::memcpy(piece.data(), partial.data() + skip, head);
+                    }
+                    if (head < piece.size()) {
+                        SetIv(iv, s.counter, pos + head);
+                        cipher->SetIV(iv);
+                        cipher->Transcode(piece.data() + head, piece.size() - head,
+                                          piece.data() + head, Op::Encrypt);
+                    }
+                }
+            }
             pos = pe;
         }
         return len;
@@ -287,11 +325,9 @@ public:
 
 private:
     const std::string name;
-    const std::vector<u8> hdr;
-    const std::vector<Section> sections;
-    const std::unique_ptr<BlockReader> body;
-    mutable std::mutex mutex;
-    u64 nca_size{};
+    const std::shared_ptr<BlockNczContents> contents;
+    const bool decrypted;
+    std::vector<std::unique_ptr<AESCipher<Key128>>> ciphers;
 };
 
 // Solid NCZ: one zstd stream over the whole body. Decoded incrementally into memory, up to the
@@ -439,8 +475,18 @@ FileSys::VirtualFile OpenNcz(const FileSys::VirtualFile& f, std::string_view nam
             LOG_ERROR(Crypto, "Failed to open NCZBLOCK: {}", e.what());
             return nullptr;
         }
-        return std::make_shared<BlockNczFile>(std::string{name}, std::move(hdr),
-                                              std::move(sections), std::move(body));
+        auto contents = std::make_shared<BlockNczContents>();
+        contents->nca_size = HeaderSize;
+        for (const auto& s : sections)
+            contents->nca_size = std::max<u64>(contents->nca_size, static_cast<u64>(s.offset + s.size));
+        contents->has_plain_view =
+            std::all_of(sections.begin(), sections.end(), [](const Section& section) {
+                return section.crypto_type <= 1 || section.Ctr();
+            });
+        contents->hdr = std::move(hdr);
+        contents->sections = std::move(sections);
+        contents->body = std::move(body);
+        return std::make_shared<BlockNczFile>(std::string{name}, std::move(contents), false);
     }
 
     if (allow_solid) {

@@ -353,30 +353,31 @@ public:
         Kernel::KProcess* process = context->GetProcess();
         R_UNLESS(process != nullptr, RO::ResultInvalidProcess);
 
-        // Switch 2 uses 0x180-byte signature/key fields, moving the hash metadata.
-        const auto read_hashes = [&]<typename Header>() -> Result {
-            R_UNLESS(nrr_size >= sizeof(Header), RO::ResultInvalidNrr);
+        const auto register_nrr = [&]<typename Header>() -> Result {
             Header header{};
-            process->GetMemory().ReadBlock(nrr_address, std::addressof(header), sizeof(header));
-            R_UNLESS(header.IsHashRangeValid(nrr_size), RO::ResultInvalidNrr);
+            R_UNLESS(nrr_size >= sizeof(header), RO::ResultInvalidNrr);
+            R_UNLESS(process->GetMemory().ReadBlock(nrr_address, std::addressof(header),
+                                                    sizeof(header)), RO::ResultInvalidNrr);
+            R_UNLESS(header.IsValid(nrr_size), RO::ResultInvalidNrr);
 
-            nrr_info->hashes.resize(header.GetNumHashes());
-            process->GetMemory().ReadBlock(nrr_address + header.GetHashesOffset(),
-                                           nrr_info->hashes.data(),
-                                           sizeof(Sha256Hash) * header.GetNumHashes());
+            std::vector<Sha256Hash> hashes(header.GetNumHashes());
+            if (!hashes.empty()) {
+                R_UNLESS(process->GetMemory().ReadBlock(nrr_address + header.GetHashesOffset(),
+                                                        hashes.data(), hashes.size() * sizeof(Sha256Hash)),
+                         RO::ResultInvalidNrr);
+            }
+
+            nrr_info->nrr_heap_address = nrr_address;
+            nrr_info->nrr_heap_size = nrr_size;
+            nrr_info->hashes = std::move(hashes);
+            context->SetNrrInfoInUse(nrr_info, true);
             R_SUCCEED();
         };
+
         if (process->IsSwitch2()) {
-            R_TRY(read_hashes.template operator()<NrrHeaderNx2>());
-        } else {
-            R_TRY(read_hashes.template operator()<NrrHeader>());
+            R_RETURN(register_nrr.operator()<NrrHeaderNx2>());
         }
-
-        context->SetNrrInfoInUse(nrr_info, true);
-        nrr_info->nrr_heap_address = nrr_address;
-        nrr_info->nrr_heap_size = nrr_size;
-
-        R_SUCCEED();
+        R_RETURN(register_nrr.operator()<NrrHeader>());
     }
 
     Result UnregisterModuleInfo(size_t context_id, u64 nrr_address) {

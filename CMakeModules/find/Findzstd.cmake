@@ -17,7 +17,11 @@ else()
         VERSION_VAR ZSTD_VERSION)
 endif()
 
-if (zstd_FOUND AND NOT TARGET zstd::zstd)
+if (NOT zstd_FOUND)
+    return()
+endif()
+
+if (NOT TARGET zstd::zstd)
     if (TARGET zstd::libzstd_shared AND NOT YUZU_STATIC_BUILD)
         add_library(zstd::zstd ALIAS zstd::libzstd_shared)
     elseif (TARGET zstd::libzstd_static)

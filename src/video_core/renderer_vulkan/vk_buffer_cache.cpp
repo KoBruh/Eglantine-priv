@@ -6,11 +6,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 #include <vector>
 
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "video_core/host1x/gpu_device_memory_manager.h"
+#include "video_core/readback_diagnostics.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
@@ -375,10 +378,16 @@ BufferCacheRuntime::BufferCacheRuntime(const Device& device_, MemoryAllocator& m
 }
 
 StagingBufferRef BufferCacheRuntime::UploadStagingBuffer(size_t size) {
+    VideoCommon::ReadbackDiagnostics::Scope diagnostic{
+        VideoCommon::ReadbackDiagnostics::Event::UploadStaging, size};
     return staging_pool.Request(size, MemoryUsage::Upload);
 }
 
 StagingBufferRef BufferCacheRuntime::DownloadStagingBuffer(size_t size, bool deferred) {
+    VideoCommon::ReadbackDiagnostics::Scope diagnostic{
+        deferred ? VideoCommon::ReadbackDiagnostics::Event::DeferredDownloadStaging
+                 : VideoCommon::ReadbackDiagnostics::Event::DownloadStaging,
+        size};
     return staging_pool.Request(size, MemoryUsage::Download, deferred);
 }
 
@@ -418,6 +427,36 @@ void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noe
     }
 }
 
+bool BufferCacheRuntime::BindSmallUniformReusing(
+    Tegra::MaxwellDeviceMemoryManager& device_memory, size_t stage, u32 index,
+    DAddr device_addr, u32 size) {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_UBOREUSE");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    if (!enabled || size == 0 || size > UniformStreamReuse::MaxBytes || stage >= 5 || index >= 18) {
+        return false;
+    }
+    if (!uniform_stream_reuse) {
+        uniform_stream_reuse = std::make_unique<UniformStreamReuse>();
+    }
+    auto& reuse = *uniform_stream_reuse;
+    auto& slot = reuse.slots[stage][index];
+    device_memory.ReadBlockUnsafe(device_addr, reuse.scratch.data(), size);
+    if (slot.size != size || slot.tick != scheduler.CurrentTick() ||
+        std::memcmp(slot.bytes.data(), reuse.scratch.data(), size) != 0) {
+        slot.ref = staging_pool.Request(size, MemoryUsage::Upload, true);
+        staging_pool.FreeDeferred(slot.ref);
+        std::memcpy(slot.ref.mapped_span.data(), reuse.scratch.data(), size);
+        std::memcpy(slot.bytes.data(), reuse.scratch.data(), size);
+        slot.size = size;
+        slot.tick = scheduler.CurrentTick();
+    }
+    guest_descriptor_queue.AddBuffer(slot.ref.buffer, slot.ref.device_address,
+                                    static_cast<u32>(slot.ref.offset), size);
+    return true;
+}
+
 u64 BufferCacheRuntime::CurrentTick() {
     return scheduler.CurrentTick();
 }
@@ -431,6 +470,8 @@ void BufferCacheRuntime::Wait(u64 tick) {
 }
 
 void BufferCacheRuntime::Finish() {
+    VideoCommon::ReadbackDiagnostics::Scope diagnostic{
+        VideoCommon::ReadbackDiagnostics::Event::BufferFinish};
     scheduler.Finish();
 }
 

@@ -121,7 +121,18 @@ struct CommandList final {
     /// executed instead of the memory, which the game may already be refilling for a later frame.
     std::vector<CommandHeader> submitted_words;
     std::vector<u32> submitted_offsets;
+    u64 capture_submit_id{};
+    u64 capture_enqueue_id{};
+    const char* capture_origin{"untracked"};
 };
+
+namespace GpfifoCapture {
+bool Enabled() noexcept;
+u64 BeginSubmission(s32 fd, u32 ioctl, u32 variant, u64 session,
+                    std::span<const u8> input, std::size_t inline_size) noexcept;
+void RecordEnqueue(u64 submit_id, s32 channel, const char* origin, CommandList& entries) noexcept;
+void Flush(const char* reason) noexcept;
+}
 
 /// FNV-1a over pushbuffer words (EDEN_NX2_PB_CHECK).
 inline u64 HashPushbufferWords(std::span<const u32> words) {
@@ -179,6 +190,8 @@ private:
     [[nodiscard]] bool WantsSegment() const;
     void ReportUnboundSubchannel();
     void WatchArgument(u32 method, u32 argument) const;
+    void RecordCapture(const char* phase, std::span<const CommandHeader> commands = {},
+                       std::size_t word_offset = 0) const noexcept;
 
 public:
     /// Logs the GPFIFO entry being processed (and the one before it), read through the GPU MMU
@@ -251,7 +264,7 @@ public:
     const bool ib_enable : 1 = true; ///< IB mode enabled
     bool dma_increment_once : 1 = false;
     bool signal_sync : 1 = false;
-    bool synced : 1 = false;
+    bool synced = false;
 };
 
 } // namespace Tegra

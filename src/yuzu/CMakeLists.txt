@@ -241,12 +241,12 @@ add_executable(yuzu
 
 set_target_properties(yuzu PROPERTIES OUTPUT_NAME "eglantine")
 
-# Shipped next to the executable: the NX2 switches a GUI launch cannot set another way. Read at
-# startup (LoadNx2Switches in main.cpp); a user copy in %APPDATA%\eden overrides it.
-add_custom_command(TARGET yuzu PRE_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${PROJECT_SOURCE_DIR}/dist/nx2_switches.txt" "$<TARGET_FILE_DIR:yuzu>/nx2_switches.txt"
-    VERBATIM)
+if (NOT APPLE)
+    add_custom_command(TARGET yuzu PRE_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PROJECT_SOURCE_DIR}/dist/nx2_switches.txt" "$<TARGET_FILE_DIR:yuzu>/nx2_switches.txt"
+        VERBATIM)
+endif()
 
 if (YUZU_CRASH_DUMPS)
     target_sources(yuzu PRIVATE
@@ -370,11 +370,11 @@ if (APPLE)
     # Xcode will automatically generate the Assets.car and icns file for us.
     set(_dist "${CMAKE_SOURCE_DIR}/dist")
     if (CMAKE_GENERATOR MATCHES "Xcode")
-        set(_icons "${_dist}/eglantine.icon")
+        set(_icons "${_dist}/eden.icon")
 
-        set_target_properties(eden PROPERTIES
-            XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME eglantine
-            MACOSX_BUNDLE_ICON_FILE eglantine
+        set_target_properties(yuzu PROPERTIES
+            XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME eden
+            MACOSX_BUNDLE_ICON_FILE eden
             # Also force xcode to manage signing for us.
             XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED ON
             XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED ON)
@@ -383,9 +383,9 @@ if (APPLE)
         set(_icons "${_dist}/eden.icns" "${_dist}/Assets.car")
     endif()
 
-    set_source_files_properties(${_icons} PROPERTIES
+    set_source_files_properties(${_icons} "${_dist}/nx2_switches.txt" PROPERTIES
         MACOSX_PACKAGE_LOCATION Resources)
-    target_sources(yuzu PRIVATE ${_icons})
+    target_sources(yuzu PRIVATE ${_icons} "${_dist}/nx2_switches.txt")
 
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE TRUE)
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist)
@@ -414,12 +414,11 @@ if (APPLE)
     target_sources(yuzu PRIVATE ${MOLTENVK_LIBRARY})
 elseif(WIN32)
     # compile as a win32 gui application instead of a console application
+    set_target_properties(yuzu PROPERTIES WIN32_EXECUTABLE TRUE)
     target_link_libraries(yuzu PRIVATE Qt6::EntryPointPrivate)
     if(MSVC)
         target_link_libraries(yuzu PRIVATE version.lib)
-        set_target_properties(yuzu PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:WINDOWS")
     elseif(MINGW)
-        set_target_properties(yuzu PROPERTIES LINK_FLAGS_RELEASE "-Wl,--subsystem,windows")
         target_link_libraries(yuzu PRIVATE dwmapi)
     endif()
 endif()

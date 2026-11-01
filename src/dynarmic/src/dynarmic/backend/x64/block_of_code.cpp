@@ -229,12 +229,17 @@ void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
 #ifdef _WIN32
     if (committed_size < size_ + codesize) {
         // From the write position too: with a reserved cache, a commit that falls short faults.
-        committed_size = std::min<size_t>(maxSize_, std::max(committed_size, size_) + codesize);
+        const size_t new_committed_size = std::min<size_t>(maxSize_, std::max(committed_size, size_) + codesize);
 #    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
-        VirtualAlloc(top_, committed_size, MEM_COMMIT, PAGE_READWRITE);
+        void* const memory = VirtualAlloc(top_, new_committed_size, MEM_COMMIT, PAGE_READWRITE);
 #    else
-        VirtualAlloc(top_, committed_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+        void* const memory = VirtualAlloc(top_, new_committed_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
 #    endif
+        if (!memory) {
+            using Xbyak::Error;
+            XBYAK_THROW(Xbyak::ERR_CANT_ALLOC);
+        }
+        committed_size = new_committed_size;
     }
 #endif
 }

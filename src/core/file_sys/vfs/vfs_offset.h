@@ -40,8 +40,9 @@ public:
 
     std::size_t GetOffset() const;
 
-    bool HasDecryptedSections() const override {
-        return file && file->HasDecryptedSections();
+    VirtualFile GetDecryptedView() const override {
+        auto view = file ? file->GetDecryptedView() : nullptr;
+        return view ? std::make_shared<OffsetVfsFile>(std::move(view), size, offset) : nullptr;
     }
 
 private:

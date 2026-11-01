@@ -112,8 +112,9 @@ public:
     // Returns whether or not the file can be read from.
     virtual bool IsReadable() const = 0;
 
-    // Returns true if this file serves NCA body data that is already decrypted (e.g. NCZ).
-    virtual bool HasDecryptedSections() const { return false; }
+    // Returns a view of this NCA that serves its encrypted sections already decrypted (e.g. NCZ),
+    // or nullptr when it has none.
+    virtual VirtualFile GetDecryptedView() const { return nullptr; }
 
     // The primary method of reading from the file. Reads length bytes into data starting at offset
     // into file. Returns number of bytes successfully read.

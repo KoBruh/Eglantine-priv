@@ -152,7 +152,12 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
         const GPUVAddr current_gpu_addr = gpu_addr + offset;
         [[maybe_unused]] const auto current_entry_type = GetEntry(current_gpu_addr, false);
         SetEntry(current_gpu_addr, entry_type, false);
-        if (current_entry_type != entry_type) {
+        const auto index = PageEntryIndex(current_gpu_addr, false);
+        const u32 sub_value = static_cast<u32>((dev_addr + offset) >> cpu_page_bits);
+        const bool remapped = entry_type == EntryType::Mapped &&
+                              current_entry_type == EntryType::Mapped &&
+                              page_table[index] != sub_value;
+        if (current_entry_type != entry_type || remapped) {
             if (modified_size == 0) {
                 modified_start = current_gpu_addr;
             }
@@ -161,9 +166,6 @@ GPUVAddr MemoryManager::PageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr de
             flush_modified();
         }
         if (entry_type == EntryType::Mapped) {
-            const DAddr current_dev_addr = dev_addr + offset;
-            const auto index = PageEntryIndex(current_gpu_addr, false);
-            const u32 sub_value = static_cast<u32>(current_dev_addr >> cpu_page_bits);
             page_table[index] = sub_value;
         }
         remaining_size -= page_size;
@@ -187,7 +189,13 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
         const GPUVAddr current_gpu_addr = gpu_addr + offset;
         [[maybe_unused]] const auto current_entry_type = GetEntry(current_gpu_addr, true);
         SetEntry(current_gpu_addr, entry_type, true);
-        if (current_entry_type != entry_type) {
+        const DAddr current_dev_addr = dev_addr + offset;
+        const auto index = PageEntryIndex(current_gpu_addr, true);
+        const u32 sub_value = static_cast<u32>(current_dev_addr >> cpu_page_bits);
+        const bool remapped = entry_type == EntryType::Mapped &&
+                              current_entry_type == EntryType::Mapped &&
+                              big_page_table_dev[index] != sub_value;
+        if (current_entry_type != entry_type || remapped) {
             if (modified_size == 0) {
                 modified_start = current_gpu_addr;
             }
@@ -196,9 +204,6 @@ GPUVAddr MemoryManager::BigPageTableOp(GPUVAddr gpu_addr, [[maybe_unused]] DAddr
             flush_modified();
         }
         if (entry_type == EntryType::Mapped) {
-            const DAddr current_dev_addr = dev_addr + offset;
-            const auto index = PageEntryIndex(current_gpu_addr, true);
-            const u32 sub_value = static_cast<u32>(current_dev_addr >> cpu_page_bits);
             big_page_table_dev.Set(index, sub_value);
             const bool is_continuous = ([&] {
                 uintptr_t base_ptr{
@@ -482,12 +487,20 @@ void MemoryManager::ReadBlockUnsafe(GPUVAddr gpu_src_addr, void* dest_buffer, co
     ReadBlockImpl(gpu_src_addr, dest_buffer, size, VideoCommon::CacheType::None, true);
 }
 
-void MemoryManager::ReadWordsUnsafe(GPUVAddr gpu_src_addr, u32* dest, std::size_t count) const {
-    const std::size_t size = count * sizeof(u32);
+void MemoryManager::ReadWordsUnsafe(GPUVAddr gpu_src_addr, u32* dest, u32 count) const {
+    if (count == 0) {
+        return;
+    }
+    const u64 size = u64{count} * sizeof(u32);
     const auto shim = native_syncpoint_shim.load(std::memory_order_acquire);
-    if (shim && gpu_src_addr < shim + NumShimSyncpoints * sizeof(u32) && gpu_src_addr + size > shim) {
-        for (std::size_t i = 0; i < count; ++i) {
-            dest[i] = Read<u32>(gpu_src_addr + i * sizeof(u32));
+    const bool overlaps_shim = shim &&
+        (gpu_src_addr < shim ? shim - gpu_src_addr < size
+                            : gpu_src_addr - shim < NumShimSyncpoints * sizeof(u32));
+    if (!Common::IsAligned(gpu_src_addr, sizeof(u32)) ||
+        !IsWithinGPUAddressRange(gpu_src_addr) ||
+        !IsWithinGPUAddressRange(gpu_src_addr + size - 1) || overlaps_shim) {
+        for (u32 i = 0; i < count; ++i) {
+            dest[i] = Read<u32>(gpu_src_addr + u64{i} * sizeof(u32));
         }
         return;
     }

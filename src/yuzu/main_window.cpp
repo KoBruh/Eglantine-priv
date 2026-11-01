@@ -441,11 +441,7 @@ MainWindow::MainWindow(bool has_broken_vulkan)
 
 #ifdef ENABLE_UPDATE_CHECKER
     if (UISettings::values.check_for_updates) {
-        update_future = QtConcurrent::run(
-            []() -> std::optional<Common::Net::Release> { return UpdateChecker::GetUpdate(); });
-        update_watcher.connect(&update_watcher, &QFutureWatcher<QString>::finished, this,
-                               &MainWindow::OnEmulatorUpdateAvailable);
-        update_watcher.setFuture(update_future);
+        CheckForUpdates(false);
     }
 #endif
 
@@ -1637,6 +1633,11 @@ void MainWindow::ConnectMenuEvents() {
     connect_menu(ui->action_Firmware_From_ZIP, &MainWindow::OnInstallFirmwareFromZIP);
     connect_menu(ui->action_Install_Keys, &MainWindow::OnInstallDecryptionKeys);
     connect_menu(ui->action_About, &MainWindow::OnAbout);
+#ifdef ENABLE_UPDATE_CHECKER
+    connect_menu(ui->action_Check_For_Updates, [this] { CheckForUpdates(true); });
+#else
+    ui->action_Check_For_Updates->setVisible(false);
+#endif
     connect_menu(ui->action_Eden_Dependencies, &MainWindow::OnEdenDependencies);
     connect_menu(ui->action_Data_Manager, &MainWindow::OnDataDialog);
 }
@@ -4253,13 +4254,48 @@ void MainWindow::OnCaptureScreenshot() {
 }
 
 #ifdef ENABLE_UPDATE_CHECKER
-void MainWindow::OnEmulatorUpdateAvailable() {
-    std::optional<Common::Net::Release> version = update_future.result();
-    if (!version)
+void MainWindow::CheckForUpdates(bool requested) {
+    ui->action_Check_For_Updates->setEnabled(false);
+
+    auto* watcher = new QFutureWatcher<UpdateChecker::Result>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, requested] {
+        watcher->deleteLater();
+        ui->action_Check_For_Updates->setEnabled(true);
+        OnUpdateCheckFinished(watcher->result(), requested);
+    });
+    watcher->setFuture(QtConcurrent::run(&UpdateChecker::Check));
+}
+
+void MainWindow::OnUpdateCheckFinished(const UpdateChecker::Result& result, bool requested) {
+    if (const auto* update = std::get_if<UpdateChecker::Update>(&result)) {
+        UpdateDialog dialog(*update, this);
+        dialog.exec();
+        return;
+    }
+
+    // Only an update is worth interrupting startup for.
+    if (!requested)
         return;
 
-    UpdateDialog dialog(version.value(), this);
-    dialog.exec();
+    if (std::holds_alternative<UpdateChecker::UpToDate>(result)) {
+        QMessageBox::information(this, tr("No Update Available"),
+                                 tr("You are running the latest build (%1).")
+                                     .arg(QString::fromUtf8(Common::g_build_version)));
+        return;
+    }
+
+    switch (std::get<UpdateChecker::Failure>(result)) {
+    case UpdateChecker::Failure::NotReleaseBuild:
+        QMessageBox::information(
+            this, tr("Updates Unavailable"),
+            tr("This build was not published as a release, so there are no updates to check for."));
+        break;
+    case UpdateChecker::Failure::Unreachable:
+        QMessageBox::warning(this, tr("Update Check Failed"),
+                             tr("Could not reach GitHub to check for updates. Please try again "
+                                "later."));
+        break;
+    }
 }
 #endif
 
