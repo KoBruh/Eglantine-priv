@@ -1517,8 +1517,10 @@ void Device::RemoveUnsuitableExtensions() {
     // and fragment shaders may disagree on interpolation decorations: libraries are compiled
     // separately and the SPIR-V backend decorates fragment inputs only.
     {
+        // Off unless EDEN_NX2_GPL=1: in Mario Kart World memory grew past 19 GB in under two
+        // minutes with it on, against a 11 GB peak without.
         const char* const gpl_env = std::getenv("EDEN_NX2_GPL");
-        const bool gpl_allowed = gpl_env == nullptr || gpl_env[0] != '0';
+        const bool gpl_allowed = gpl_env != nullptr && gpl_env[0] == '1';
         const auto& gpl_properties = properties.graphics_pipeline_library;
         const bool gpl_usable =
             features.graphics_pipeline_library.graphicsPipelineLibrary &&
@@ -1532,7 +1534,7 @@ void Device::RemoveUnsuitableExtensions() {
                      gpl_properties.graphicsPipelineLibraryFastLinking == VK_TRUE,
                      gpl_properties.graphicsPipelineLibraryIndependentInterpolationDecoration ==
                          VK_TRUE,
-                     !gpl_allowed ? "disabled by EDEN_NX2_GPL=0"
+                     !gpl_allowed ? "off (EDEN_NX2_GPL=1 turns it on)"
                                   : (gpl_usable ? "used" : "not used"));
         }
         extensions.graphics_pipeline_library = gpl_allowed && gpl_usable;
