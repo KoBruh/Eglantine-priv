@@ -159,6 +159,8 @@ public:
 
     void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings);
 
+    void BindUniformBufferFromGpu(const Buffer& buffer, u32 offset, u32 size);
+
     std::span<u8> BindMappedUniformBuffer([[maybe_unused]] size_t stage,
                                           [[maybe_unused]] u32 binding_index,
                                           u32 size) {

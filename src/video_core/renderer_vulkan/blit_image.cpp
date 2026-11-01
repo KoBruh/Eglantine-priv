@@ -641,7 +641,9 @@ BlitImageHelper::BlitImageHelper(const Device& device_, Scheduler& scheduler_,
       convert_msaa_to_non_msaa_depth_frag(
           BuildShader(device, CONVERT_MSAA_TO_NON_MSAA_DEPTH_FRAG_SPV)),
       convert_msaa_to_non_msaa_depth_stencil_frag(
-          BuildShader(device, CONVERT_MSAA_TO_NON_MSAA_DEPTH_STENCIL_FRAG_SPV)),
+          device.IsExtShaderStencilExportSupported()
+              ? BuildShader(device, CONVERT_MSAA_TO_NON_MSAA_DEPTH_STENCIL_FRAG_SPV)
+              : vk::ShaderModule{}),
       convert_non_msaa_to_msaa_frag(BuildShader(device, CONVERT_NON_MSAA_TO_MSAA_FRAG_SPV)),
       convert_non_msaa_to_msaa_sint_frag(
           BuildShader(device, CONVERT_NON_MSAA_TO_MSAA_SINT_FRAG_SPV)),

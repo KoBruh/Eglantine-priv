@@ -25,11 +25,25 @@ enum class Role : unsigned {
     Xlate, // translation_workers (async native graphics pipelines)
     Par,   // `workers` threads running the queued driver compile (build_in_parallel)
     Boot,  // disk cache replay
+    Opt,   // optimize_workers (optimized pipelines replacing fast-linked ones)
     Count,
 };
 enum class Kind : unsigned { Graphics, Compute, Count };
 // Reuse: finding shaders an earlier pipeline translated and checking they fit (ShaderReuseCache).
-enum class Stage : unsigned { Lower, Translate, Emit, Module, Driver, Reuse, Count };
+// Library: compiling one VK_EXT_graphics_pipeline_library part. Link: fast-linking a pipeline
+// from its libraries. Optimize: the monolithic compile that later replaces a fast-linked pipeline.
+enum class Stage : unsigned {
+    Lower,
+    Translate,
+    Emit,
+    Module,
+    Driver,
+    Reuse,
+    Library,
+    Link,
+    Optimize,
+    Count
+};
 
 inline constexpr size_t NumRoles = static_cast<size_t>(Role::Count);
 inline constexpr size_t NumKinds = static_cast<size_t>(Kind::Count);
@@ -73,17 +87,20 @@ public:
         std::atomic<uint64_t> new_programs{};
         std::atomic<uint64_t> reused{};        // pipelines built with an earlier pipeline's shaders
         std::atomic<uint64_t> reuse_rejects{}; // shaders found that did not fit: translated again
+        std::atomic<uint64_t> library_hits{};  // pipeline libraries found already compiled
+        std::atomic<uint64_t> link_fallbacks{}; // pipelines that could not be linked: monolithic
+        std::atomic<uint64_t> optimized{};      // fast-linked pipelines replaced by optimized ones
         std::array<std::atomic<uint64_t>, NumStages> count{};
         std::array<std::atomic<uint64_t>, NumStages> nanos{};
     };
     struct Snapshot {
         uint64_t pipelines{}, repeat_combos{}, translations{}, new_programs{}, reused{},
-            reuse_rejects{};
+            reuse_rejects{}, library_hits{}, link_fallbacks{}, optimized{};
         std::array<uint64_t, NumStages> count{};
         std::array<uint64_t, NumStages> nanos{};
         bool Active() const {
-            return pipelines || translations || reused || reuse_rejects ||
-                   count != std::array<uint64_t, NumStages>{};
+            return pipelines || translations || reused || reuse_rejects || library_hits ||
+                   link_fallbacks || optimized || count != std::array<uint64_t, NumStages>{};
         }
     };
 
@@ -141,6 +158,19 @@ public:
         MaybeReport();
     }
 
+    enum class LibraryEvent { Hit, LinkFallback, Optimized };
+
+    // A pipeline library found compiled, a pipeline built monolithically because it could not be
+    // linked from libraries, or a fast-linked pipeline replaced by its optimized build.
+    void NoteLibrary(LibraryEvent event) {
+        Cell& c = CellOf(CurrentRole(), Kind::Graphics);
+        std::atomic<uint64_t>& counter = event == LibraryEvent::Hit            ? c.library_hits
+                                         : event == LibraryEvent::LinkFallback ? c.link_fallbacks
+                                                                               : c.optimized;
+        counter.fetch_add(1, std::memory_order_relaxed);
+        MaybeReport();
+    }
+
 private:
     static constexpr int64_t WindowNanos = 10'000'000'000;
 
@@ -164,6 +194,9 @@ private:
         s.new_programs = c.new_programs.load(std::memory_order_relaxed);
         s.reused = c.reused.load(std::memory_order_relaxed);
         s.reuse_rejects = c.reuse_rejects.load(std::memory_order_relaxed);
+        s.library_hits = c.library_hits.load(std::memory_order_relaxed);
+        s.link_fallbacks = c.link_fallbacks.load(std::memory_order_relaxed);
+        s.optimized = c.optimized.load(std::memory_order_relaxed);
         for (size_t i = 0; i < NumStages; ++i) {
             s.count[i] = c.count[i].load(std::memory_order_relaxed);
             s.nanos[i] = c.nanos[i].load(std::memory_order_relaxed);
@@ -172,7 +205,7 @@ private:
     }
 
     static void Print(const char* scope, Role role, Kind kind, const Snapshot& s) {
-        static constexpr std::array role_names{"gpu", "xlate", "par", "boot"};
+        static constexpr std::array role_names{"gpu", "xlate", "par", "boot", "opt"};
         static constexpr std::array kind_names{"graphics", "compute"};
         const auto ms = [&](Stage stage) {
             return static_cast<double>(s.nanos[static_cast<size_t>(stage)]) / 1e6;
@@ -182,13 +215,16 @@ private:
                  "PipelineStats [{}] role={} kind={} pipelines={} repeat_combos={} translations={} "
                  "new_programs={} reused={} reuse_rejects={} | lower {}x{:.1f}ms translate "
                  "{}x{:.1f}ms emit {}x{:.1f}ms module {}x{:.1f}ms driver {}x{:.1f}ms reuse "
-                 "{}x{:.1f}ms",
+                 "{}x{:.1f}ms | gpl: library {}x{:.1f}ms library_hits={} link {}x{:.1f}ms "
+                 "link_fallbacks={} optimize {}x{:.1f}ms optimized={}",
                  scope, role_names[static_cast<size_t>(role)], kind_names[static_cast<size_t>(kind)],
                  s.pipelines, s.repeat_combos, s.translations, s.new_programs, s.reused,
                  s.reuse_rejects, n(Stage::Lower), ms(Stage::Lower), n(Stage::Translate),
                  ms(Stage::Translate), n(Stage::Emit), ms(Stage::Emit), n(Stage::Module),
                  ms(Stage::Module), n(Stage::Driver), ms(Stage::Driver), n(Stage::Reuse),
-                 ms(Stage::Reuse));
+                 ms(Stage::Reuse), n(Stage::Library), ms(Stage::Library), s.library_hits,
+                 n(Stage::Link), ms(Stage::Link), s.link_fallbacks, n(Stage::Optimize),
+                 ms(Stage::Optimize), s.optimized);
     }
 
     void MaybeReport() {
@@ -211,6 +247,9 @@ private:
                 delta.new_programs = current.new_programs - before.new_programs;
                 delta.reused = current.reused - before.reused;
                 delta.reuse_rejects = current.reuse_rejects - before.reuse_rejects;
+                delta.library_hits = current.library_hits - before.library_hits;
+                delta.link_fallbacks = current.link_fallbacks - before.link_fallbacks;
+                delta.optimized = current.optimized - before.optimized;
                 for (size_t i = 0; i < NumStages; ++i) {
                     delta.count[i] = current.count[i] - before.count[i];
                     delta.nanos[i] = current.nanos[i] - before.nanos[i];
@@ -288,6 +327,12 @@ inline void NoteTranslation(Kind kind, unsigned stage_slot, uint64_t hash) {
 inline void NoteReuse(Kind kind, bool reused) {
     if (Enabled()) {
         Registry::Get().NoteReuse(kind, reused);
+    }
+}
+
+inline void NoteLibrary(Registry::LibraryEvent event) {
+    if (Enabled()) {
+        Registry::Get().NoteLibrary(event);
     }
 }
 

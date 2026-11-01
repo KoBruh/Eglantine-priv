@@ -1289,6 +1289,7 @@ if (ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64 OR ARCHITECTURE_riscv64 OR ARCHITE
         hle/service/jit/jit.cpp
         hle/service/jit/jit.h)
     target_link_libraries(core PRIVATE dynarmic::dynarmic)
+    target_include_directories(core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../dynarmic/src")
 endif()
 
 if (TARGET OpenSSL::SSL)

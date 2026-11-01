@@ -1190,22 +1190,40 @@ private:
         // while the GPU thread runs frame N (the console keeps several frames in flight). Waiting
         // for this frame serialized the two: 8-56 ms of every 34-105 ms frame on title 1.
         // EDEN_NX2_FRAMES_AHEAD=0 restores the wait for the current frame.
-        static const bool frames_ahead = [] {
+        // EDEN_NX2_FRAMES_AHEAD=2 or 3 waits for an older frame: a deeper queue that absorbs
+        // single slow GPU frames.
+        static const int frames_ahead_env = [] {
             const char* value = std::getenv("EDEN_NX2_FRAMES_AHEAD");
-            return value == nullptr || value[0] != '0';
+            return value == nullptr ? -1 : std::clamp(value[0] - '0', 0, 3);
         }();
+        // "Smooth 30 FPS" (mkw_smooth): two frames ahead at interval 2+. On the title-screen demo
+        // of MKW 1.8.0 this took the 45-65 ms frames from ~150 per two minutes to none. Two
+        // ahead once stalled the GPU thread for 4 s or more at the boot-to-title switch (present
+        // ~187), so it starts after the first 1200 presents and backs off to one ahead for 300
+        // presents whenever its wait takes over 100 ms (loading, shader compiles).
+        size_t frames_ahead = 1;
+        if (frames_ahead_env >= 0) {
+            frames_ahead = static_cast<size_t>(frames_ahead_env);
+        } else if (Settings::values.mkw_smooth.GetValue() && m_present_interval > 1 &&
+                   m_presents > 1200 && m_smooth_cooldown == 0) {
+            frames_ahead = 2;
+        }
+        if (m_smooth_cooldown > 0) {
+            --m_smooth_cooldown;
+        }
         const auto entered = std::chrono::steady_clock::now();
-        if (frames_ahead) {
-            LOG_DEBUG(Service, "nx2:vi2 present #{} fence ({}, {:#x}), waiting for ({}, {:#x}); now {:#x}",
-                      m_presents, ~w[22], w[24], m_previous_fence_id, m_previous_fence_value,
-                      ~w[22] < 192 ? system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(~w[22]) : 0U);
-            WaitForFrame(m_previous_fence_id, m_previous_fence_value);
-            m_previous_fence_id = ~w[22];
-            m_previous_fence_value = w[24];
+        if (frames_ahead != 0) {
+            auto& oldest = m_previous_fences[(m_presents + 4 - frames_ahead) % 4];
+            WaitForFrame(oldest.first, oldest.second);
         } else {
             WaitForFrame(~w[22], w[24]);
         }
+        m_previous_fences[m_presents % 4] = {~w[22], w[24]};
         const auto waited = std::chrono::steady_clock::now();
+        if (frames_ahead >= 2 && frames_ahead_env < 0 &&
+            waited - entered > std::chrono::milliseconds{100}) {
+            m_smooth_cooldown = 300;
+        }
         Composite(w[5], ~w[22], w[24], w[6], w[7]);
         const auto composited = std::chrono::steady_clock::now();
         PaceToVblank();
@@ -1227,16 +1245,30 @@ private:
                 m_stats.frame_us += frame;
                 m_stats.max_frame_us = (std::max)(m_stats.max_frame_us, frame);
                 m_stats.hitches += frame > 100'000 ? 1 : 0;
+                // One slow frame at 30 fps is a visible stutter: say whether the game waited on
+                // Eden's GPU thread (fence) or took long itself before presenting.
+                if (frame > 45'000 && m_hitch_logs < 2000) {
+                    ++m_hitch_logs;
+                    LOG_INFO(Service, "nx2:vi2 slow frame #{}: {} us, of which GPU fence {} us",
+                             m_presents, frame, to_us(m_last_fence_wait));
+                }
             }
             m_stats.last_present = entered;
+            m_last_fence_wait = waited - entered;
+            // Game time: each present advances the game by its interval in vblanks (MKW counts
+            // 1 or 2 a frame), so vblanks per second against 60 is the game's speed.
+            m_stats.vblanks += m_present_interval;
+            m_stats.double_frames += m_present_interval > 1 ? 1 : 0;
             if (++m_stats.presents == 600) {
+                const double seconds = static_cast<double>(m_stats.frame_us) / 1e6;
                 LOG_INFO(Service,
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
-                         "pacing {} us",
+                         "pacing {} us; {} of them 2+ vblanks, game speed {:.0f}%",
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
-                         m_stats.pace_us / 600);
+                         m_stats.pace_us / 600, m_stats.double_frames,
+                         seconds > 0 ? 100.0 * m_stats.vblanks / (seconds * 60.0) : 0.0);
                 m_stats = {.last_present = entered};
             }
         }
@@ -1255,10 +1287,16 @@ private:
         long long frame_us{}, fence_us{}, composite_us{}, pace_us{}, max_fence_us{};
         long long max_frame_us{}, hitches{};
         u32 presents{};
+        u32 vblanks{};
+        u32 double_frames{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
-    u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
-    u32 m_previous_fence_value{};
+    std::chrono::steady_clock::duration m_last_fence_wait{};
+    u32 m_smooth_cooldown{}; // presents left at one frame ahead after a long two-ahead wait
+    u32 m_hitch_logs{};
+    // Fences of the last presents, indexed by present number (WaitForFrame ignores ids >= 192).
+    std::array<std::pair<u32, u32>, 4> m_previous_fences{
+        {{~0U, 0}, {~0U, 0}, {~0U, 0}, {~0U, 0}}};
 
     // The console flips one frame per 60 Hz vblank and keeps the rest queued, so a game can't
     // present faster than that. Every slot is reported free here: hold each present until the
@@ -1270,7 +1308,11 @@ private:
         if (!Settings::values.use_speed_limit.GetValue() || Settings::SpeedLimit() == 0) {
             return;
         }
-        const auto interval = std::chrono::nanoseconds{100'000'000'000LL * m_present_interval /
+        // With MKW's dynamic frame rate the game times its own frames to pick 1 or 2 vblanks:
+        // holding a frame for 2 would make every frame last 2 and keep it at 30 fps for good,
+        // so pace to each vblank and let the game catch up through its interval.
+        const u32 vblanks = Settings::values.mkw_dynamic_fps.GetValue() ? 1 : m_present_interval;
+        const auto interval = std::chrono::nanoseconds{100'000'000'000LL * vblanks /
                                                        60 / Settings::SpeedLimit()};
         const auto now = std::chrono::steady_clock::now();
         if (now > m_next_vblank + interval) {
