@@ -28,6 +28,7 @@
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/texture_cache/conversion.h"
+#include "video_core/texture_cache/cache_entry.h"
 #include "video_core/texture_cache/image_view_base.h"
 #include "video_core/texture_cache/physical_alias.h"
 #include "video_core/texture_cache/samples_helper.h"
@@ -326,6 +327,11 @@ void TextureCache<P>::TickFrame() {
         LOG_INFO(HW_GPU, "Texture cache: device memory {} MiB (expected {} MiB, critical {} MiB), {} images {} MiB",
                  total_used_memory >> 20, expected_memory >> 20, critical_memory >> 20, images,
                  image_bytes >> 20);
+        ASSERT(slot_image_allocs.size() == image_allocs_table.size());
+        ASSERT(slot_framebuffers.size() == framebuffers.size());
+        LOG_INFO(HW_GPU, "Cache records: {} image allocations / {} lookups; {} framebuffers / {} lookups",
+                 slot_image_allocs.size(), image_allocs_table.size(), slot_framebuffers.size(),
+                 framebuffers.size());
         std::partial_sort(largest.begin(), largest.begin() + std::min<size_t>(12, largest.size()),
                           largest.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
         for (size_t i = 0; i < std::min<size_t>(12, largest.size()); ++i) {
@@ -3426,7 +3432,7 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
 
     alloc_images.erase(alloc_image_it);
     if (alloc_images.empty()) {
-        image_allocs_table.erase(alloc_it);
+        EraseCachedSlot(slot_image_allocs, image_allocs_table, alloc_it);
     }
     for (size_t c : active_channel_ids) {
         auto& channel_info = channel_storage[c];
@@ -3479,7 +3485,7 @@ void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_vi
                 last_framebuffer_serial = 0;
             }
             sentenced_framebuffers.Push(std::move(slot_framebuffers[framebuffer_id]));
-            it = framebuffers.erase(it);
+            it = EraseCachedSlot(slot_framebuffers, framebuffers, it);
         } else {
             ++it;
         }
