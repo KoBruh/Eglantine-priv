@@ -1193,13 +1193,18 @@ private:
             }
             m_stats.last_present = entered;
             if (++m_stats.presents == 600) {
+                const bool ab = Core::Nx2AbExperiment() != Core::Nx2Experiment::None;
                 LOG_INFO(Service,
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
-                         "pacing {} us",
+                         "pacing {} us{}",
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
-                         m_stats.pace_us / 600);
+                         m_stats.pace_us / 600,
+                         ab ? (Core::g_nx2_ab_variant_b.load() ? ", variant B" : ", variant A") : "");
+                if (ab) {
+                    Core::g_nx2_ab_variant_b.store(!Core::g_nx2_ab_variant_b.load());
+                }
                 m_stats = {.last_present = entered};
             }
         }

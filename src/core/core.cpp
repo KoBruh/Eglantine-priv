@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <string_view>
 #include <atomic>
 #include <memory>
 #include <utility>
@@ -72,6 +73,20 @@
 namespace Core {
 
 std::atomic<u64> g_nx2_present_count{};
+
+Nx2Experiment Nx2AbExperiment() {
+    static const Nx2Experiment experiment = [] {
+        const char* value = std::getenv("EDEN_NX2_AB");
+        if (value == nullptr) {
+            return Nx2Experiment::None;
+        }
+        const std::string_view name{value};
+        return name == "spin"        ? Nx2Experiment::Spin
+               : name == "hostcores" ? Nx2Experiment::HostCores
+                                     : Nx2Experiment::None;
+    }();
+    return experiment;
+}
 
 FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
                                          const std::string& path) {

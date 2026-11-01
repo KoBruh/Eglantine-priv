@@ -546,10 +546,22 @@ void SetCurrentThreadName(const char* name) {
 namespace {
 // CPU set ids of the most performant cores (highest EfficiencyClass), empty if every core is the
 // same kind. On hybrid CPUs (Intel 12th gen and later) Windows otherwise places the emulator's
-// busiest threads by its own heuristics, efficiency cores included. (The timing thread stays
-// with them: on an efficiency core its timer wake-ups came late and Pokopia ran ~13% slower.)
+// busiest threads by its own heuristics, efficiency cores included. (Which kind the timing
+// thread runs on made no difference in Pokopia, A/B within one run: EDEN_NX2_AB=hostcores.)
+std::vector<ULONG> CpuSetsOfClass(bool performance);
+
 const std::vector<ULONG>& PerformanceCpuSets() {
-    static const std::vector<ULONG> sets = [] {
+    static const std::vector<ULONG> sets = CpuSetsOfClass(true);
+    return sets;
+}
+
+const std::vector<ULONG>& EfficiencyCpuSets() {
+    static const std::vector<ULONG> sets = CpuSetsOfClass(false);
+    return sets;
+}
+
+std::vector<ULONG> CpuSetsOfClass(bool performance) {
+    {
         std::vector<ULONG> ids;
         ULONG length = 0;
         GetSystemCpuSetInformation(nullptr, 0, &length, GetCurrentProcess(), 0);
@@ -576,15 +588,17 @@ const std::vector<ULONG>& PerformanceCpuSets() {
         }
         for (size_t offset = 0; offset < length;) {
             const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
-            if (info->Type == CpuSetInformation && info->CpuSet.EfficiencyClass == best) {
+            if (info->Type == CpuSetInformation &&
+                info->CpuSet.EfficiencyClass == (performance ? best : worst)) {
                 ids.push_back(info->CpuSet.Id);
             }
             offset += info->Size;
         }
-        LOG_INFO(Common, "Hybrid CPU: emulation threads run on {} performance core threads", ids.size());
+        if (performance) {
+            LOG_INFO(Common, "Hybrid CPU: emulation threads run on {} performance core threads", ids.size());
+        }
         return ids;
-    }();
-    return sets;
+    }
 }
 
 bool HybridPlacementEnabled() {
@@ -628,6 +642,10 @@ void SetCurrentThreadToEfficiencyCores() {
         return;
     }
     SetCurrentThreadCoreGroup(CoreGroup::Efficiency);
+#elif defined(_WIN32)
+    if (const auto& sets = EfficiencyCpuSets(); HybridPlacementEnabled() && !sets.empty()) {
+        SetThreadSelectedCpuSets(GetCurrentThread(), sets.data(), static_cast<ULONG>(sets.size()));
+    }
 #endif
 }
 

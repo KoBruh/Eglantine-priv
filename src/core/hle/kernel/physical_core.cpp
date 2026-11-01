@@ -228,10 +228,19 @@ void PhysicalCore::Idle() {
     // Guest job systems hand work between cores many times per frame; blocking at once adds the
     // host's thread wake-up latency to every handoff. EDEN_NX2_IDLE_SPIN_US=<n>: poll for that
     // many microseconds before blocking.
-    static const auto spin = std::chrono::microseconds{[] {
+    static const auto spin_a = std::chrono::microseconds{[] {
         const char* text = std::getenv("EDEN_NX2_IDLE_SPIN_US");
         return text ? std::strtoll(text, nullptr, 10) : 0LL;
     }()};
+    // EDEN_NX2_AB=spin: EDEN_NX2_AB_SPIN_US in the B windows.
+    static const auto spin_b = std::chrono::microseconds{[] {
+        const char* text = std::getenv("EDEN_NX2_AB_SPIN_US");
+        return text ? std::strtoll(text, nullptr, 10) : 0LL;
+    }()};
+    const auto spin = Core::Nx2AbExperiment() == Core::Nx2Experiment::Spin &&
+                              Core::g_nx2_ab_variant_b.load(std::memory_order_relaxed)
+                          ? spin_b
+                          : spin_a;
     if (spin.count() > 0) {
         const auto deadline = std::chrono::steady_clock::now() + spin;
         while (!m_is_interrupted.load(std::memory_order_acquire) &&

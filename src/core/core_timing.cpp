@@ -16,6 +16,7 @@
 #endif
 
 #include "common/settings.h"
+#include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hardware_properties.h"
 
@@ -79,9 +80,22 @@ void CoreTiming::Initialize(std::function<void()>&& on_thread_init_) {
             has_started = true;
 
             // base frequency in MHz: 1ns (10^-9) = 1GHz (10^9)
+            bool on_efficiency_cores = false;
             while (!stop_token.stop_requested()) {
                 while (!paused && !stop_token.stop_requested()) {
                     paused_set = false;
+                    // EDEN_NX2_AB=hostcores: this thread on efficiency cores in the B windows.
+                    if (Core::Nx2AbExperiment() == Core::Nx2Experiment::HostCores) {
+                        const bool want = Core::g_nx2_ab_variant_b.load(std::memory_order_relaxed);
+                        if (want != on_efficiency_cores) {
+                            on_efficiency_cores = want;
+                            if (want) {
+                                Common::SetCurrentThreadToEfficiencyCores();
+                            } else {
+                                Common::SetCurrentThreadToPerformanceCores();
+                            }
+                        }
+                    }
                     if (auto const next_time = Advance(); next_time) {
                         // There are more events left in the queue, wait until the next event.
                         auto const wait_time = *next_time - GetGlobalTimeNs().count();

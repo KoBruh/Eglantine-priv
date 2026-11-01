@@ -119,6 +119,14 @@ namespace Core {
 /// Frames the guest has presented (Switch 2 vi2 present calls); input replay is locked to it.
 extern std::atomic<u64> g_nx2_present_count;
 
+/// EDEN_NX2_AB=<experiment>: A/B comparison inside one run. The variant flips every 600 presents
+/// (the present statistics say which ran), so both see the same scene and conditions; separate
+/// runs of Pokopia drifted by up to 20% (its world follows the real clock). Experiments: "spin"
+/// (EDEN_NX2_AB_SPIN_US idle spin in B) and "hostcores" (timing thread on efficiency cores in B).
+enum class Nx2Experiment { None, Spin, HostCores };
+Nx2Experiment Nx2AbExperiment();
+inline std::atomic<bool> g_nx2_ab_variant_b{false};
+
 class CpuManager;
 class Debugger;
 class DeviceMemory;

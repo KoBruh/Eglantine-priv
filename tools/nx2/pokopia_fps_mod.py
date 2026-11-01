@@ -9,12 +9,17 @@ How the game paces itself (KTGL engine, update 655360's main module): its frame 
 (main+0x89df20, "KIDSTaskScheduler2") waits until tick_frequency / (60 / X) ticks have passed,
 and its delta-time code (main+0xbfc404) steps the world by delta * 60 "60 fps frames", snapping
 to X when a frame is within 1.5 ms of X / 60 s. X is main+0x13fc00, a function that returns 1.0.
-Two patches:
+Three patches:
 
 - main+0x13fc00 returns 60 / fps instead of 1.0: the frame clock targets fps and the nominal step
   shrinks with it (0.5 frames of 1/60 s at 120 fps).
 - main+0xbfc4f8 (fcsel s0, 1.0, s0, mi) is removed: it floored each step at one 60 fps frame, so
   above 60 fps the game would run fast whenever a frame missed the nominal length.
+
+- main+0x8832a4: MainThread's main loop sleeps 1 ms between checks for a frame the frame clock
+  has released, so each frame started up to 1 ms late. It polls every --poll-us microseconds
+  instead (default 100; 1000 keeps the game's). Measured in the world at 120 Hz, alternating
+  the two every 600 frames of one run: 8.76 ms -> 8.45 ms a frame.
 
 The emulator presents at most once per refresh of the emulated display when the speed limit is
 on: set "Switch 2 Display Refresh Rate" (nx2_refresh_rate) to at least the target.
@@ -36,6 +41,7 @@ STEP_FLOOR = 0xbfc4f8          # fcsel s0, s1, s0, mi   (s1 = 1.0)
 FMOV_S0_1_0 = 0x1E2E1000
 FCSEL_FLOOR = 0x1E204C20
 NOP = 0xD503201F
+POLL_SLEEP = 0x8832a4          # mov w0, #0x4240 ; movk w0, #0xf, lsl #16  (1 ms) ; bl SleepThread
 NSO_HEADER = 0x100             # IPS offsets count from the NSO header
 
 
@@ -98,10 +104,17 @@ def fmov_s0(value):
     return None
 
 
+def mov_w0(value):
+    """MOVZ W0, #lo ; MOVK W0, #hi, LSL #16."""
+    return 0x52800000 | (value & 0xFFFF) << 5, 0x72A00000 | (value >> 16) << 5
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("main", type=pathlib.Path, help="the game's exefs/main (update 655360)")
     parser.add_argument("--fps", type=int, default=120)
+    parser.add_argument("--poll-us", type=int, default=100,
+                        help="main loop poll interval in microseconds (default 100; the game's is 1000)")
     parser.add_argument("--load-dir", type=pathlib.Path,
                         default=pathlib.Path(os.environ.get("APPDATA", "~")) / "eden" / "load")
     args = parser.parse_args()
@@ -112,16 +125,23 @@ def main():
     build_id = nso[0x40:0x60].hex().upper().rstrip("0")
     if build_id != BUILD_ID.rstrip("0"):
         sys.exit(f"{args.main}: build {build_id}, the patches are for {BUILD_ID} (update 655360)")
-    found = text_word(nso, NOMINAL_FRAME), text_word(nso, STEP_FLOOR)
-    if found != (FMOV_S0_1_0, FCSEL_FLOOR):
-        sys.exit(f"unexpected code at the patch sites: {found[0]:#010x}, {found[1]:#010x}")
+    found = (text_word(nso, NOMINAL_FRAME), text_word(nso, STEP_FLOOR), text_word(nso, POLL_SLEEP),
+             text_word(nso, POLL_SLEEP + 4))
+    if found != (FMOV_S0_1_0, FCSEL_FLOOR, *mov_w0(1_000_000)):
+        sys.exit("unexpected code at the patch sites: " + ", ".join(f"{w:#010x}" for w in found))
+    if not 1 <= args.poll_us <= 1000:
+        sys.exit("--poll-us: 1 to 1000")
     nominal = fmov_s0(60 / args.fps)
     if nominal is None:
         sys.exit(f"{args.fps} fps: 60/{args.fps} is not encodable as an FMOV immediate "
                  "(120, 240 and 30 are)")
 
     out = bytearray(b"IPS32")
-    for offset, word in ((NOMINAL_FRAME, nominal), (STEP_FLOOR, NOP)):
+    patches = [(NOMINAL_FRAME, nominal), (STEP_FLOOR, NOP)]
+    if args.poll_us != 1000:
+        low, high = mov_w0(args.poll_us * 1000)
+        patches += [(POLL_SLEEP, low), (POLL_SLEEP + 4, high)]
+    for offset, word in patches:
         out += struct.pack(">IH", offset + NSO_HEADER, 4) + struct.pack("<I", word)
     out += b"EEOF"
     target = args.load_dir.expanduser() / TITLE_ID / f"{args.fps} FPS" / "exefs" / f"{BUILD_ID}.ips"
