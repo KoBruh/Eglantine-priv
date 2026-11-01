@@ -10,6 +10,7 @@
 
 #include <boost/algorithm/string/split.hpp>
 #include "common/fs/path_util.h"
+#include "common/game_presets.h"
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "frontend_common/settings_generator.h"
@@ -1919,6 +1920,9 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         boot_in_progress = false;
         LOG_INFO(Frontend, "Launch finished: elapsed_ms={} running={}", boot_timer.elapsed(),
                  emulation_running);
+        if (!emulation_running) {
+            Settings::RestoreGlobalState(QtCommon::system->IsPoweredOn());
+        }
         if (!emulation_running && !close_pending) {
             game_list->SetScanEnabled(true);
             game_list->PopulateAsync(UISettings::values.game_dirs);
@@ -1967,12 +1971,10 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         QtCommon::system->ApplySettings();
     }
 
-    if (const char* preset = std::getenv("EGLANTINE_MKW_1X");
-        preset && preset[0] == '1' && title_id == 0x0400C3F00006E000ULL) {
-        LOG_INFO(Config, "MKW performance launcher: using session-only 1x (saved resolution: {})",
-                 Settings::values.resolution_setup.Canonicalize());
-        Settings::values.resolution_setup.SetGlobal(false);
-        Settings::values.resolution_setup.SetValue(Settings::ResolutionSetup::Res1X);
+    if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id)) {
+        Settings::UpdateGPUAccuracy();
+        LOG_INFO(Config, "Automatic MKW preset: Vulkan, 1x, Fast, async shaders, BC3, "
+                         "conservative VRAM, reactive flushing off, FIFO Relaxed");
     }
     Settings::LogSettings();
 
