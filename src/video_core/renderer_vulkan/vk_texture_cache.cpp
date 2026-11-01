@@ -2893,6 +2893,7 @@ VkImageView Image::StorageImageLayerView(s32 level, u32 layer) {
     }
     auto& view = storage_layer_views[static_cast<size_t>(level) * layers + layer];
     if (!view) {
+        // Only GPU-decoded ASTC uploads by layer (TextureCacheRuntime::CanUploadLayers).
         view = MakeStorageView(runtime->device.GetLogical(), level, *(this->*current_image),
                                VK_FORMAT_A8B8G8R8_UNORM_PACK32, layer, 1);
     }

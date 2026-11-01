@@ -778,6 +778,10 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
         if (MarkPartialWrite(image, cpu_addr, size)) {
             return;
         }
+        if (UploadsByLayer(image)) {
+            MarkLayersWritten(image, cpu_addr, size);
+            return;
+        }
         if (True(image.flags & ImageFlagBits::CpuModified)) {
             return;
         }
@@ -1611,6 +1615,7 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             image.UploadMemory(staging, copies);
             ++images_uploaded;
             uploaded_bytes += u64{image.info.layer_stride} * layers.size();
+            largest_upload = (std::max<u64>)(largest_upload, u64{image.info.layer_stride} * layers.size());
             ++layer_uploads;
             return;
         }
@@ -1632,6 +1637,7 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
         runtime.AccelerateImageUploadLayers(image, staging, uploads, layers);
         ++images_uploaded;
         uploaded_bytes += tail * layers.size();
+        largest_upload = (std::max<u64>)(largest_upload, tail * layers.size());
         ++layer_uploads;
     }
 }
@@ -3314,6 +3320,7 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
     Image& image = slot_images[image_id];
     if (invalidate) {
         RestorePartialPages(image);
+        image.dirty_layers.clear();
         image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);
         if (False(image.flags & ImageFlagBits::Tracked)) {
             TrackImage(image, image_id);
