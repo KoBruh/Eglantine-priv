@@ -3567,7 +3567,11 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 (code[index + 1].words[3] & 0xc00001ffU) == 0 &&
                 (std::none_of(code.begin(), code.end(), [](const Instruction& candidate) {
                     return candidate.Bits(0, 12) == 0x950;
-                }) || terminal_float_tail())) {
+                }) || terminal_float_tail() ||
+                 // Transfer straight onto a BSYNC: an unrelated RET elsewhere is not this
+                 // call's return (Pokopia character creator face).
+                 ((code[index + 2].words[0] & 0xffffU) == 0x7941 &&
+                  (code[index + 2].words[3] & 0xc00001ffU) == 0))) {
                 relocations.push_back({static_cast<u32>(result.instructions.size()), index + 2});
                 emit(0xe24000000000000fULL | predicate);
                 break;
