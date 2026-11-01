@@ -282,6 +282,7 @@ void ShaderCache::InvalidatePagesInRegion(VAddr addr, size_t size) {
         });
     }
     const u64 page_end = (addr_end + YUZU_PAGESIZE - 1) >> YUZU_PAGEBITS;
+    const size_t pending_start = marked_for_removal.size();
     for (u64 page = addr >> YUZU_PAGEBITS; page < page_end; ++page) {
         auto it = invalidation_cache.find(page);
         if (it == invalidation_cache.end()) {
@@ -289,6 +290,16 @@ void ShaderCache::InvalidatePagesInRegion(VAddr addr, size_t size) {
         }
         InvalidatePageEntries(it->second, addr, addr_end);
     }
+
+    // Prune page vectors after the scan so its active vector reference stays valid.
+    auto invalidated_begin = marked_for_removal.begin() + pending_start;
+    auto invalidated_end = marked_for_removal.end();
+    std::ranges::sort(invalidated_begin, invalidated_end);
+    invalidated_end = std::unique(invalidated_begin, invalidated_end);
+    for (auto it = invalidated_begin; it != invalidated_end; ++it) {
+        RemoveEntryFromInvalidationCache(*it);
+    }
+    marked_for_removal.erase(invalidated_end, marked_for_removal.end());
 }
 
 void ShaderCache::RemovePendingShaders() {
@@ -335,8 +346,8 @@ void ShaderCache::InvalidatePageEntries(std::vector<Entry*>& entries, VAddr addr
         }
 
         UnmarkMemory(entry);
-        RemoveEntryFromInvalidationCache(entry);
         marked_for_removal.push_back(entry);
+        ++index;
     }
 }
 
@@ -350,6 +361,9 @@ void ShaderCache::RemoveEntryFromInvalidationCache(const Entry* entry) {
         const auto entry_it = std::ranges::find(entries, entry);
         ASSERT(entry_it != entries.end());
         entries.erase(entry_it);
+        if (entries.empty()) {
+            invalidation_cache.erase(entries_it);
+        }
     }
 }
 

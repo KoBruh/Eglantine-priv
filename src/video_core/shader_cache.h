@@ -137,7 +137,7 @@ private:
     void RemovePendingShaders();
 
     /// @brief Invalidates entries in a given range for the passed page
-    /// @param entries         Vector of entries in the page, it will be modified on overlaps
+    /// @param entries         Entries in the page; overlapping shaders are marked for removal
     /// @param addr            Start address of the invalidation
     /// @param addr_end        Non-inclusive end address of the invalidation
     /// @pre invalidation_mutex is locked
