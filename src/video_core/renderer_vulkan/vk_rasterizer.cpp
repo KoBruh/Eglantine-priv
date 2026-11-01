@@ -9,6 +9,7 @@
 #include <memory>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <tuple>
 #include <set>
 #include <fstream>
@@ -24,6 +25,7 @@
 #include "common/logging.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
+#include "core/core.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/control/channel_state.h"
@@ -499,6 +501,38 @@ void TraceWindowTarget(const Tegra::Engines::Maxwell3D& maxwell3d, Tegra::Memory
         }
     }
 }
+// EDEN_NX2_TRACE_DUMP=<dir>: with a draw trace (EDEN_NX2_TRACE_FRAME or _TRACE_VS), save the guest
+// bytes of each traced texture's first level once per address, named with its TIC format and
+// tiling, for tools/nx2/image_decode.py. Texture addresses change between runs, so the dump has to
+// come from the same run as the trace that names them.
+void DumpTracedTexture(Tegra::MemoryManager& memory, const Tegra::Texture::TICEntry& tic) {
+    static const char* const directory = std::getenv("EDEN_NX2_TRACE_DUMP");
+    static std::set<GPUVAddr> dumped;
+    if (directory == nullptr || !tic.IsBlockLinear() || dumped.size() >= 256 ||
+        !dumped.insert(tic.Address()).second) {
+        return;
+    }
+    const u32 format = static_cast<u32>(tic.format.Value());
+    // BC1/BC4 are 8 bytes per 4x4 block, the other BC formats 16; A8B8G8R8 is 4 per texel.
+    const bool compressed = (format >= 0x24 && format <= 0x28) || format == 0x17 ||
+                            format == 0x10 || format == 0x11;
+    const u32 element = compressed ? 4 : 1;
+    const u32 bytes_per_element = (format == 0x24 || format == 0x27) ? 8 : compressed ? 16 : format == 0x08 ? 4 : 16;
+    const u64 width = (tic.Width() + element - 1) / element;
+    const u64 height = (tic.Height() + element - 1) / element;
+    const u32 block_height = tic.block_height;
+    const u64 stride = (width * bytes_per_element + 63) & ~u64{63};
+    const u64 rows = (height + (u64{8} << block_height) - 1) & ~((u64{8} << block_height) - 1);
+    std::vector<u8> bytes(stride * rows);
+    memory.ReadBlockUnsafe(tic.Address(), bytes.data(), bytes.size());
+    const std::string path =
+        fmt::format("{}/tex-{:x}-{}x{}-tic{:02x}-bh{}-native{}.bin", directory, tic.Address(),
+                    tic.Width(), tic.Height(), format, block_height, memory.UsesNativeTiling() ? 1 : 0);
+    if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+        std::fwrite(bytes.data(), 1, bytes.size(), file);
+        std::fclose(file);
+    }
+}
 } // Anonymous namespace
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
@@ -549,12 +583,35 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
             Tegra::Engines::g_nx2_trace_draws_after_upscale = 1;
         }
     }
+    // EDEN_NX2_TRACE_FRAME=<present>[,<draws>]: describe every draw (up to <draws>, default 2000)
+    // from that present on, as EDEN_NX2_TRACE_VS does for one shader: a scene's full draw list.
+    static const std::pair<u64, u32> trace_frame = [] {
+        const char* value = std::getenv("EDEN_NX2_TRACE_FRAME");
+        if (value == nullptr) {
+            return std::pair<u64, u32>{0, 0};
+        }
+        char* end = nullptr;
+        const u64 frame = std::strtoull(value, &end, 10);
+        const u32 draws = *end == ',' ? static_cast<u32>(std::strtoul(end + 1, nullptr, 10)) : 2000U;
+        return std::pair<u64, u32>{frame, draws};
+    }();
+    if (trace_frame.first != 0) {
+        static bool triggered = false;
+        const u64 present = Core::g_nx2_present_count.load(std::memory_order_relaxed);
+        if (!triggered && present >= trace_frame.first) {
+            triggered = true;
+            LOG_INFO(HW_GPU, "trace frame: describing the next {} draws from present {}",
+                     trace_frame.second, present);
+            Tegra::Engines::g_nx2_trace_draws_after_upscale = trace_frame.second;
+        }
+    }
     if (Tegra::Engines::g_nx2_trace_draws_after_upscale > 0) {
         --Tegra::Engines::g_nx2_trace_draws_after_upscale;
         const auto& regs = maxwell3d->regs;
         const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
         const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
-        LOG_INFO(HW_GPU, "after upscale: draw rt0 {:#x} {}x{} fmt {:#x} block {}/{}/{} pitch_linear {} depth {} array_pitch {:#x} ctrl {:#x} vs {:#x} ps {:#x}",
+        LOG_INFO(HW_GPU, "after upscale: present {} draw rt0 {:#x} {}x{} fmt {:#x} block {}/{}/{} pitch_linear {} depth {} array_pitch {:#x} ctrl {:#x} vs {:#x} ps {:#x}",
+                 Core::g_nx2_present_count.load(std::memory_order_relaxed),
                  regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height,
                  static_cast<u32>(regs.rt[0].format), regs.rt[0].tile_mode.block_width.Value(),
                  regs.rt[0].tile_mode.block_height.Value(), regs.rt[0].tile_mode.block_depth.Value(),
@@ -569,8 +626,16 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
                 Tegra::Texture::TICEntry tic{};
                 gpu_memory->ReadBlockUnsafe(regs.tex_header.Address() + u64{handle & 0xfffff} * sizeof(tic),
                                             &tic, sizeof(tic));
-                LOG_INFO(HW_GPU, "  fs handle[{}] = {:#x}: {:#x} {}x{} format {:#x}", i, handle,
-                         tic.Address(), tic.Width(), tic.Height(), static_cast<u32>(tic.format.Value()));
+                // types: component types r/g/b/a (1 SNORM 2 UNORM 3 SINT 4 UINT 7 FLOAT);
+                // swizzle: sources x/y/z/w (0 zero 2 R 3 G 4 B 5 A 6/7 one).
+                LOG_INFO(HW_GPU, "  fs handle[{}] = {:#x}: {:#x} {}x{} format {:#x} types {}{}{}{} swizzle {}{}{}{} srgb {}",
+                         i, handle, tic.Address(), tic.Width(), tic.Height(),
+                         static_cast<u32>(tic.format.Value()), static_cast<u32>(tic.r_type.Value()),
+                         static_cast<u32>(tic.g_type.Value()), static_cast<u32>(tic.b_type.Value()),
+                         static_cast<u32>(tic.a_type.Value()), static_cast<u32>(tic.x_source.Value()),
+                         static_cast<u32>(tic.y_source.Value()), static_cast<u32>(tic.z_source.Value()),
+                         static_cast<u32>(tic.w_source.Value()), tic.srgb_conversion.Value());
+                DumpTracedTexture(*gpu_memory, tic);
             }
         }
         const auto& bt = regs.blend_per_target[0];
@@ -1363,6 +1428,43 @@ void RasterizerVulkan::TickFrame() {
     {
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.TickFrame();
+    }
+    // EDEN_NX2_PROBE=<gpu address>[:<bytes>][,...] (hex address, default 512 bytes): every 30
+    // frames, flush those ranges from the texture and buffer caches and log the words as
+    // floats. GPU-written values (an exposure target, say) never reach guest memory otherwise.
+    // The words are in the tiled (block-linear) order of the image.
+    static const std::vector<std::pair<GPUVAddr, u32>> probes = [] {
+        std::vector<std::pair<GPUVAddr, u32>> list;
+        if (const char* value = std::getenv("EDEN_NX2_PROBE")) {
+            for (const char* p = value; *p;) {
+                char* end = nullptr;
+                const GPUVAddr address = std::strtoull(p, &end, 16);
+                u32 bytes = 512;
+                if (*end == ':') {
+                    bytes = static_cast<u32>(std::strtoul(end + 1, &end, 10));
+                }
+                if (address != 0) {
+                    list.emplace_back(address, bytes);
+                }
+                p = *end ? end + 1 : end;
+            }
+        }
+        return list;
+    }();
+    static u64 probe_tick = 0;
+    if (!probes.empty() && gpu_memory != nullptr && (probe_tick++ % 30) == 0) {
+        for (const auto& [address, bytes] : probes) {
+            const auto device_address = gpu_memory->GpuToCpuAddress(address, bytes);
+            if (!device_address) {
+                continue;
+            }
+            FlushRegion(*device_address, bytes, VideoCommon::CacheType::All);
+            std::vector<f32> words(bytes / 4);
+            gpu_memory->ReadBlockUnsafe(address, words.data(), words.size() * 4);
+            LOG_INFO(HW_GPU, "probe present {} {:#x}: {}",
+                     Core::g_nx2_present_count.load(std::memory_order_relaxed), address,
+                     fmt::join(words, " "));
+        }
     }
 }
 

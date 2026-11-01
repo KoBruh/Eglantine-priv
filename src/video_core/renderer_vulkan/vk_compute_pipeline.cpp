@@ -24,6 +24,7 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
+#include "video_core/engines/kepler_compute.h"
 #include "common/logging.h"
 #include "common/settings.h"
 
@@ -228,6 +229,43 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
         add_image(desc, desc.is_written);
     }
     texture_cache.FillImageViews(std::span(views.data(), views.size()), true);
+    // With a draw trace running (EDEN_NX2_TRACE_FRAME/_TRACE_VS), list the images this dispatch
+    // samples and writes, in descriptor order: texture buffers, image buffers, textures, images.
+    if (Tegra::Engines::g_nx2_trace_draws_after_upscale > 0) {
+        size_t view_index = 0;
+        const auto describe = [&](const char* kind, u32 count, bool written, bool buffer) {
+            for (u32 i = 0; i < count && view_index < views.size(); ++i, ++view_index) {
+                const ImageView& view = texture_cache.GetImageView(views[view_index].id);
+                LOG_INFO(Render_Vulkan, "  compute {} {:#x} {}x{}x{} format {}{}", kind,
+                         view.gpu_addr, view.size.width, view.size.height, view.size.depth,
+                         static_cast<u32>(view.format), written ? " WRITTEN" : "");
+                if (!buffer) {
+                    continue;
+                }
+                // Small buffers (a histogram, say): their first words as the GPU left them.
+                const u64 bytes = std::min<u64>(
+                    u64{view.size.width} * VideoCore::Surface::BytesPerBlock(view.format), 256);
+                if (const auto device_address = gpu_memory.GpuToCpuAddress(view.gpu_addr, bytes)) {
+                    buffer_cache.DownloadMemory(*device_address, bytes);
+                }
+                std::vector<u32> words(bytes / 4);
+                gpu_memory.ReadBlockUnsafe(view.gpu_addr, words.data(), words.size() * 4);
+                LOG_INFO(Render_Vulkan, "    words: {:08x}", fmt::join(words, " "));
+            }
+        };
+        for (const auto& desc : info.texture_buffer_descriptors) describe("texbuf", desc.count, false, true);
+        for (const auto& desc : info.image_buffer_descriptors) describe("imgbuf", desc.count, desc.is_written, true);
+        for (const auto& desc : info.texture_descriptors) describe("texture", desc.count, false, false);
+        for (const auto& desc : info.image_descriptors) describe("image", desc.count, desc.is_written, false);
+        // Storage buffers (where a histogram is accumulated with atomics) are not image views.
+        for (const auto& desc : info.storage_buffers_descriptors) {
+            const GPUVAddr address = gpu_memory.Read<u64>(
+                kepler_compute.launch_description.const_buffer_config[desc.cbuf_index].Address() +
+                desc.cbuf_offset);
+            LOG_INFO(Render_Vulkan, "  compute ssbo c{}[{:#x}] -> {:#x}{}", desc.cbuf_index,
+                     desc.cbuf_offset, address, desc.is_written ? " WRITTEN" : "");
+        }
+    }
 
     buffer_cache.UnbindComputeTextureBuffers();
     size_t index{};

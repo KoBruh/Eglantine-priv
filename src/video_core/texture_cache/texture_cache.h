@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <numeric>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -2114,6 +2115,29 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
         for (const auto& copy : join_copies_to_do) {
             Image& sibling = slot_images[copy.id];
             ScaleDown(sibling);
+        }
+    }
+
+    // EDEN_NX2_DUMP_3D=<dir>: save the guest bytes of the first 3D images (the raw tiled layout
+    // the game wrote), with that layout in the file name, to check volume decoding offline
+    // (tools/nx2/volume_check.py).
+    if (new_info.type == ImageType::e3D) {
+        static const char* const dump_3d = std::getenv("EDEN_NX2_DUMP_3D");
+        static u32 dumped_3d = 0;
+        if (dump_3d != nullptr && dumped_3d < 16) {
+            const size_t bytes = CalculateGuestSizeInBytes(new_info);
+            std::vector<u8> data(bytes);
+            gpu_memory->ReadBlockUnsafe(gpu_addr, data.data(), bytes);
+            const std::string path = fmt::format(
+                "{}/3d-{:02}-{:x}-{}x{}x{}-format{}-block{}x{}x{}-native{}-tws{}.bin", dump_3d,
+                dumped_3d++, gpu_addr, new_info.size.width, new_info.size.height,
+                new_info.size.depth, static_cast<u32>(new_info.format), new_info.block.width,
+                new_info.block.height, new_info.block.depth, new_info.native_tiling ? 1 : 0,
+                new_info.tile_width_spacing);
+            if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+                std::fwrite(data.data(), 1, data.size(), file);
+                std::fclose(file);
+            }
         }
     }
 

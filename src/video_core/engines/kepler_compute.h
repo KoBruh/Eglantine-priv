@@ -265,7 +265,7 @@ private:
 
     bool DispatchNativeCompute(const NativeQmdScheduler::Descriptor& descriptor);
     void ProcessNativeReportSemaphore(u32 argument);
-    void DescribeNativeResources(const NativeQmdScheduler::Descriptor& qmd);
+    void DescribeNativeResources(const NativeQmdScheduler::Descriptor& qmd, bool always = false);
     bool UpscaleInsteadOfNativeProgram();
     bool ProcessNativeMethod(Core::System& system, u32 method, u32 argument, bool is_last_call);
     NativeQmdScheduler native_qmd;

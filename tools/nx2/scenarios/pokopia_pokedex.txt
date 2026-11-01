@@ -1,0 +1,18 @@
+# Pokopia: load the save and open Bulbasaur's Pokédex page (its 3D model is shown on the right).
+# Run: python tools/nx2/run_scenario.py tools/nx2/scenarios/pokopia_pokedex.txt --game <...\exefs\main>
+#
+# Steps are timed in presented frames ("f"), not seconds: the game advances per frame, so input
+# lands at the same point whatever the emulation speed. The loading screen ends around frame
+# 2600-2900 (title), the world is up by ~3600.
+duration: 240          # hard limit (seconds)
+until_frame: 6450      # stop once this frame is captured
+capture_every: 30
+
+at f2700: press A      # title ("PRESS A BUTTON"); spare presses cover a slower load
+at f2950: press A
+at f3150: press A
+at f3400: press A
+
+at f4850: press PLUS   # main menu, Pokédex highlighted
+at f5150: press A      # Pokédex list, Bulbasaur selected
+at f5700: press A      # Bulbasaur's page with the 3D model (shown by ~f6000)

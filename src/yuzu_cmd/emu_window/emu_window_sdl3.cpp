@@ -28,6 +28,36 @@
 #include "yuzu_cmd/emu_window/emu_window_sdl3.h"
 #include "yuzu_cmd/yuzu_icon.h"
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
+void Nx2PlaceBackgroundWindow(SDL_Window* window) {
+    if (window == nullptr || !Nx2BackgroundWindow()) {
+        return;
+    }
+    // Moved to the bottom of the z-order while still hidden, shown there without activation, and
+    // kept there: it never appears over (or takes focus from) another window, not even briefly.
+#ifdef _WIN32
+    void* const hwnd = SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                              SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    const auto to_bottom = [hwnd] {
+        if (hwnd != nullptr) {
+            SetWindowPos(static_cast<HWND>(hwnd), HWND_BOTTOM, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    };
+    to_bottom();
+#endif
+    SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+    SDL_ShowWindow(window);
+#ifdef _WIN32
+    to_bottom();
+#endif
+}
+
 EmuWindow_SDL3::EmuWindow_SDL3(InputCommon::InputSubsystem* input_subsystem_, Core::System& system_)
     : input_subsystem{input_subsystem_}, system{system_} {
     input_subsystem->Initialize();

@@ -1326,9 +1326,15 @@ private:
 
     // EDEN_NX2_FRAME_CAPTURE=<dir>: every 120th present, save what the renderer shows as
     // nx2-frame-<n>.tga in <dir> (lets hidden test runs check the output; idea from changes.patch).
+    // EDEN_NX2_FRAME_CAPTURE_EVERY=<n> changes the interval (a capture still in flight skips one).
     void CaptureFrame() {
         static const char* const directory = std::getenv("EDEN_NX2_FRAME_CAPTURE");
-        if (directory == nullptr || (m_presents % 120) != 1 || m_capture_pending->exchange(true)) {
+        static const u64 every = [] {
+            const char* value = std::getenv("EDEN_NX2_FRAME_CAPTURE_EVERY");
+            const u64 parsed = value ? std::strtoull(value, nullptr, 10) : 0;
+            return parsed != 0 ? parsed : u64{120};
+        }();
+        if (directory == nullptr || (m_presents - 1) % every != 0 || m_capture_pending->exchange(true)) {
             return;
         }
         const auto layout = Layout::DefaultFrameLayout(1280, 720);

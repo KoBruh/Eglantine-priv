@@ -545,6 +545,14 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     }
     if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z)
         return false;
+    // While a draw trace runs (EDEN_NX2_TRACE_FRAME or _TRACE_VS), list compute dispatches too,
+    // with the images their handles name: compute passes write images that no draw targets.
+    if (g_nx2_trace_draws_after_upscale > 0) {
+        LOG_INFO(HW_GPU, "after upscale: present {} dispatch program {:#x}",
+                 Core::g_nx2_present_count.load(std::memory_order_relaxed),
+                 (GPUVAddr{regs.code_loc.address_high} << 32) | regs.code_loc.address_low);
+        DescribeNativeResources(qmd, true);
+    }
     try {
         rasterizer->DispatchCompute();
     } catch (const Shader::Exception& error) {
@@ -564,9 +572,9 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
 
 // Logs the images a rejected program's handles (constant bank 0, bytes 0x80-0x11c) point to, so a
 // substitute (e.g. an upscale blit for a tensor-core pass) can find its inputs and output.
-void KeplerCompute::DescribeNativeResources(const NativeQmdScheduler::Descriptor& qmd) {
+void KeplerCompute::DescribeNativeResources(const NativeQmdScheduler::Descriptor& qmd, bool always) {
     static u32 described{};
-    if (described++ >= 2) return;
+    if (!always && described++ >= 2) return;
     const auto& cbuf = launch_description.const_buffer_config[0];
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
     LOG_INFO(HW_GPU, "Native resources: cbuf0 {:#x} size {:#x}, grid {}x{}x{}, block {}x{}x{}, tic pool {:#x}",

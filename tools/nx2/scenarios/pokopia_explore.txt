@@ -1,0 +1,13 @@
+# Pokopia: load the save from the title screen, then open the main menu.
+# Run: python tools/nx2/run_scenario.py tools/nx2/scenarios/pokopia_explore.txt --game <...\exefs\main>
+duration: 125
+capture_every: 60
+
+# The loading screen (Ditto) lasts ~45-50 s; the title ("PRESS A BUTTON") follows. A tip screen
+# loads the world, which is up by ~70-75 s (hints: B run, X bag, ZL focus, + menu).
+at 55: press A
+at 60: press A
+at 65: press A
+at 70: press A
+
+at 95: press PLUS
