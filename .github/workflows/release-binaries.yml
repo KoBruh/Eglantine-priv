@@ -579,6 +579,11 @@ jobs:
     name: android-arm64 apk
     if: github.event_name == 'schedule' || inputs.android
     runs-on: ubuntu-24.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1500M
+      # Gradle's .cxx build folders are named by a config hash; relative paths keep hits stable.
+      CCACHE_BASEDIR: ${{ github.workspace }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -588,6 +593,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       # The runner image has the SDK; add the NDK, CMake and platform the Gradle build asks for,
       # and glslangValidator for the host shaders.
@@ -595,10 +601,27 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends glslang-tools
+          sudo apt-get install -y --no-install-recommends glslang-tools ccache
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
             "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358" "cmake;3.31.5" > /dev/null
+
+      - name: Cache CPM downloads
+        uses: actions/cache@v4
+        with:
+          path: .cache/cpm
+          key: cpm-android-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
+          restore-keys: |
+            cpm-android-
+
+      # Same scheme as the desktop jobs: a fresh cache per run, seeded from the newest one.
+      - name: Cache compiler objects
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: objects-android-arm64-${{ github.sha }}
+          restore-keys: |
+            objects-android-arm64-
 
       - name: Build APK
         shell: bash
@@ -612,10 +635,12 @@ jobs:
             variants+=("com.antutu.ABenchMark:-antutu")
           fi
           for variant in "${variants[@]}"; do
-            ./gradlew --no-daemon "-PappId=${variant%%:*}" assembleMainlineRelease
+            ./gradlew --no-daemon "-PappId=${variant%%:*}" "-PYUZU_ANDROID_ARGS=-DUSE_CCACHE=ON" \
+              assembleMainlineRelease
             apk=$(find app/build/outputs/apk/mainline/release -name '*.apk' | head -1)
             cp "$apk" "$GITHUB_WORKSPACE/eglantine-jojo-${GITHUB_SHA}-android-arm64${variant#*:}.apk"
           done
+          ccache --show-stats
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
