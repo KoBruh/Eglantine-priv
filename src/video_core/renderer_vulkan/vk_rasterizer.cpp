@@ -236,6 +236,8 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache, device, scheduler),
       wfi_event(device.GetLogical().CreateEvent()) {
     scheduler.SetQueryCache(query_cache);
+    LOG_INFO(Render_Vulkan, "Detailed GPU profiler enabled: {}",
+             VideoCommon::Nx2Profile::Enabled());
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
