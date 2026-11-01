@@ -11,6 +11,7 @@
 
 #include "common/common_types.h"
 
+#include "video_core/renderer_vulkan/staging_buffer_policy.h"
 #include "video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 
@@ -59,15 +60,16 @@ private:
         MemoryUsage usage;
         u32 log2_level;
         u64 index;
+        size_t capacity;
         u64 tick = 0;
         bool deferred{};
 
-        StagingBufferRef Ref() const noexcept {
+        StagingBufferRef Ref(size_t requested) const noexcept {
             return {
                 .buffer = *buffer,
                 .device_address = device_address,
                 .offset = 0,
-                .mapped_span = mapped_span,
+                .mapped_span = StagingBufferMappedRange(mapped_span, requested),
                 .usage = usage,
                 .log2_level = log2_level,
                 .index = index,
@@ -100,6 +102,8 @@ private:
     void ReleaseCache(MemoryUsage usage);
 
     void ReleaseLevel(StagingBuffersCache& cache, size_t log2);
+
+    void TrimLargeBuffers(StagingBuffersCache& cache);
     size_t Region(size_t iter) const noexcept {
         return iter / region_size;
     }
@@ -126,6 +130,10 @@ private:
     size_t current_delete_level = 0;
     u64 buffer_index = 0;
     u64 unique_ids{};
+    u64 frame_count{};
+    u64 buffers_created{};
+    u64 buffers_reused{};
+    u64 rounding_bytes_avoided{};
 };
 
 } // namespace Vulkan
