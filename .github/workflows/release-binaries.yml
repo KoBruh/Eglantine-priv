@@ -1,9 +1,15 @@
 name: release-binaries
 
 on:
-  # Nightly, every platform (inputs are empty on scheduled runs, see `nightly` below).
+  # Nightly and on every push to nx2, every platform (inputs are empty on these runs). A newer
+  # push cancels the run for the previous one (see concurrency below).
   schedule:
     - cron: '0 20 * * *'
+  push:
+    branches: [nx2]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
   workflow_dispatch:
     inputs:
       # Defaults build the four release platforms on GitHub's runners in one run.
@@ -67,11 +73,11 @@ jobs:
       - id: plan
         shell: bash
         env:
-          LINUX_X86_64: ${{ github.event_name == 'schedule' || inputs.linux_x86_64 }}
-          LINUX_AARCH64: ${{ github.event_name == 'schedule' || inputs.linux_aarch64 }}
-          WINDOWS: ${{ github.event_name == 'schedule' || inputs.windows }}
-          WINDOWS_ARM64: ${{ github.event_name == 'schedule' || inputs.windows_arm64 }}
-          MACOS: ${{ github.event_name == 'schedule' || inputs.macos }}
+          LINUX_X86_64: ${{ github.event_name != 'workflow_dispatch' || inputs.linux_x86_64 }}
+          LINUX_AARCH64: ${{ github.event_name != 'workflow_dispatch' || inputs.linux_aarch64 }}
+          WINDOWS: ${{ github.event_name != 'workflow_dispatch' || inputs.windows }}
+          WINDOWS_ARM64: ${{ github.event_name != 'workflow_dispatch' || inputs.windows_arm64 }}
+          MACOS: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
         run: |
           set -euo pipefail
           # The -pgo builds are the same programs compiled by clang against Eden's periodically
@@ -577,7 +583,7 @@ jobs:
 
   android:
     name: android-arm64 apk
-    if: github.event_name == 'schedule' || inputs.android
+    if: github.event_name != 'workflow_dispatch' || inputs.android
     runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -631,7 +637,7 @@ jobs:
           variants=("${{ inputs.android_app_id || 'dev.eglantine.eglantine' }}:")
           # Some GPU drivers run AnTuTu's package with higher clocks. Both APKs share the native
           # build, so the second assemble only repackages.
-          if [ "${{ github.event_name == 'schedule' || inputs.android_antutu }}" = "true" ]; then
+          if [ "${{ github.event_name != 'workflow_dispatch' || inputs.android_antutu }}" = "true" ]; then
             variants+=("com.antutu.ABenchMark:-antutu")
           fi
           for variant in "${variants[@]}"; do
@@ -656,7 +662,7 @@ jobs:
   release:
     name: Publish releases
     needs: [build, android]
-    if: ${{ !cancelled() && !failure() && (github.event_name == 'schedule' || inputs.publish_release) }}
+    if: ${{ !cancelled() && !failure() && (github.event_name != 'workflow_dispatch' || inputs.publish_release) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
