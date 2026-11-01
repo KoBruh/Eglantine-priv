@@ -407,6 +407,10 @@ u64 BufferCacheRuntime::GetDeviceMemoryUsage() const {
     return device.GetDeviceMemoryUsage();
 }
 
+u64 BufferCacheRuntime::GetDeviceMemoryBudget() const {
+    return device.GetDeviceMemoryBudget();
+}
+
 bool BufferCacheRuntime::CanReportMemoryUsage() const {
     return device.CanReportMemoryUsage();
 }

@@ -645,6 +645,7 @@ private:
     u64 frame_tick = 0;
     u64 total_used_memory = 0;
     u64 buffer_bytes = 0; ///< The buffers' own size (total_used_memory may be the device's)
+    u64 native_buffer_threshold = 512ULL << 20;
     u64 minimum_memory = 0;
     u64 critical_memory = 0;
     BufferId inline_buffer_id;

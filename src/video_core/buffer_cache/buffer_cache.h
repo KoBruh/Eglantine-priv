@@ -13,8 +13,10 @@
 #include <vector>
 #include <fmt/ranges.h>
 
+#include "common/memory_detect.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "video_core/buffer_cache/native_memory_policy.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
@@ -143,10 +145,22 @@ void BufferCache<P>::TickFrame() {
         // title 1's buffers were ~200 MiB of an 8 GB GPU's ~6.8 GB in use, yet this collector
         // ran aggressively every frame on the device-wide figure, evicting up to 64 buffers (and
         // downloading the GPU-written ones, ~5% of the GPU thread) that were recreated later.
-        // Collect when the buffers themselves are large. At 1 GiB it held geometry of scenes
-        // long gone: title 1's title screen grew to ~0.9 GB of buffers in ten minutes.
-        if (buffer_bytes >= 512_MiB) {
-            RunGarbageCollector(buffer_bytes >= 1_GiB);
+        // Keep a larger working set when both GPU and system commit have room. The fixed
+        // 512 MiB threshold evicted geometry even on the target VM with ample free memory.
+        if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
+            if (frame_tick % 30 == 0) {
+                const auto threshold = NativeBufferCacheThreshold(
+                    runtime.GetDeviceMemoryBudget(), total_used_memory,
+                    Common::GetAvailableCommitMemory());
+                if (threshold != native_buffer_threshold) {
+                    LOG_INFO(HW_GPU, "Native buffer cache collection threshold: {} MiB",
+                             threshold >> 20);
+                    native_buffer_threshold = threshold;
+                }
+            }
+        }
+        if (buffer_bytes >= native_buffer_threshold) {
+            RunGarbageCollector(buffer_bytes >= 2 * native_buffer_threshold);
         }
     } else if (total_used_memory >= minimum_memory) {
         RunGarbageCollector(total_used_memory >= critical_memory);

@@ -124,6 +124,8 @@ public:
 
     u64 GetDeviceMemoryUsage() const;
 
+    u64 GetDeviceMemoryBudget() const;
+
     bool CanReportMemoryUsage() const;
 
     u32 GetUniformBufferAlignment() const;
