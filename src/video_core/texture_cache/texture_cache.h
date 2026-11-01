@@ -261,16 +261,16 @@ void TextureCache<P>::TickFrame() {
         // VRAM (another game: 7.0 -> 6.4 GB), and collecting only past it means the driver pages
         // textures out. It is also the room to use: Eden's device memory figure is capped near
         // 7 GB, which on a 12 GB card (11.2 GB budget) kept title 1 evicting textures with 3 GB
-        // unused. Both thresholds stay under it with a margin (1/8 of it, at most 1 GiB): past it
-        // allocations fail and images end up unbacked (garbage textures), and Windows shrinks the
-        // budget as the card fills (16 GB card: 13.5 GB left mid-race), hence the re-read every 30
-        // frames. EDEN_NX2_TC_*_MIB overrides still win.
+        // unused. Both thresholds stay under it with a margin (1/8 of it, 768 MiB to 1 GiB): past
+        // it allocations fail and images end up unbacked (garbage textures), and Windows shrinks
+        // the budget as the card fills (16 GB card: 13.5 GB left mid-race), hence the re-read
+        // every 30 frames. EDEN_NX2_TC_*_MIB overrides still win.
         if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
             if (native_thresholds_applied && budget_check_frames++ % 30 == 0) {
                 const u64 budget = runtime.GetDeviceMemoryBudget();
                 if (budget > 2_GiB) {
                     const u64 old_critical = critical_memory;
-                    const u64 margin = (std::min)(budget / 8, 1_GiB);
+                    const u64 margin = std::clamp<u64>(budget / 8, 768_MiB, 1_GiB);
                     critical_memory = budget - margin;
                     expected_memory = budget - 2 * margin;
                     // Log the first values and real changes (the budget moves by a few MiB all
@@ -776,6 +776,10 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
             return;
         }
         if (MarkPartialWrite(image, cpu_addr, size)) {
+            return;
+        }
+        if (UploadsByLayer(image)) {
+            MarkLayersWritten(image, cpu_addr, size);
             return;
         }
         if (True(image.flags & ImageFlagBits::CpuModified)) {
@@ -1611,6 +1615,7 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             image.UploadMemory(staging, copies);
             ++images_uploaded;
             uploaded_bytes += u64{image.info.layer_stride} * layers.size();
+            largest_upload = (std::max<u64>)(largest_upload, u64{image.info.layer_stride} * layers.size());
             ++layer_uploads;
             return;
         }
@@ -1632,6 +1637,7 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
         runtime.AccelerateImageUploadLayers(image, staging, uploads, layers);
         ++images_uploaded;
         uploaded_bytes += tail * layers.size();
+        largest_upload = (std::max<u64>)(largest_upload, tail * layers.size());
         ++layer_uploads;
     }
 }
@@ -3314,6 +3320,7 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
     Image& image = slot_images[image_id];
     if (invalidate) {
         RestorePartialPages(image);
+        image.dirty_layers.clear();
         image.flags &= ~(ImageFlagBits::CpuModified | ImageFlagBits::GpuModified);
         if (False(image.flags & ImageFlagBits::Tracked)) {
             TrackImage(image, image_id);

@@ -172,7 +172,10 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 // A large image over Switch 2 sparse blocks nobody has written (title 1's terrain layer pools, 2.9
 // GB of R8/RG16/R16 that stay empty in the attract demo) is all zeros: it gets no device memory
 // until a write makes the texture cache replace it.
-[[nodiscard]] bool IsUnwrittenSparse(const ImageInfo& info, GPUVAddr gpu_addr) {
+[[nodiscard]] bool IsUnwrittenSparse(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {
+    if (!device.CanUseUnbackedSparseImages()) {
+        return false;
+    }
     constexpr u32 MinSize = 32U << 20;
     const u32 size = VideoCommon::CalculateGuestSizeInBytes(info);
     return size >= MinSize && info.type != ImageType::e1D && info.type != ImageType::Buffer &&
@@ -184,7 +187,8 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 // Image::BindLayers. Only formats uploaded layer by layer: huge ASTC arrays (GPU decode) and
 // formats the host samples as they are.
 [[nodiscard]] bool UsesSparseLayers(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {
-    if (!device.IsSparseResidencyImage2DSupported() || info.type != ImageType::e2D ||
+    if (!device.CanUseUnbackedSparseImages() || !device.IsSparseResidencyImage2DSupported() ||
+        info.type != ImageType::e2D ||
         info.resources.layers <= 1 || info.num_samples != 1 ||
         VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {
         return false;
@@ -2148,7 +2152,7 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
                                    : runtime->ViewFormats(info.format),
                                AstcHostFormat(runtime_.device, info),
                                UsesSparseLayers(runtime_.device, info, gpu_addr_) ||
-                                   IsUnwrittenSparse(info, gpu_addr_))),
+                                   IsUnwrittenSparse(runtime_.device, info, gpu_addr_))),
       aspect_mask(ImageAspectMask(info.format)) {
     if (original_image.IsUnbacked()) {
         flags |= VideoCommon::ImageFlagBits::Unbacked;
@@ -2158,7 +2162,7 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
         const bool layered_sparse = UsesSparseLayers(runtime_.device, info, gpu_addr_);
         if (layered_sparse && InitSparseLayers()) {
             flags |= VideoCommon::ImageFlagBits::SparseLayers;
-        } else if (layered_sparse && !IsUnwrittenSparse(info, gpu_addr_)) {
+        } else if (layered_sparse && !IsUnwrittenSparse(runtime_.device, info, gpu_addr_)) {
             // The driver's sparse block can't be bound by: back it as before SparseLayers.
             original_image = MakeImage(runtime_.device, runtime_.memory_allocator, host_info,
                                        IsHugeAstcArray(runtime_.device, info)
@@ -2893,6 +2897,7 @@ VkImageView Image::StorageImageLayerView(s32 level, u32 layer) {
     }
     auto& view = storage_layer_views[static_cast<size_t>(level) * layers + layer];
     if (!view) {
+        // Only GPU-decoded ASTC uploads by layer (TextureCacheRuntime::CanUploadLayers).
         view = MakeStorageView(runtime->device.GetLogical(), level, *(this->*current_image),
                                VK_FORMAT_A8B8G8R8_UNORM_PACK32, layer, 1);
     }

@@ -438,8 +438,19 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 
     if (standalone) {
         // Without this, fsp-srv SetCurrentProcess fails with ResultTargetNotFound.
+        title_id = metadata.GetTitleID();
+        // Loose-ExeFS loads bypass the NCA/NSP loaders, which are the ones that apply LayeredFS
+        // to the RomFS; apply it here so mods in load/<titleid>/ work too (no update is applied
+        // without a base NCA).
+        if (FileSys::VirtualFile base; ReadRomFS(base) == ResultStatus::Success) {
+            const FileSys::PatchManager patch_manager(title_id, system.GetFileSystemController(),
+                                                      system.GetContentProvider());
+            if (auto patched = patch_manager.PatchRomFS(nullptr, base); patched != nullptr) {
+                romfs = std::move(patched);
+            }
+        }
         system.GetFileSystemController().RegisterProcess(
-            process.GetProcessId(), metadata.GetTitleID(),
+            process.GetProcessId(), title_id,
             std::make_shared<FileSys::RomFSFactory>(*this, system.GetContentProvider(),
                                                     system.GetFileSystemController()));
     }

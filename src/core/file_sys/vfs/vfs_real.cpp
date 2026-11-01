@@ -47,6 +47,7 @@ size_t MaxOpenFiles() {
 #ifdef _WIN32
     static const size_t limit = static_cast<size_t>((std::max)(_getmaxstdio() - 512, 64));
 #else
+    // Below RLIMIT_NOFILE with room for files opened outside the VFS cache.
     static const size_t limit = [] {
         struct rlimit rl;
         if (getrlimit(RLIMIT_NOFILE, &rl) != 0 || rl.rlim_cur == RLIM_INFINITY) {

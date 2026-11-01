@@ -415,7 +415,6 @@ Vp9PictureInfo VP9::GetVp9PictureInfo() {
     vp9_info.seg_tree_probs = entropy_probs.mb_segment_tree_probs;
     vp9_info.seg_pred_probs = entropy_probs.segment_pred_probs;
 
-
     // surface_luma_offset[0:3] contains the address of the reference frame offsets in the following
     // order: last, golden, altref, current.
     for (size_t i = 0; i < 4; i++) {

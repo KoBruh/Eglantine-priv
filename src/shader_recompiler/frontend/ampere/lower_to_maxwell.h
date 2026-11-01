@@ -2789,6 +2789,15 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
             mov_imm(static_cast<u32>(dest) + 1, 0);
             break;
         }
+        case 0x312: { // I2F.F32.U64, paired register input, RN or RP.
+            const u32 source = insn.Bits(32, 8);
+            if ((insn.words[2] != 0x00301000 && insn.words[2] != 0x00309000) ||
+                (insn.words[1] & ~0xffU) || insn.Bits(24, 8) || source >= 254 || (source & 1))
+                return fail(index, "native unsigned 64-bit integer-to-float mode");
+            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{3} << 10) |
+                 (u64{source} << 20) | (u64{insn.words[2] == 0x00309000 ? 2U : 0U} << 39));
+            break;
+        }
         case 0x306: case 0xd06: { // I2F.F32.U8 / U16 (0xd06: uniform source)
             const u32 source = opcode == 0xd06 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
             if (insn.words[2] == (opcode == 0xd06 ? 0x08101000U : 0x00101000U) &&
@@ -3209,7 +3218,28 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
             // independently, so all three are no-ops (a SYNC would wrongly jump, and a branch
             // out of a lowered SSY region would leave its token on Eden's flow stack).
             break;
+        case 0x845: case 0x906: { // I2FP.F32 / I2F.F32 of a 32-bit immediate, folded to the exact float.
+            const bool is_signed = insn.Bits(74, 1);
+            if ((insn.words[2] & ~(0xc000U | 0x400U)) != 0x00201000 || dest == 255)
+                return fail(index, "native integer immediate conversion mode");
+            const s64 value = is_signed ? s64{static_cast<s32>(insn.words[1])} : s64{insn.words[1]};
+            if (value > (1 << 24) || value < -(1 << 24))
+                return fail(index, "native integer immediate conversion range");
+            mov_imm(static_cast<u32>(dest), std::bit_cast<u32>(static_cast<float>(value)));
+            break;
+        }
         case 0x947: { // BRA
+            if ((insn.words[2] & ~0x3ffffU) == 0x0b800000U) {
+                // BRA.DIV Ur: the warp-uniformity shortcut around a library shuffle (VOTEU, BRA.DIV, inline
+                // SHFL or call). Lanes are emulated together, so the shortcut is always taken; the
+                // fall-through call computes the same value.
+                if (insn.words[0] != ((insn.Bits(24, 8) << 24) | 0x7947U) || insn.Bits(24, 8) >= 63 ||
+                    (insn.words[1] & 3) != 3)
+                    return fail(index, "native divergence branch mode");
+                insn.words[0] = 0x7947;
+                insn.words[1] &= ~3U;
+                insn.words[2] = 0x03800000 | (insn.words[2] & 0x3ffffU);
+            }
             u64 branch_predicate = predicate;
             if (opcode == 0x947 && insn.Bits(87, 4) != 7) {
                 if (insn.Bits(12, 4) != 7) {
