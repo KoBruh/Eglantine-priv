@@ -709,7 +709,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p nightly
-          for file in dist/*/*; do
+          # Only the folders Publish filled: dist/ itself also holds the repo's icons and desktop files.
+          for file in dist/linux/* dist/windows/* dist/android/* dist/macos/*; do
+            [ -f "$file" ] || continue
             # eglantine-jojo-<sha>-linux-x86_64-pgo.AppImage -> eglantine-jojo-linux-x86_64.AppImage
             name=$(basename "$file" | sed -E "s/-${GITHUB_SHA}//; s/${GITHUB_SHA}-//; s/-pgo//")
             cp "$file" "nightly/$name"
