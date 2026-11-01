@@ -422,6 +422,14 @@ public:
         return sparse_layers.bound_bytes;
     }
 
+    [[nodiscard]] u64 MemoryBytes() const noexcept {
+        return original_image ? original_image.DeviceMemorySize() + sparse_layers.bound_bytes : 0;
+    }
+
+    [[nodiscard]] u64 ScaledMemoryBytes() const noexcept {
+        return scaled_image.DeviceMemorySize();
+    }
+
     bool IsRescaled() const noexcept;
 
     bool ScaleUp(bool ignore = false);

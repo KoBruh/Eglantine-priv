@@ -277,8 +277,10 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
         );
     }
 
+    const u32 heap = properties.memoryTypes[alloc_info.memoryType].heapIndex;
+    const VkDeviceSize device_size = device.TracksMemoryHeap(heap) ? alloc_info.size : 0;
     return vk::Image(handle, ci.usage, *device.GetLogical(), allocator, allocation,
-                        device.GetDispatchLoader());
+                     device.GetDispatchLoader(), device_size);
 }
 
 vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool aliased) const {
@@ -297,7 +299,7 @@ vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool
         return vk::Image{};
     }
     return vk::Image(sparse, ci.usage, *device.GetLogical(), allocator, VK_NULL_HANDLE,
-                     device.GetDispatchLoader());
+                     device.GetDispatchLoader(), 0);
 }
 
 VmaAllocation MemoryAllocator::AllocateSparseMemory(const VkMemoryRequirements &requirements,

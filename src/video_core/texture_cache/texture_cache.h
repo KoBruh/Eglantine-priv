@@ -312,7 +312,8 @@ void TextureCache<P>::TickFrame() {
         std::vector<std::pair<u64, const Image*>> largest;
         std::map<u32, std::pair<u64, u32>> by_format;
         for (const auto [image_id, image] : slot_images) {
-            const u64 bytes = GetScaledImageSizeBytes(*image);
+            const u64 bytes = ImageMemoryBytes(*image) +
+                              (image->HasScaled() ? GetScaledImageSizeBytes(*image) : 0);
             image_bytes += bytes;
             ++images;
             if (debug_stats) {
@@ -2000,7 +2001,10 @@ void TextureCache<P>::InvalidateScale(Image& image) {
 }
 
 template <class P>
-u64 TextureCache<P>::GetScaledImageSizeBytes(const ImageBase& image) {
+u64 TextureCache<P>::GetScaledImageSizeBytes(const Image& image) {
+    if constexpr (requires { image.ScaledMemoryBytes(); }) {
+        return image.ScaledMemoryBytes();
+    }
     const u64 scale_up = static_cast<u64>(Settings::values.resolution_info.up_scale *
                                           Settings::values.resolution_info.up_scale);
     const u64 down_shift = static_cast<u64>(Settings::values.resolution_info.down_shift +
@@ -2014,6 +2018,9 @@ u64 TextureCache<P>::GetScaledImageSizeBytes(const ImageBase& image) {
 
 template <class P>
 u64 TextureCache<P>::ImageMemoryBytes(const Image& image) const {
+    if constexpr (requires { image.MemoryBytes(); }) {
+        return image.MemoryBytes();
+    }
     if (True(image.flags & ImageFlagBits::Unbacked)) {
         // No device memory but what BindLayers gave a SparseLayers image: at its full size (GBs
         // for title 1's sparse terrain images), deleting it would look to the collector like
@@ -3333,7 +3340,7 @@ void TextureCache<P>::UntrackImage(ImageBase& image, ImageId image_id) {
 
 template <class P>
 void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
-    ImageBase& image = slot_images[image_id];
+    Image& image = slot_images[image_id];
     ++images_deleted;
     // Drop every decode still queued for it, whatever IsDecoding says: an image re-decoded while
     // a decode was in flight has two, and the first to finish clears the flag. A decode left

@@ -509,7 +509,7 @@ private:
     void InvalidateScale(Image& image);
     bool ScaleUp(Image& image);
     bool ScaleDown(Image& image);
-    u64 GetScaledImageSizeBytes(const ImageBase& image);
+    u64 GetScaledImageSizeBytes(const Image& image);
 
     /// The device memory an image counts for in total_used_memory between two driver readings:
     /// none for an unbacked image (too large to back, or over unwritten sparse blocks), what is
