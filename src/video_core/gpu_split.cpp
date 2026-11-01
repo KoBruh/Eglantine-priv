@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <thread>
+#include <utility>
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -105,6 +106,14 @@ void GpuSplit::MaybeStart(Core::System& system_) {
         Stop();
         LOG_INFO(HW_GPU, "GPU thread split: stopped, the accuracy settings need the caches on the front");
         return;
+    }
+    if (!allowed) {
+        // Called by the GPU thread only. Say once why the split is off: it costs ~1.5x.
+        static bool reported = false;
+        if (!std::exchange(reported, true)) {
+            LOG_WARNING(HW_GPU, "GPU thread split: not started, it needs GPU accuracy Low, "
+                                "DMA accuracy not Safe and the Vulkan renderer");
+        }
     }
     if (active || !allowed) {
         return;
