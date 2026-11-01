@@ -129,6 +129,15 @@
                 android:layout_marginTop="10dp"
                 android:text="@string/verify_integrity" />
 
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/button_convert_edenpack"
+                style="@style/Widget.Material3.Button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="@string/edenpack_convert"
+                android:visibility="gone" />
+
         </LinearLayout>
 
     </androidx.core.widget.NestedScrollView>

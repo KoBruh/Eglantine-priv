@@ -7,6 +7,9 @@
 #define VMA_IMPLEMENTATION
 #include "video_core/vulkan_common/vma.h"
 
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <codecvt>
 #include <cstdio>
 #include <cstring>
@@ -60,6 +63,7 @@ extern "C" {
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
+#include "core/file_sys/edenpack_writer.h"
 #include "core/file_sys/fs_filesystem.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/nca_metadata.h"
@@ -1625,6 +1629,71 @@ jobjectArray Java_org_yuzu_yuzu_1emu_NativeLibrary_verifyInstalledContents(JNIEn
         env->SetObjectArrayElement(jresult, i, Common::Android::ToJString(env, result[i]));
     }
     return jresult;
+}
+
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_edenPackDumpRoot(JNIEnv* env, jobject,
+                                                               jstring jmain) {
+    const auto root =
+        FileSys::EdenPack::DumpRootFromMain(Common::Android::GetJString(env, jmain));
+    return root ? Common::Android::ToJString(env, Common::FS::PathToUTF8String(*root)) : nullptr;
+}
+
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_edenPackTargetPath(JNIEnv* env, jobject,
+                                                                 jstring jroot) {
+    const auto target =
+        FileSys::EdenPack::DefaultArchivePath(Common::Android::GetJString(env, jroot));
+    return Common::Android::ToJString(env, Common::FS::PathToUTF8String(target));
+}
+
+jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_edenPackHasJournal(JNIEnv* env, jobject,
+                                                                  jstring jtarget) {
+    return FileSys::EdenPack::HasResumableJournal(Common::Android::GetJString(env, jtarget));
+}
+
+static std::string edenpack_last_error;
+
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_edenPackLastError(JNIEnv* env, jobject) {
+    return Common::Android::ToJString(env, edenpack_last_error);
+}
+
+jint Java_org_yuzu_yuzu_1emu_NativeLibrary_convertToEdenPack(JNIEnv* env, jobject, jstring jroot,
+                                                             jstring jtarget,
+                                                             jboolean jdelete_sources,
+                                                             jobject jcallback) {
+    const auto lambda_class = env->GetObjectClass(jcallback);
+    const auto invoke = env->GetMethodID(lambda_class, "invoke",
+                                         "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;"
+                                         "Ljava/lang/Object;)Ljava/lang/Object;");
+    std::atomic_bool cancel{false};
+    auto last_report = std::chrono::steady_clock::time_point{};
+
+    // Small-file trees report once per file, so updates are limited to a few per second.
+    const auto progress = [&](const FileSys::EdenPack::PackProgress& p) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_report < std::chrono::milliseconds(100) && p.bytes_done != p.bytes_total) {
+            return;
+        }
+        last_report = now;
+        const auto args = std::array{Common::Android::ToJDouble(env, double(p.bytes_total)),
+                                     Common::Android::ToJDouble(env, double(p.bytes_done)),
+                                     Common::Android::ToJDouble(env, double(p.files_total)),
+                                     Common::Android::ToJDouble(env, double(p.files_done))};
+        const auto cancelled =
+            env->CallObjectMethod(jcallback, invoke, args[0], args[1], args[2], args[3]);
+        cancel = Common::Android::GetJBoolean(env, cancelled);
+        env->DeleteLocalRef(cancelled);
+        for (const auto arg : args) {
+            env->DeleteLocalRef(arg);
+        }
+    };
+
+    edenpack_last_error.clear();
+    const FileSys::EdenPack::PackOptions options{.delete_sources = jdelete_sources != JNI_FALSE};
+    const auto result = FileSys::EdenPack::PackDump(
+        Common::Android::GetJString(env, jroot), Common::Android::GetJString(env, jtarget),
+        options, progress, &cancel, &edenpack_last_error);
+    env->DeleteLocalRef(lambda_class);
+    return static_cast<jint>(result);
 }
 
 jint Java_org_yuzu_yuzu_1emu_NativeLibrary_verifyGameContents(JNIEnv* env, jobject jobj,

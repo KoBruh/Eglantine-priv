@@ -25,6 +25,7 @@
 
 #include "common/common_types.h"
 #include "core/core.h"
+#include "core/file_sys/edenpack_writer.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "qt_common/config/uisettings.h"
@@ -98,6 +99,10 @@ GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvid
     qRegisterMetaType<QList<QStandardItem*>>("QList<QStandardItem*>");
 
     ResetViewMode();
+}
+
+void GameList::SetEdenPackConversionRunning(bool running) {
+    edenpack_conversion_running = running;
 }
 
 GameList::~GameList() {
@@ -482,6 +487,11 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* verify_integrity = context_menu.addAction(tr("Verify Integrity"));
     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
 #if !defined(__APPLE__)
+    QAction* convert_edenpack = nullptr;
+    if (FileSys::EdenPack::DumpRootFromMain(path)) {
+        convert_edenpack = context_menu.addAction(tr("Convert to EdenPack..."));
+        convert_edenpack->setEnabled(!edenpack_conversion_running);
+    }
     QMenu* shortcut_menu = context_menu.addMenu(tr("Create Shortcut"));
     QAction* create_desktop_shortcut = shortcut_menu->addAction(tr("Add to Desktop"));
     QAction* create_applications_menu_shortcut =
@@ -561,6 +571,10 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
             [this, path]() { emit VerifyIntegrityRequested(path); });
     connect(copy_tid, &QAction::triggered, this,
             [this, program_id]() { emit CopyTIDRequested(program_id); });
+    if (convert_edenpack) {
+        connect(convert_edenpack, &QAction::triggered, this,
+                [this, path]() { emit ConvertToEdenPackRequested(path); });
+    }
 #if !defined(__APPLE__)
     connect(create_desktop_shortcut, &QAction::triggered, this, [this, program_id, path]() {
         emit CreateShortcut(program_id, path, QtCommon::Game::ShortcutTarget::Desktop);

@@ -180,6 +180,8 @@ add_library(core STATIC
     file_sys/vfs/vfs_real.h
     file_sys/vfs/vfs_edenpack.cpp
     file_sys/vfs/vfs_edenpack.h
+    file_sys/edenpack_writer.cpp
+    file_sys/edenpack_writer.h
     file_sys/vfs/vfs_static.h
     file_sys/vfs/vfs_types.h
     file_sys/vfs/vfs_vector.cpp
