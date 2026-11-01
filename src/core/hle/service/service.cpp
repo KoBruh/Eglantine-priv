@@ -182,9 +182,16 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
     UNIMPLEMENTED_MSG("Unknown / unimplemented {}", fmt::to_string(buf));
     if (auto_stub) {
         LOG_WARNING(Service, "Using auto stub fallback (repeats of this command are not logged)");
-        IPC::ResponseBuilder rb{ctx, 2 + StubZeroedWords};
+        // The Switch 2 sessions' unknown commands (nx2:gsv 903/912/1003/427, vi2 301, syncpt 21,
+        // ...) were brought up against the result-only reply, which leaves the request's words in
+        // place; zeroed replies made Kirby Air Riders and the Yoshi demo panic (2162-0001) around
+        // their movies. Keep that reply for them until the commands are known.
+        const bool keep_request_words = name.starts_with(Nx2StubPrefix) || name.starts_with("nx2:");
+        IPC::ResponseBuilder rb{ctx, keep_request_words ? 2u : 2 + StubZeroedWords};
         rb.Push(ResultSuccess);
-        PushStubZeroes(rb);
+        if (!keep_request_words) {
+            PushStubZeroes(rb);
+        }
     }
 }
 
