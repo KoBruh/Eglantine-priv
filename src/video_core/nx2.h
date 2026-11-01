@@ -204,7 +204,7 @@ inline std::map<u64, Nx2SparseRegionState> g_nx2_sparse_state;
 inline void Nx2SparseRegionCreated(u64 gpu_address, u64 size, u64 block_size) {
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
     g_nx2_sparse_state[gpu_address] = {size, block_size,
-                                       std::vector<bool>((size + block_size - 1) / block_size)};
+                                     std::vector<bool>((size + block_size - 1) / block_size), {}};
 }
 
 inline void Nx2SparseRegionDestroyed(u64 gpu_address) {

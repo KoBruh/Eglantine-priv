@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <span>
@@ -1118,12 +1119,15 @@ std::vector<LevelRect> SparseTileRects(const ImageInfo& info,
     const std::vector<BlockLinearLevel> levels = BlockLinearLevels(info);
     const u64 image_end = CalculateLevelBytes(
         CalculateLevelSizes(MakeLevelInfo(info), info.resources.levels), info.resources.levels);
+    const auto range_end = [](const std::pair<u64, u64>& range) {
+        return range.first + (std::min)(range.second, std::numeric_limits<u64>::max() - range.first);
+    };
     for (s32 index = 0; index < static_cast<s32>(levels.size()); ++index) {
         const BlockLinearLevel& level = levels[index];
         const u64 level_end =
             index + 1 < static_cast<s32>(levels.size()) ? levels[index + 1].offset : image_end;
         const auto overlaps = [&](const std::pair<u64, u64>& range) {
-            return range.first < level_end && range.first + range.second > level.offset;
+            return range.second != 0 && range.first < level_end && range_end(range) > level.offset;
         };
         if (index >= tail_level) {
             if (std::ranges::any_of(ranges, overlaps)) {
@@ -1139,7 +1143,7 @@ std::vector<LevelRect> SparseTileRects(const ImageInfo& info,
                 continue;
             }
             const u64 begin = (std::max<u64>)(range.first, level.offset) - level.offset;
-            const u64 end = (std::min<u64>)(range.first + range.second, level_end) - level.offset;
+            const u64 end = (std::min<u64>)(range_end(range), level_end) - level.offset;
             const u64 first = begin / level.block_bytes;
             const u64 last = (end - 1) / level.block_bytes;
             for (u64 row = first / level.blocks_per_row; row <= last / level.blocks_per_row; ++row) {
