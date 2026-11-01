@@ -351,18 +351,20 @@ struct System::Impl {
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
         }
 
-        // The GPU thread split (gpu_split.cpp) refuses to start under high GPU accuracy and read
-        // traps (memory.cpp) under reactive flushing. Both are on by default on desktop, so title 1
-        // ran on one GPU thread (~30 fps). Same per-game override as the memory layout above.
+        // The GPU thread split (gpu_split.cpp) refuses to start under high GPU accuracy, the
+        // desktop default, so title 1 ran on one GPU thread (~30 fps). Same per-game override as
+        // the memory layout above.
         if (switch2_program && Settings::values.gpu_accuracy.GetValue() == Settings::GpuAccuracy::High) {
             LOG_INFO(Core, "Switch 2 program: using low GPU accuracy (GPU thread split)");
             Settings::values.gpu_accuracy.SetGlobal(false);
             Settings::values.gpu_accuracy.SetValue(Settings::GpuAccuracy::Low);
         }
-        if (switch2_program && Settings::values.use_reactive_flushing.GetValue()) {
-            LOG_INFO(Core, "Switch 2 program: reactive flushing off (read traps)");
+        // Read traps, which replace reactive flushing when it is off, miss GPU writes that Pokemon
+        // Pokopia reads back for its sky and exposure (black sky, desktop and Android).
+        if (switch2_program && !Settings::values.use_reactive_flushing.GetValue()) {
+            LOG_INFO(Core, "Switch 2 program: reactive flushing on (read traps miss GPU writes)");
             Settings::values.use_reactive_flushing.SetGlobal(false);
-            Settings::values.use_reactive_flushing.SetValue(false);
+            Settings::values.use_reactive_flushing.SetValue(true);
         }
 
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
