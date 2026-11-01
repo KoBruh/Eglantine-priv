@@ -5,7 +5,7 @@
 set -euo pipefail
 platform=$1
 sha=$(git rev-parse HEAD)
-name="eglantine-$sha-$platform"
+name="eglantine-jojo-$sha-$platform"
 mkdir -p out
 llvm=${LLVM_VERSION:-23}
 

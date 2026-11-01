@@ -389,9 +389,9 @@ jobs:
           test -x build/release/bin/eglantine
           test -x build/release/bin/eden-cli
           strip build/release/bin/eglantine build/release/bin/eden-cli
-          tar -czf "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" \
+          tar -czf "eglantine-jojo-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" \
             -C build/release/bin eglantine eden-cli
-          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz"
+          ls -la "eglantine-jojo-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz"
 
       # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
       # the base system ones (glibc, X11/Wayland client libraries, the GPU driver and Vulkan loader),
@@ -419,7 +419,7 @@ jobs:
           cp dist/Eglantine.png "$icon"
           export APPIMAGE_EXTRACT_AND_RUN=1
           export QMAKE="$QT_ROOT_DIR/bin/qmake"
-          export LDAI_OUTPUT="eglantine-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
+          export LDAI_OUTPUT="eglantine-jojo-${GITHUB_SHA}-${{ matrix.platform }}.AppImage"
           export OUTPUT="$LDAI_OUTPUT"
           export ARCH="$arch"
           "$tools/linuxdeploy-$arch.AppImage" --appdir AppDir \
@@ -528,8 +528,8 @@ jobs:
             codesign --force --sign - --entitlements dist/eglantine.entitlements "$app"
           fi
           codesign --verify --deep --strict "$app"
-          ditto -c -k --keepParent "$app" "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
-          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
+          ditto -c -k --keepParent "$app" "eglantine-jojo-${GITHUB_SHA}-${{ matrix.platform }}.zip"
+          ls -la "eglantine-jojo-${GITHUB_SHA}-${{ matrix.platform }}.zip"
 
       # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
       # zip gave a zip inside a zip. The release job zips it once for the release.
@@ -537,7 +537,7 @@ jobs:
         if: matrix.platform == 'windows-x86_64'
         uses: actions/upload-artifact@v4
         with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          name: eglantine-jojo-${{ matrix.platform }}-${{ github.sha }}
           path: build/release/bin/
           if-no-files-found: error
           retention-days: 7
@@ -546,7 +546,7 @@ jobs:
         if: matrix.mingw
         uses: actions/upload-artifact@v4
         with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          name: eglantine-jojo-${{ matrix.platform }}-${{ github.sha }}
           path: build/release/bin/
           if-no-files-found: error
           retention-days: 7
@@ -556,10 +556,10 @@ jobs:
         if: startsWith(matrix.platform, 'linux')
         uses: actions/upload-artifact@v4
         with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
+          name: eglantine-jojo-${{ matrix.platform }}-${{ github.sha }}
           path: |
-            eglantine-${{ github.sha }}-${{ matrix.platform }}.tar.gz
-            eglantine-${{ github.sha }}-${{ matrix.platform }}.AppImage
+            eglantine-jojo-${{ github.sha }}-${{ matrix.platform }}.tar.gz
+            eglantine-jojo-${{ github.sha }}-${{ matrix.platform }}.AppImage
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -569,8 +569,8 @@ jobs:
         if: startsWith(matrix.platform, 'macos')
         uses: actions/upload-artifact@v4
         with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-${{ matrix.platform }}.zip
+          name: eglantine-jojo-${{ matrix.platform }}-${{ github.sha }}
+          path: eglantine-jojo-${{ github.sha }}-${{ matrix.platform }}.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -614,14 +614,14 @@ jobs:
           for variant in "${variants[@]}"; do
             ./gradlew --no-daemon "-PappId=${variant%%:*}" assembleMainlineRelease
             apk=$(find app/build/outputs/apk/mainline/release -name '*.apk' | head -1)
-            cp "$apk" "$GITHUB_WORKSPACE/eglantine-${GITHUB_SHA}-android-arm64${variant#*:}.apk"
+            cp "$apk" "$GITHUB_WORKSPACE/eglantine-jojo-${GITHUB_SHA}-android-arm64${variant#*:}.apk"
           done
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: eglantine-android-arm64-${{ github.sha }}
-          path: eglantine-${{ github.sha }}-android-arm64*.apk
+          name: eglantine-jojo-android-arm64-${{ github.sha }}
+          path: eglantine-jojo-${{ github.sha }}-android-arm64*.apk
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -642,7 +642,7 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          pattern: eglantine-*-${{ github.sha }}
+          pattern: eglantine-jojo-*-${{ github.sha }}
           path: artifacts
 
       - name: Publish
@@ -675,6 +675,6 @@ jobs:
         run: |
           [ -n "$WEBHOOK" ] || exit 0
           jq -n \
-            --arg content "## <@&1566184315178713190> Eglantine ${GITHUB_REF_NAME} build (${GITHUB_SHA::10}): https://github.com/${GITHUB_REPOSITORY}/releases" \
+            --arg content "## <@&1566184315178713190> Eglantine-jojo ${GITHUB_REF_NAME} build (${GITHUB_SHA::10}): https://github.com/${GITHUB_REPOSITORY}/releases" \
             '{content: $content, allowed_mentions: {roles: ["1566184315178713190"]}}' \
           | curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK"

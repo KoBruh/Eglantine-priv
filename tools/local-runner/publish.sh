@@ -18,8 +18,8 @@ macos) notes="Apple Silicon, macOS 15 or newer. Unzip and move eglantine.app to 
 esac
 if ! gh release view "$tag" --repo "$repo" > /dev/null 2>&1; then
     gh release create "$tag" --repo "$repo" --target "$sha" --prerelease \
-        --title "Eglantine ${sha::10} ($os)" \
-        --notes "Eglantine $os build of ${sha}.
+        --title "Eglantine-jojo ${sha::10} ($os)" \
+        --notes "Eglantine-jojo $os build of ${sha}.
 
 $notes" ||
         gh release view "$tag" --repo "$repo" > /dev/null # created by a parallel job meanwhile
