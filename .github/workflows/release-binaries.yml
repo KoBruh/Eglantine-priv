@@ -699,6 +699,55 @@ jobs:
             fi
           done
 
+      # One release, tag `nightly`, that every push and scheduled run of nx2 replaces: the same
+      # download links always give the newest build. It is the repository's "Latest" release.
+      - name: Update the rolling nightly release
+        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/nx2'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p nightly
+          for file in dist/*/*; do
+            # eglantine-jojo-<sha>-linux-x86_64-pgo.AppImage -> eglantine-jojo-linux-x86_64.AppImage
+            name=$(basename "$file" | sed -E "s/-${GITHUB_SHA}//; s/${GITHUB_SHA}-//; s/-pgo//")
+            cp "$file" "nightly/$name"
+          done
+          ls -la nightly
+          sha=${GITHUB_SHA::10}
+          title="Eglantine-jojo nightly ($sha, $(date -u +%Y-%m-%d))"
+          notes="Newest build of nx2 at ${GITHUB_SHA}, built $(date -u '+%Y-%m-%d %H:%M UTC').
+
+          Per-commit builds: the ${sha}-linux, -windows, -android and -macos pre-releases."
+          git tag -f nightly "$GITHUB_SHA"
+          git push -f origin refs/tags/nightly
+          if ! gh release view nightly > /dev/null 2>&1; then
+            gh release create nightly --verify-tag --title "$title" --notes "$notes" --latest
+          fi
+          gh release upload nightly nightly/* --clobber
+          # Drop files a previous build had that this one did not produce.
+          gh release view nightly --json assets -q '.assets[].name' | while read -r asset; do
+            [ -e "nightly/$asset" ] || gh release delete-asset nightly "$asset" -y
+          done
+          gh release edit nightly --title "$title" --notes "$notes" --latest
+
+      # Keeps the per-commit pre-releases of the newest 10 commits.
+      - name: Prune old per-commit pre-releases
+        if: github.event_name != 'workflow_dispatch' && github.ref == 'refs/heads/nx2'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release list -L 200 --json tagName,createdAt \
+            -q '.[] | select(.tagName | test("^[0-9a-f]{10}-(linux|windows|android|macos)$")) | "\(.createdAt) \(.tagName)"' \
+            | sort -r > releases.txt
+          keep=$(awk '{print substr($2, 1, 10)}' releases.txt | awk '!seen[$0]++' | head -10)
+          while read -r _ tag; do
+            grep -qx "${tag::10}" <<< "$keep" || gh release delete "$tag" --cleanup-tag -y
+          done < releases.txt
+
       - name: Ping Discord
         shell: bash
         env:
