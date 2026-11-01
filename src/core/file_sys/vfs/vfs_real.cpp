@@ -87,6 +87,53 @@ constexpr FS::FileAccessMode ModeFlagsToFileAccessMode(OpenMode mode) {
     }
 }
 
+#ifdef _WIN32
+// FindFirstFileW/FindNextFileW instead of std::filesystem::directory_iterator: a loose title's
+// ExeFS/RomFS directory can hold tens of thousands of entries, and std::filesystem's generic
+// iterator calls stat() per entry on top of the enumeration syscall. Links (junctions/symlinks)
+// are rare in practice, so they fall back to std::filesystem::status to resolve file vs directory.
+template <typename Callback>
+bool ForEachWindowsEntry(const std::string& path, Callback&& callback) {
+    const std::filesystem::path directory{Common::UTF8ToUTF16W(path)};
+    WIN32_FIND_DATAW data{};
+    const auto pattern = (directory / L"*").wstring();
+    const HANDLE raw_handle = FindFirstFileW(pattern.c_str(), &data);
+    if (raw_handle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    const std::unique_ptr<void, decltype(&FindClose)> handle{raw_handle, &FindClose};
+    do {
+        const std::wstring_view name{data.cFileName};
+        if (name == L"." || name == L"..") {
+            continue;
+        }
+        bool is_directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        u64 size = (u64{data.nFileSizeHigh} << 32) | data.nFileSizeLow;
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            const auto entry_path = directory / data.cFileName;
+            std::error_code ec;
+            const auto status = std::filesystem::status(entry_path, ec);
+            if (ec || (!std::filesystem::is_directory(status) &&
+                       !std::filesystem::is_regular_file(status))) {
+                continue;
+            }
+            is_directory = std::filesystem::is_directory(status);
+            if (!is_directory) {
+                size = std::filesystem::file_size(entry_path, ec);
+                if (ec) {
+                    continue;
+                }
+            }
+        }
+        callback(path + '/' + Common::UTF16ToUTF8(name), is_directory, size);
+    } while (FindNextFileW(handle.get(), &data));
+    if (const DWORD error = GetLastError(); error != ERROR_NO_MORE_FILES) {
+        LOG_WARNING(Common_Filesystem, "Directory enumeration failed for {}: {}", path, error);
+    }
+    return true;
+}
+#endif
+
 } // Anonymous namespace
 
 RealVfsFilesystem::RealVfsFilesystem() : VfsFilesystem(nullptr) {}
@@ -405,6 +452,17 @@ std::vector<VirtualFile> RealVfsDirectory::IterateEntries<RealVfsFile, VfsFile>(
 
     std::vector<VirtualFile> out;
 
+#ifdef _WIN32
+    if (ForEachWindowsEntry(path, [this, &out](const std::string& full_path, bool is_directory,
+                                               u64 size) {
+            if (!is_directory) {
+                out.emplace_back(base.OpenFileFromEntry(full_path, size, path, perms));
+            }
+        })) {
+        return out;
+    }
+#endif
+
     const FS::DirEntryCallable callback = [this,
                                            &out](const std::filesystem::directory_entry& entry) {
         const auto full_path_string = FS::PathToUTF8String(entry.path());
@@ -426,6 +484,17 @@ std::vector<VirtualDir> RealVfsDirectory::IterateEntries<RealVfsDirectory, VfsDi
     }
 
     std::vector<VirtualDir> out;
+
+#ifdef _WIN32
+    if (ForEachWindowsEntry(path, [this, &out](const std::string& full_path, bool is_directory,
+                                               u64) {
+            if (is_directory) {
+                out.emplace_back(base.OpenDirectory(full_path, perms));
+            }
+        })) {
+        return out;
+    }
+#endif
 
     const FS::DirEntryCallable callback = [this,
                                            &out](const std::filesystem::directory_entry& entry) {
