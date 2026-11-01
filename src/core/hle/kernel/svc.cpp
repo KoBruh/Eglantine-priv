@@ -14,10 +14,12 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
 #include "core/arm/arm_interface.h"
+#include "core/arm/debug.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/svc.h"
@@ -2525,6 +2527,73 @@ u32 SleepBucket(s64 requested_ns) {
     return requested_ns < 100'000 ? 2 : requested_ns < 1'000'000 ? 3 : requested_ns < 10'000'000 ? 4 : 5;
 }
 
+// EDEN_NX2_SVC_PROFILE=2: also split each thread's SVC time by where the guest made the call (the
+// return address and two frames above it, raw guest addresses: subtract the module bases the
+// loader logs) and name threads, to find the game code behind a wait at full speed.
+bool SvcProfileCallSites() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("EDEN_NX2_SVC_PROFILE");
+        return value != nullptr && value[0] == '2';
+    }();
+    return enabled;
+}
+
+std::array<u64, 3> SvcCallSites(KernelCore& kernel, KProcess& process) {
+    Svc::ThreadContext ctx{};
+    process.GetArmInterface(kernel.CurrentPhysicalCore().CoreIndex())->GetContext(ctx);
+    auto& memory = process.GetMemory();
+    std::array<u64, 3> sites{ctx.lr};
+    u64 fp = ctx.fp;
+    for (size_t i = 1; i < sites.size(); ++i) {
+        if (fp == 0 || fp % 8 != 0 || !memory.IsValidVirtualAddressRange(fp, 16)) {
+            break;
+        }
+        sites[i] = memory.Read64(fp + 8);
+        fp = memory.Read64(fp);
+    }
+    return sites;
+}
+
+void ProfileSvcCallSite(KernelCore& kernel, u64 thread_id, u32 key, const std::array<u64, 3>& sites,
+                        u64 ns) {
+    struct Entry {
+        u64 count{};
+        u64 ns{};
+    };
+    static std::mutex mutex;
+    static std::map<std::tuple<u64, u32, u64, u64, u64>, Entry> entries;
+    static std::map<u64, std::string> names;
+    static auto window_start = std::chrono::steady_clock::now();
+    std::scoped_lock lock{mutex};
+    if (!names.contains(thread_id)) {
+        names[thread_id] = Core::GetThreadName(&GetCurrentThread(kernel)).value_or("");
+    }
+    auto& entry = entries[{thread_id, key, sites[0], sites[1], sites[2]}];
+    ++entry.count;
+    entry.ns += ns;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - window_start < std::chrono::seconds{10}) {
+        return;
+    }
+    window_start = now;
+    std::vector<std::pair<u64, std::string>> lines;
+    for (const auto& [k, value] : entries) {
+        const auto& [tid, svc_key, s0, s1, s2] = k;
+        const u32 bucket = svc_key >> 8;
+        const std::string what = bucket != 0 ? fmt::format("sleep {}", SleepBuckets[bucket])
+                                             : fmt::format("svc {:#04x}", svc_key & 0xff);
+        lines.emplace_back(value.ns,
+                           fmt::format("t{} \"{}\" {} {}x {:.0f} ms at {:#x} < {:#x} < {:#x}", tid,
+                                       names[tid], what, value.count,
+                                       static_cast<double>(value.ns) / 1e6, s0, s1, s2));
+    }
+    std::sort(lines.begin(), lines.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (size_t i = 0; i < std::min<size_t>(lines.size(), 40); ++i) {
+        LOG_INFO(Kernel_SVC, "svc call site: {}", lines[i].second);
+    }
+    entries.clear();
+}
+
 void ProfileSvc(u64 thread_id, s32 priority, u32 imm, u64 ns, bool timed_out) {
     struct Entry {
         u64 count{};
@@ -2592,6 +2661,10 @@ void Call(Core::System& system, u32 imm) {
     auto& process = GetCurrentProcess(kernel);
     std::array<uint64_t, 8> args;
     kernel.CurrentPhysicalCore().SaveSvcArguments(process, args);
+    std::array<u64, 3> call_sites{};
+    if (SvcProfileCallSites()) {
+        call_sites = SvcCallSites(kernel, process);
+    }
     if (imm == 0x0b) {
         sleep_request = static_cast<s64>(GetArg64(args, 0));
     }
@@ -2611,9 +2684,23 @@ void Call(Core::System& system, u32 imm) {
     const u64 presents = Core::g_nx2_present_count.load(std::memory_order_relaxed);
     const bool svc_trace = presents >= trace_range.first && presents <= trace_range.second;
     if (svc_trace) {
-        LOG_INFO(Kernel_SVC, "svc {:#04x} in  t{} [0]={:#x} [1]={:#x} [2]={:#x} [3]={:#x}", imm,
+        // EDEN_NX2_SVC_BACKTRACE: also the thread's name and where the guest made the call
+        // (module+offset return addresses), to find the game code behind a wait.
+        static const bool backtrace = std::getenv("EDEN_NX2_SVC_BACKTRACE") != nullptr;
+        std::string where;
+        if (backtrace) {
+            Svc::ThreadContext ctx{};
+            process.GetArmInterface(kernel.CurrentPhysicalCore().CoreIndex())->GetContext(ctx);
+            const auto frames = Core::GetBacktraceFromContext(&process, ctx);
+            for (size_t i = 0; i < std::min<size_t>(frames.size(), 8); ++i) {
+                where += fmt::format(" {}+{:#x}", frames[i].module, frames[i].offset);
+            }
+            where = fmt::format(" \"{}\"{}",
+                                Core::GetThreadName(&GetCurrentThread(kernel)).value_or(""), where);
+        }
+        LOG_INFO(Kernel_SVC, "svc {:#04x} in  t{} [0]={:#x} [1]={:#x} [2]={:#x} [3]={:#x}{}", imm,
                  GetCurrentThread(kernel).GetThreadId(),
-                 GetArg64(args, 0), GetArg64(args, 1), GetArg64(args, 2), GetArg64(args, 3));
+                 GetArg64(args, 0), GetArg64(args, 1), GetArg64(args, 2), GetArg64(args, 3), where);
     }
     if (imm == 0x80) {
         // Switch 2 only: svcSetGpuMemoryAttribute(address, size, mask, attr). nn::gpu::sdk and
@@ -2658,11 +2745,14 @@ void Call(Core::System& system, u32 imm) {
     if (SvcProfileEnabled()) {
         const auto& thread = GetCurrentThread(kernel);
         const u32 key = imm == 0x0b ? imm | SleepBucket(sleep_request) << 8 : imm;
-        ProfileSvc(thread.GetThreadId(), thread.GetPriority(), key,
-                   static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                        std::chrono::steady_clock::now() - profile_start)
-                                        .count()),
+        const u64 elapsed = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now() - profile_start)
+                                                 .count());
+        ProfileSvc(thread.GetThreadId(), thread.GetPriority(), key, elapsed,
                    static_cast<u32>(GetArg64(args, 0)) == ResultTimedOut.raw);
+        if (SvcProfileCallSites()) {
+            ProfileSvcCallSite(kernel, thread.GetThreadId(), key, call_sites, elapsed);
+        }
     }
 }
 

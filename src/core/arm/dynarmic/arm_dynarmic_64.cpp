@@ -4,7 +4,13 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <map>
+#include <tuple>
+#include <mutex>
+#include <vector>
 #include <cstdlib>
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
@@ -15,6 +21,10 @@
 #include "core/arm/dynarmic/dynarmic_exclusive_monitor.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_thread.h"
+#include "core/core.h"
+#include "core/memory.h"
+#include "common/logging.h"
 #include "dynarmic/interface/A64/config.h"
 
 namespace Core {
@@ -171,6 +181,36 @@ u64 DynarmicCallbacks64::GetTicksRemaining() {
 
 u64 DynarmicCallbacks64::GetCNTPCT() {
     const u64 ticks = m_parent.m_system.CoreTiming().GetClockTicks();
+    // EDEN_NX2_TICK_PROFILE: count system counter reads per (thread, guest LR, the caller's
+    // return address from the frame record) and log the busiest every 10 s. Time-based waits
+    // and frame limiters poll the counter without an SVC; this finds the code doing it
+    // (nn::os::GetSystemTick is a leaf, so LR is its caller).
+    if (static const bool tick_profile = std::getenv("EDEN_NX2_TICK_PROFILE") != nullptr; tick_profile) {
+        static std::mutex mutex;
+        static std::map<std::tuple<u64, u64, u64>, u64> reads;
+        static auto window = std::chrono::steady_clock::now();
+        const u64 lr = m_parent.m_jit->GetRegister(30);
+        const u64 fp = m_parent.m_jit->GetRegister(29);
+        auto& memory = m_parent.m_system.ApplicationMemory();
+        const u64 caller = fp != 0 && memory.IsValidVirtualAddressRange(fp, 16) ? memory.Read64(fp + 8) : 0;
+        const u64 tid = Kernel::GetCurrentThread(m_parent.m_system.Kernel()).GetThreadId();
+        std::scoped_lock lock{mutex};
+        ++reads[{tid, lr, caller}];
+        if (const auto now = std::chrono::steady_clock::now(); now - window >= std::chrono::seconds{10}) {
+            window = now;
+            std::vector<std::pair<u64, std::tuple<u64, u64, u64>>> sorted;
+            for (const auto& [key, count] : reads) {
+                sorted.emplace_back(count, key);
+            }
+            std::sort(sorted.rbegin(), sorted.rend());
+            for (size_t i = 0; i < std::min<size_t>(sorted.size(), 30); ++i) {
+                LOG_INFO(Core_ARM, "tick reads: t{} lr {:#x} caller {:#x}: {}",
+                         std::get<0>(sorted[i].second), std::get<1>(sorted[i].second),
+                         std::get<2>(sorted[i].second), sorted[i].first);
+            }
+            reads.clear();
+        }
+    }
     // Guest code that waits by polling the counter (title 1's main thread reads it ~17 million
     // times a second while waiting for the GPU) keeps a host core busy at full speed, and the
     // GPU thread is often on the other half of that SMT core. Two reads within ~1.7 us of each
