@@ -3043,6 +3043,9 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
                 return;
             }
             image_ids.erase(vector_it);
+            if (image_ids.empty()) {
+                selected_page_table.erase(page_it);
+            }
         };
     ForEachGPUPage(image.gpu_addr, image.guest_size_bytes, [this, &clear_page_table](u64 page) {
         clear_page_table(page, (*channel_state->gpu_page_table));
@@ -3063,6 +3066,9 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
                 return;
             }
             image_map_ids.erase(vector_it);
+            if (image_map_ids.empty()) {
+                page_table.erase(page_it);
+            }
         });
         slot_map_views.erase(map_id);
         return;
@@ -3073,11 +3079,12 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
     auto it = sparse_views.find(image_id);
     ASSERT(it != sparse_views.end());
     auto& sparse_maps = it->second;
+    std::vector<u64> empty_pages;
     for (auto& map_view_id : sparse_maps) {
         const auto& map_range = slot_map_views[map_view_id];
         const DAddr cpu_addr = map_range.cpu_addr;
         const std::size_t size = map_range.size;
-        ForEachCPUPage(cpu_addr, size, [this, image_id](u64 page) {
+        ForEachCPUPage(cpu_addr, size, [this, image_id, &empty_pages](u64 page) {
             const auto page_it = page_table.find(page);
             if (page_it == page_table.end()) {
                 ASSERT_MSG(false, "Unregistering unregistered page={:#x}", page << YUZU_PAGEBITS);
@@ -3096,8 +3103,19 @@ void TextureCache<P>::UnregisterImage(ImageId image_id) {
                 }
                 vector_it = image_map_ids.erase(vector_it);
             }
+            if (image_map_ids.empty()) {
+                empty_pages.push_back(page);
+            }
         });
         slot_map_views.erase(map_view_id);
+    }
+    std::ranges::sort(empty_pages);
+    const auto unique_end = std::ranges::unique(empty_pages).begin();
+    for (auto page_it = empty_pages.begin(); page_it != unique_end; ++page_it) {
+        const auto page_table_it = page_table.find(*page_it);
+        if (page_table_it != page_table.end() && page_table_it->second.empty()) {
+            page_table.erase(page_table_it);
+        }
     }
     sparse_views.erase(it);
 }
