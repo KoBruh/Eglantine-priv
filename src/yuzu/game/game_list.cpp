@@ -486,12 +486,12 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* dump_romfs_sdmc = dump_romfs_menu->addAction(tr("Dump RomFS to SDMC"));
     QAction* verify_integrity = context_menu.addAction(tr("Verify Integrity"));
     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
-#if !defined(__APPLE__)
     QAction* convert_edenpack = nullptr;
     if (FileSys::EdenPack::DumpRootFromMain(path)) {
         convert_edenpack = context_menu.addAction(tr("Convert to EdenPack..."));
         convert_edenpack->setEnabled(!edenpack_conversion_running);
     }
+#if !defined(__APPLE__)
     QMenu* shortcut_menu = context_menu.addMenu(tr("Create Shortcut"));
     QAction* create_desktop_shortcut = shortcut_menu->addAction(tr("Add to Desktop"));
     QAction* create_applications_menu_shortcut =
