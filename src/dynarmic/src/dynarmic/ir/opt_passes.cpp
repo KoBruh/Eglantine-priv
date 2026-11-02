@@ -544,6 +544,23 @@ static void A64GetSetElimination(IR::Block& block) {
                 ir.SetInsertionPointBefore(&*get_inst);
                 get_inst->ReplaceUsesWith(ir.LeastSignificantWord(IR::U64{info.register_value}));
             }
+        } else if (!info.register_value.IsEmpty()
+            && info.set_instruction_present
+            && tracking_type == TrackingType::X
+            && info.tracking_type == TrackingType::W) {
+            // SetW r1 -> GetX r1 reads the 32-bit value zero-extended (no store and reload). Only
+            // after a write: a W value from GetW r1 says nothing about the upper half.
+            if (info.register_value.IsImmediate()) {
+                ReplaceUsesWith(*get_inst, false, u32(info.register_value.GetImmediateAsU64()));
+            } else {
+                A64::IREmitter ir{block};
+                ir.SetInsertionPointBefore(&*get_inst);
+                const IR::U64 extended = ir.ZeroExtendWordToLong(IR::U32{info.register_value});
+                get_inst->ReplaceUsesWith(extended);
+                // Later reads of X get the same value; the SetW stays the register's last write.
+                info.register_value = extended;
+                info.tracking_type = TrackingType::X;
+            }
         } else {
             info = {};
             info.register_value = IR::Value(&*get_inst);
