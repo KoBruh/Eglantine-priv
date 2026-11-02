@@ -151,6 +151,15 @@ public:
     inline bool IsValueLive(const IR::Inst* inst) const noexcept {
         return !!ValueLocation(inst);
     }
+    /// Whether this instruction is the last use of the value in arg's register and nothing else
+    /// lives there, so that UseScratchGpr takes the register without copying it.
+    inline bool IsLastUseInGpr(const Argument& arg) const noexcept {
+        if (arg.IsImmediate()) {
+            return false;
+        }
+        const auto loc = ValueLocation(arg.value.GetInst());
+        return loc && HostLocIsGPR(*loc) && LocInfo(*loc).IsLastUse();
+    }
     inline Xbyak::Reg64 UseGpr(BlockOfCode& code, Argument& arg) noexcept {
         ASSERT(!arg.allocated);
         arg.allocated = true;

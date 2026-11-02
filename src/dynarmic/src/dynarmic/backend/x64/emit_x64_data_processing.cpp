@@ -935,8 +935,31 @@ static void EmitAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, size_t 
     // Consider using LEA.
     if (!carry_inst && !overflow_inst && !nzcv_inst && carry_in.IsImmediate() && !carry_in.GetImmediateU1()) {
         if (args[1].IsImmediate() && args[1].FitsInImmediateS32()) {
-            Xbyak::Reg const result = ctx.reg_alloc.UseScratchGpr(code, args[0]).changeBit(bitsize);
-            code.lea(result, code.ptr[result + args[1].GetImmediateS32()]);
+            const u64 imm = args[1].GetImmediateS32();
+            // A source still needed afterwards is added into another register, not copied first.
+            // The 64-bit address is truncated for a 32-bit result (no address-size prefix).
+            if (args[0].IsInGpr(ctx.reg_alloc) && !ctx.reg_alloc.IsLastUseInGpr(args[0])) {
+                const Xbyak::Reg64 source = ctx.reg_alloc.UseGpr(code, args[0]);
+                Xbyak::Reg const result = ctx.reg_alloc.ScratchGpr(code).changeBit(bitsize);
+                code.lea(result, code.ptr[source + imm]);
+                ctx.reg_alloc.DefineValue(code, inst, result);
+            } else {
+                const Xbyak::Reg64 result = ctx.reg_alloc.UseScratchGpr(code, args[0]);
+                code.lea(result.changeBit(bitsize), code.ptr[result + imm]);
+                ctx.reg_alloc.DefineValue(code, inst, result);
+            }
+        } else if (!args[1].IsImmediate() && args[0].IsInGpr(ctx.reg_alloc) && args[1].IsInGpr(ctx.reg_alloc) &&
+                   !ctx.reg_alloc.IsLastUseInGpr(args[0]) && !ctx.reg_alloc.IsLastUseInGpr(args[1])) {
+            const Xbyak::Reg64 op1 = ctx.reg_alloc.UseGpr(code, args[0]);
+            const Xbyak::Reg64 op2 = ctx.reg_alloc.UseGpr(code, args[1]);
+            Xbyak::Reg const result = ctx.reg_alloc.ScratchGpr(code).changeBit(bitsize);
+            code.lea(result, code.ptr[op1 + op2]);
+            ctx.reg_alloc.DefineValue(code, inst, result);
+        } else if (!args[1].IsImmediate() && ctx.reg_alloc.IsLastUseInGpr(args[1]) && !ctx.reg_alloc.IsLastUseInGpr(args[0])) {
+            // Commutative: add into the operand that dies here.
+            const Xbyak::Reg64 result = ctx.reg_alloc.UseScratchGpr(code, args[1]);
+            const Xbyak::Reg64 op1 = ctx.reg_alloc.UseGpr(code, args[0]);
+            code.lea(result.changeBit(bitsize), code.ptr[result + op1]);
             ctx.reg_alloc.DefineValue(code, inst, result);
         } else {
             Xbyak::Reg const result = ctx.reg_alloc.UseScratchGpr(code, args[0]).changeBit(bitsize);
@@ -952,7 +975,8 @@ static void EmitAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, size_t 
     const Xbyak::Reg8 carry = DoCarry(code, ctx.reg_alloc, carry_in, carry_inst);
     const Xbyak::Reg8 overflow = overflow_inst ? ctx.reg_alloc.ScratchGpr(code).cvt8() : Xbyak::Reg8{-1};
 
-    if (args[1].IsImmediate() && args[1].GetType() == IR::Type::U32) {
+    // A 64-bit immediate goes in the instruction when it is a sign-extended imm32.
+    if (args[1].IsImmediate() && (args[1].GetType() == IR::Type::U32 || args[1].FitsInImmediateS32())) {
         const u64 op_arg = args[1].GetImmediateU64();
         if (carry_in.IsImmediate()) {
             if (carry_in.GetImmediateU1()) {
@@ -1040,17 +1064,19 @@ static void EmitSub(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bit
 
     bool invert_output_carry = true;
 
+    // A 64-bit immediate goes in the instruction when it is a sign-extended imm32 (so is its NOT).
+    const bool imm_operand = args[1].IsImmediate() && (args[1].GetType() == IR::Type::U32 || args[1].FitsInImmediateS32());
     if (is_cmp) {
-        if (args[1].IsImmediate() && args[1].GetType() == IR::Type::U32) {
-            const u32 op_arg = args[1].GetImmediateU32();
+        if (imm_operand) {
+            const u32 op_arg = u32(args[1].GetImmediateU64());
             code.cmp(result, op_arg);
         } else {
             OpArg op_arg = ctx.reg_alloc.UseOpArg(code, args[1]);
             op_arg.setBit(bitsize);
             code.cmp(result, *op_arg);
         }
-    } else if (args[1].IsImmediate() && args[1].GetType() == IR::Type::U32) {
-        const u32 op_arg = args[1].GetImmediateU32();
+    } else if (imm_operand) {
+        const u32 op_arg = u32(args[1].GetImmediateU64());
         if (carry_in.IsImmediate()) {
             if (carry_in.GetImmediateU1()) {
                 code.sub(result, op_arg);
