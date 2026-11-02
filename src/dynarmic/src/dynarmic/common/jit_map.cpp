@@ -3,6 +3,7 @@
 
 #include "dynarmic/common/jit_map.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
@@ -26,6 +27,8 @@ struct Counted {
     unsigned long long pc, end;
     unsigned terminal;
     unsigned long long count;  // incremented by the block's code (one JIT per host thread)
+    const void* host;
+    std::size_t host_size;
 };
 std::mutex counts_mutex;
 std::deque<Counted> counted;  // stable addresses
@@ -75,7 +78,14 @@ bool BlockCountsEnabled() {
 
 unsigned long long* BlockCountsRegister(unsigned long long pc, unsigned long long end, unsigned terminal) {
     std::scoped_lock lock{counts_mutex};
-    return &counted.emplace_back(Counted{pc, end, terminal, 0}).count;
+    return &counted.emplace_back(Counted{pc, end, terminal, 0, nullptr, 0}).count;
+}
+
+void BlockCountsSetHost(unsigned long long* counter, const void* host, std::size_t size) {
+    std::scoped_lock lock{counts_mutex};
+    auto* const entry = reinterpret_cast<Counted*>(reinterpret_cast<char*>(counter) - offsetof(Counted, count));
+    entry->host = host;
+    entry->host_size = size;
 }
 
 }  // namespace Common
@@ -87,7 +97,7 @@ std::vector<BlockCount> BlockCountsSnapshot() {
     for (const Counted& entry : counted) {
         const unsigned long long count = *static_cast<volatile const unsigned long long*>(&entry.count);
         if (count != 0) {
-            result.push_back({entry.pc, entry.end, entry.terminal, count});
+            result.push_back({entry.pc, entry.end, entry.terminal, count, entry.host, entry.host_size});
         }
     }
     return result;

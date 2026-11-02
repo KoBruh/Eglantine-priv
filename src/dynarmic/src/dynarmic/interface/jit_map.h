@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -22,6 +23,8 @@ struct BlockCount {
     std::uint64_t end;       ///< guest address after its last instruction
     unsigned terminal;       ///< how the block ends (IR::Term::Terminal's index)
     std::uint64_t count;     ///< executions since the last reset
+    const void* host;        ///< its emitted code (may be stale after a cache clear)
+    std::size_t host_size;
 };
 std::vector<BlockCount> BlockCountsSnapshot();
 void ResetBlockCounts();

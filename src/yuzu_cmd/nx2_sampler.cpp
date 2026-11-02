@@ -380,6 +380,26 @@ void Run(std::vector<std::string> patterns, double start, double seconds, std::s
             }
             std::fclose(file);
         }
+        // <out>.blocks.code: the host code of the 40 most executed blocks, one per line as
+        // "pc count hex-bytes", to read what the JIT emitted for them.
+        auto top = counts;
+        std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.count > b.count; });
+        top.resize((std::min<size_t>)(top.size(), 40));
+        if (std::FILE* const file = std::fopen((out + ".blocks.code").c_str(), "w")) {
+            for (const auto& block : top) {
+                if (block.host == nullptr || block.host_size == 0 || block.host_size > 65536) {
+                    continue;
+                }
+                std::fprintf(file, "%#llx %llu ", static_cast<unsigned long long>(block.pc),
+                             static_cast<unsigned long long>(block.count));
+                const auto* bytes = static_cast<const unsigned char*>(block.host);
+                for (size_t i = 0; i < block.host_size; ++i) {
+                    std::fprintf(file, "%02x", bytes[i]);
+                }
+                std::fputc('\n', file);
+            }
+            std::fclose(file);
+        }
     }
     for (const auto& target : targets) {
         CloseHandle(target.handle);

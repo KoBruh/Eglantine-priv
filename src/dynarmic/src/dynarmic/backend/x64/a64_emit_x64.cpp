@@ -95,8 +95,9 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     const auto* const entrypoint = code.getCurr();
     // rbp is the JIT frame pointer for every block, set once on entry (BlockOfCode::GenRunCode).
     // DYNARMIC_BLOCK_COUNTS=1: count this block's executions (no host register is live at entry).
+    unsigned long long* counter = nullptr;
     if (::Dynarmic::Common::BlockCountsEnabled()) [[unlikely]] {
-        auto* const counter = ::Dynarmic::Common::BlockCountsRegister(
+        counter = ::Dynarmic::Common::BlockCountsRegister(
             A64::LocationDescriptor{block.Location()}.PC(), A64::LocationDescriptor{block.EndLocation()}.PC(),
             [&] {
                 // Leaf terminals as 10 + their index (none, ReturnToDispatch, LinkBlock,
@@ -206,6 +207,9 @@ finish_this_inst:
     block_ranges.AddRange(range, descriptor);
 
     auto bdesc = RegisterBlock(descriptor, entrypoint, size);
+    if (counter != nullptr) [[unlikely]] {
+        ::Dynarmic::Common::BlockCountsSetHost(counter, entrypoint, size);
+    }
     code.DisableWriting();
     shared_labels.clear();
     return bdesc;
