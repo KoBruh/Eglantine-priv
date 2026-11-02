@@ -2721,10 +2721,14 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 if (i < in_a) return source_a == 255 ? 255U : source_a + i;
                 return source_b == 255 ? 255U : source_b + (i - in_a);
             };
+            const u32 components = static_cast<u32>(std::popcount(mask));
+            // Every written component must stay below the uniform/scratch registers, not only the first.
+            const u32 low_count = split ? std::min(components, 2U) : components;
+            const u32 high_count = components > 2 ? components - 2 : 1U;
             if ((source_a != 255 && source_a + in_a > reg_limit) ||
                 (count > in_a && source_b != 255 && source_b + (count - in_a) > reg_limit) ||
-                (dest != 255 && dest >= reg_limit) ||
-                (split && second_dest >= reg_limit))
+                (dest != 255 && dest + low_count > reg_limit) ||
+                (split && second_dest + high_count > reg_limit))
                 return fail(index, opcode == 0x361 ? "native texture mode or descriptor binding" : "native uniform texture register overflow");
             const auto copy = [&](u32 target, u32 source) {
                 emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
@@ -2740,7 +2744,6 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                  (u64{246} << 20) | (u64{maxwell_type[dimension]} << 28) |
                  (u64{mask} << 31) | (u64{offsets} << 36) | (u64{lod} << 37) |
                  (u64{insn.Bits(90, 1)} << 49) | (u64{depth_compare} << 50) | (u64{7} << 51));
-            const u32 components = static_cast<u32>(std::popcount(mask));
             for (u32 i = 0; i < components; ++i) {
                 u32 target = 255;
                 if (!split) target = dest == 255 ? 255U : static_cast<u32>(dest) + i;
