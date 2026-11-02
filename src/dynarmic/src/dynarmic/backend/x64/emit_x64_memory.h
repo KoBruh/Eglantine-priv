@@ -173,20 +173,40 @@ template<>
         code.bt(page, *ctx.conf.page_table_marked_bit);
         code.jc(abort, code.T_NEAR);
     }
-    // mask away attributes
-    if (ctx.conf.page_table_pointer_mask == 0) {
-        code.test(page, page);
-    } else if (std::in_range<s32>(ctx.conf.page_table_pointer_mask)) {
-        code.and_(page, ctx.conf.page_table_pointer_mask);
-    } else {
-        code.mov(tmp, ctx.conf.page_table_pointer_mask);
-        code.and_(page, tmp);
-    }
-    // check for sign bit, apply sign extension as needed (the option is the sign bit's index, as
-    // in the A32 lookup above and the arm64 backend)
-    if (ctx.conf.page_table_sign_extension) {
+    // Sign-extending from bit s first discards the mask's bits above s, so the mask can then be
+    // applied with those bits set: an imm32 for a pointer mask of bits 12..s (no 64-bit constant).
+    const std::optional<s64> mask_after_sign_extension = [&]() -> std::optional<s64> {
+        const u64 mask = ctx.conf.page_table_pointer_mask;
+        if (!ctx.conf.page_table_sign_extension || mask == 0 || std::in_range<s32>(mask)) {
+            return std::nullopt;
+        }
+        const unsigned s = *ctx.conf.page_table_sign_extension;
+        if (s >= 63 || !((mask >> s) & 1)) {
+            return std::nullopt;
+        }
+        const s64 extended = s64(mask | ~((u64(2) << s) - 1));
+        return std::in_range<s32>(extended) ? std::optional<s64>{extended} : std::nullopt;
+    }();
+    if (mask_after_sign_extension) {
         code.shl(page, 63 - int(*ctx.conf.page_table_sign_extension));
         code.sar(page, 63 - int(*ctx.conf.page_table_sign_extension));
+        code.and_(page, u32(s32(*mask_after_sign_extension)));
+    } else {
+        // mask away attributes
+        if (ctx.conf.page_table_pointer_mask == 0) {
+            code.test(page, page);
+        } else if (std::in_range<s32>(ctx.conf.page_table_pointer_mask)) {
+            code.and_(page, ctx.conf.page_table_pointer_mask);
+        } else {
+            code.mov(tmp, ctx.conf.page_table_pointer_mask);
+            code.and_(page, tmp);
+        }
+        // check for sign bit, apply sign extension as needed (the option is the sign bit's index, as
+        // in the A32 lookup above and the arm64 backend)
+        if (ctx.conf.page_table_sign_extension) {
+            code.shl(page, 63 - int(*ctx.conf.page_table_sign_extension));
+            code.sar(page, 63 - int(*ctx.conf.page_table_sign_extension));
+        }
     }
 
     code.jz(abort, code.T_NEAR);
