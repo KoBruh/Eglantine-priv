@@ -304,6 +304,10 @@ public:
         return m_core_id;
     }
 
+    // EDEN_NX2_SLEEP_STATS: when the timer ended this thread's sleep, and whether its core was idle.
+    s64 m_nx2_woken_ns{};
+    bool m_nx2_woken_on_idle_core{};
+
     void SetActiveCore(s32 core) {
         m_core_id = core;
     }

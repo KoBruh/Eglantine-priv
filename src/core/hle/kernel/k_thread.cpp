@@ -26,6 +26,7 @@
 #include "core/hardware_properties.h"
 #include "core/hle/kernel/k_condition_variable.h"
 #include "core/hle/kernel/k_handle_table.h"
+#include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_memory_layout.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_resource_limit.h"
@@ -36,6 +37,7 @@
 #include "core/hle/kernel/k_thread_queue.h"
 #include "core/hle/kernel/k_worker_task_manager.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/nx2_sleep_stats.h"
 #include "core/hle/kernel/svc.h"
 #include "core/hle/kernel/svc_results.h"
 #include "core/hle/kernel/svc_types.h"
@@ -401,6 +403,13 @@ namespace Kernel {
 
         // If we're waiting, cancel the wait.
         if (this->GetState() == ThreadState::Waiting) {
+            if (Nx2SleepStats::Enabled()) [[unlikely]] {
+                m_nx2_woken_ns = kernel.HardwareTimer().GetTick();
+                const s32 core = this->GetActiveCore();
+                m_nx2_woken_on_idle_core =
+                    core >= 0 && static_cast<size_t>(core) < Core::Hardware::NUM_CPU_CORES &&
+                    kernel.Scheduler(static_cast<size_t>(core)).IsIdle();
+            }
             m_wait_queue->CancelWait(kernel, this, ResultTimedOut, false);
         }
     }

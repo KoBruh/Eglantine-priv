@@ -5,10 +5,12 @@
 
 #include <atomic>
 #include "common/assert.h"
+#include "common/cpu_features.h"
 #include "core/hle/kernel/k_interrupt_manager.h"
 #include "core/hle/kernel/k_spin_lock.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
+#include "core/hle/kernel/nx2_sleep_stats.h"
 #include "core/hle/kernel/physical_core.h"
 
 namespace Kernel {
@@ -33,7 +35,14 @@ public:
         } else {
             // Otherwise, we want to disable scheduling and acquire the spinlock.
             SchedulerType::DisableScheduling(m_kernel);
-            m_spin_lock.Lock();
+            if (Nx2SleepStats::Enabled()) [[unlikely]] {
+                const s64 begin = Common::g_wall_clock.GetTimeNS().count();
+                m_spin_lock.Lock();
+                m_nx2_acquired_ns = Common::g_wall_clock.GetTimeNS().count();
+                Nx2SleepStats::LockWait().Add(m_nx2_acquired_ns - begin);
+            } else {
+                m_spin_lock.Lock();
+            }
 
             ASSERT(m_lock_count == 0);
             ASSERT(m_owner_thread == nullptr);
@@ -61,6 +70,10 @@ public:
 
             // Note that we no longer hold the lock, and unlock the spinlock.
             m_owner_thread = nullptr;
+            if (Nx2SleepStats::Enabled()) [[unlikely]] {
+                Nx2SleepStats::LockHold().Add(Common::g_wall_clock.GetTimeNS().count() -
+                                              m_nx2_acquired_ns);
+            }
             m_spin_lock.Unlock();
 
             // Enable scheduling, and perform a rescheduling operation.
@@ -75,6 +88,7 @@ private:
     KAlignedSpinLock m_spin_lock{};
     s32 m_lock_count{};
     std::atomic<KThread*> m_owner_thread{};
+    s64 m_nx2_acquired_ns{};
 };
 
 } // namespace Kernel

@@ -89,6 +89,7 @@ Nx2Experiment Nx2AbExperiment() {
                : name == "hostcores" ? Nx2Experiment::HostCores
                : name == "poke"      ? Nx2Experiment::Poke
                : name == "split"     ? Nx2Experiment::Split
+               : name == "sleep"     ? Nx2Experiment::Sleep
                                      : Nx2Experiment::None;
     }();
     return experiment;

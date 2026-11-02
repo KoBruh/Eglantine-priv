@@ -4,10 +4,12 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_scheduler.h"
+#include "core/hle/kernel/nx2_sleep_stats.h"
 
 namespace Kernel {
 
@@ -27,6 +29,17 @@ void KHardwareTimer::Finalize() {
 }
 
 void KHardwareTimer::DoTask() {
+    const bool stats = Nx2SleepStats::Enabled();
+    const s64 entered = stats ? GetTick() : 0;
+    s64 locked = 0, tasks_done = 0;
+    SCOPE_EXIT {
+        if (stats && locked != 0) {
+            const s64 left = GetTick();
+            Nx2SleepStats::TimerLock().Add(locked - entered);
+            Nx2SleepStats::TimerTasks().Add(tasks_done - locked);
+            Nx2SleepStats::TimerUnlock().Add(left - tasks_done);
+        }
+    };
     // Handle the interrupt.
     {
         KScopedSchedulerLock slk{m_kernel};
@@ -36,14 +49,21 @@ void KHardwareTimer::DoTask() {
         if (!this->GetInterruptEnabled()) {
             return;
         }
+        if (stats) [[unlikely]] {
+            locked = GetTick();
+            Nx2SleepStats::Timer().Add(locked - m_wakeup_time);
+        }
 
         // Disable the timer interrupt while we handle this.
         // Not necessary due to core timing already having popped this event to call it.
         // this->DisableInterrupt();
         m_wakeup_time = (std::numeric_limits<s64>::max)();
 
-        if (const s64 next_time = this->DoInterruptTaskImpl(GetTick());
-            0 < next_time && next_time <= m_wakeup_time) {
+        const s64 next_time = this->DoInterruptTaskImpl(GetTick());
+        if (stats) [[unlikely]] {
+            tasks_done = GetTick();
+        }
+        if (0 < next_time && next_time <= m_wakeup_time) {
             // We have a next time, so we should set the time to interrupt and turn the interrupt
             // on.
             this->EnableInterrupt(next_time);

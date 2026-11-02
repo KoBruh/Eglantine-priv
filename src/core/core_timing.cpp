@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <map>
 #include <mutex>
 #include <string>
 #include <tuple>
@@ -15,6 +16,7 @@
 #include "common/windows/timer_resolution.h"
 #endif
 
+#include "common/logging.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -257,6 +259,48 @@ u64 CoreTiming::GetGPUTicks() const {
         : Common::WallClock::CPUTickToGPUTick(cpu_ticks);
 }
 
+namespace {
+// EDEN_NX2_SLEEP_STATS: how long each event's callback runs on this thread. Events are handled in
+// turn, so a slow callback delays every timer due behind it (guest sleeps among them).
+struct CallbackStats {
+    u64 count{}, total_ns{}, max_ns{}, over_50us{};
+};
+std::mutex g_callback_stats_mutex;
+std::map<std::string, CallbackStats> g_callback_stats;
+s64 g_callback_stats_next_log{};
+
+void CountCallback(const EventType& type, s64 begin_ns, s64 end_ns) {
+    const u64 took = static_cast<u64>(std::max<s64>(end_ns - begin_ns, 0));
+    std::scoped_lock lock{g_callback_stats_mutex};
+    auto& stats = g_callback_stats[type.name];
+    ++stats.count;
+    stats.total_ns += took;
+    stats.max_ns = std::max(stats.max_ns, took);
+    stats.over_50us += took > 50'000 ? 1 : 0;
+    if (end_ns < g_callback_stats_next_log) {
+        return;
+    }
+    if (g_callback_stats_next_log != 0) {
+        std::string text;
+        for (const auto& [name, entry] : g_callback_stats) {
+            if (entry.over_50us != 0 || entry.total_ns > 10'000'000) {
+                text += fmt::format(" [{}: {} calls, {} us average, {} us max, {} over 50 us]", name,
+                                    entry.count, entry.total_ns / entry.count / 1000,
+                                    entry.max_ns / 1000, entry.over_50us);
+            }
+        }
+        LOG_INFO(Core_Timing, "timing callbacks, last 10 s:{}", text);
+    }
+    g_callback_stats.clear();
+    g_callback_stats_next_log = end_ns + 10'000'000'000LL;
+}
+
+bool CallbackStatsEnabled() {
+    static const bool enabled = std::getenv("EDEN_NX2_SLEEP_STATS") != nullptr;
+    return enabled;
+}
+} // namespace
+
 std::optional<s64> CoreTiming::Advance() {
     std::scoped_lock lock{advance_lock, basic_lock};
     global_timer = GetGlobalTimeNs().count();
@@ -273,15 +317,22 @@ std::optional<s64> CoreTiming::Advance() {
 
                 basic_lock.unlock();
 
-                event_type->callback(
-                    evt_time, std::chrono::nanoseconds{GetGlobalTimeNs().count() - evt_time});
+                const s64 begin = GetGlobalTimeNs().count();
+                event_type->callback(evt_time, std::chrono::nanoseconds{begin - evt_time});
+                if (CallbackStatsEnabled()) [[unlikely]] {
+                    CountCallback(*event_type, begin, GetGlobalTimeNs().count());
+                }
 
                 basic_lock.lock();
             } else {
                 basic_lock.unlock();
 
-                const auto new_schedule_time{event_type->callback(
-                    evt_time, std::chrono::nanoseconds{GetGlobalTimeNs().count() - evt_time})};
+                const s64 begin = GetGlobalTimeNs().count();
+                const auto new_schedule_time{
+                    event_type->callback(evt_time, std::chrono::nanoseconds{begin - evt_time})};
+                if (CallbackStatsEnabled()) [[unlikely]] {
+                    CountCallback(*event_type, begin, GetGlobalTimeNs().count());
+                }
 
                 basic_lock.lock();
 
