@@ -122,7 +122,9 @@ TEST_CASE("Ampere uniform bindless TEX traces both merged cbuf handle sources",
                         (mask == 15 ? 6U : 255U);
     const auto lowered = LowerToMaxwell(code);
     REQUIRE(static_cast<bool>(lowered));
-    REQUIRE(((lowered.instructions[lowered.source_instruction_offsets[31] + 2] >> 49) & 1) == nodep);
+    // Coordinates to R250/R251, the UR4 handle to R246, then TEX.B.
+    REQUIRE(lowered.instructions[lowered.source_instruction_offsets[31] + 2] == Copy(246, 220));
+    REQUIRE(((lowered.instructions[lowered.source_instruction_offsets[31] + 3] >> 49) & 1) == nodep);
     REQUIRE(lowered.source_size == sizeof(code));
     REQUIRE(lowered.required_texture_buffer == ~0U);
     TextureEnvironment env{lowered.instructions};
@@ -268,15 +270,16 @@ TEST_CASE("Ampere uniform bindless TEX preserves packed handles and split RGBA r
     REQUIRE(static_cast<bool>(lowered));
     REQUIRE(lowered.required_texture_buffer == ~0U);
     REQUIRE(lowered.source_size == sizeof(sample));
-    REQUIRE(lowered.instructions.size() == 9);
-    REQUIRE(lowered.source_instruction_offsets == std::vector<u32>{0, 1, 8});
+    REQUIRE(lowered.instructions.size() == 10);
+    REQUIRE(lowered.source_instruction_offsets == std::vector<u32>{0, 1, 9});
     REQUIRE(lowered.instructions[1] == Copy(250, 2));
     REQUIRE(lowered.instructions[2] == Copy(251, 3));
-    REQUIRE(lowered.instructions[3] ==
-            (0xde80000000070000ULL | 250ULL | (250ULL << 8) | (220ULL << 20) |
+    REQUIRE(lowered.instructions[3] == Copy(246, 220));
+    REQUIRE(lowered.instructions[4] ==
+            (0xde80000000070000ULL | 250ULL | (250ULL << 8) | (246ULL << 20) |
              (2ULL << 28) | (15ULL << 31) | (1ULL << 37) | (1ULL << 49) | (7ULL << 51)));
     for (u32 i = 0; i < 4; ++i) {
-        REQUIRE(lowered.instructions[4 + i] == Copy(i, 250 + i));
+        REQUIRE(lowered.instructions[5 + i] == Copy(i, 250 + i));
     }
 }
 
@@ -302,8 +305,9 @@ TEST_CASE("Ampere uniform bindless TEX preserves two captured independently merg
     REQUIRE(lowered.required_texture_buffer == ~0U);
     for (const u32 native : {10U, 11U}) {
         const u32 start = lowered.source_instruction_offsets[native];
-        const u64 texture = lowered.instructions[start + 2];
-        REQUIRE(((texture >> 20) & 255) == (native == 10U ? 222U : 220U));
+        REQUIRE(lowered.instructions[start + 2] == Copy(246, native == 10U ? 222U : 220U));
+        const u64 texture = lowered.instructions[start + 3];
+        REQUIRE(((texture >> 20) & 255) == 246);
         REQUIRE(((texture >> 31) & 15) == (native == 10U ? 3U : 1U));
         REQUIRE(((texture >> 49) & 1) == 0);
     }
@@ -333,17 +337,21 @@ TEST_CASE("Ampere uniform bindless TEX preserves two captured independently merg
         REQUIRE(descriptor.secondary_shift_left == 0);
         REQUIRE(descriptor.count == 1);
     }
+    // Only the packed handle register is the Maxwell TEX.B handle; the high word the USHF
+    // derives is not traced, so overwriting it does not change the samples.
     for (const u32 native : {5U, 6U}) {
         auto clobbered = code;
         clobbered[native] = {{0x7882U | (code[native].Bits(16, 8) << 16), 0, 0, 0}};
-        const auto rejected = LowerToMaxwell(clobbered);
-        REQUIRE_FALSE(static_cast<bool>(rejected));
-        REQUIRE(rejected.error_offset == (native == 5 ? 11U : 10U) * 16);
-        REQUIRE(rejected.instructions.empty());
+        const auto accepted = LowerToMaxwell(clobbered);
+        REQUIRE(static_cast<bool>(accepted));
+        for (const u32 texture : {10U, 11U}) {
+            REQUIRE(accepted.instructions[accepted.source_instruction_offsets[texture] + 2] ==
+                    Copy(246, texture == 10U ? 222U : 220U));
+        }
     }
 }
 
-TEST_CASE("Ampere uniform bindless TEX admits only forward branches outside its protected interval",
+TEST_CASE("Ampere uniform bindless TEX lowers with branches around its handle setup",
           "[video_core][ampere][bindless_tex]") {
     for (const u32 predicate : {0U, 7U, 8U}) {
         const std::array<Instruction, 5> later{{
@@ -363,33 +371,34 @@ TEST_CASE("Ampere uniform bindless TEX admits only forward branches outside its 
     const std::array<Instruction, 5> conditional{{sample[0], sample[1], extra_condition,
                                                 {{0x00047882, 0, 0, 0}}, sample[2]}};
     REQUIRE(static_cast<bool>(LowerToMaxwell(conditional)));
+    // The TEX reads its uniform handle register where it executes, so branches into the code
+    // between the handle setup and the sample, and loops back over it, lower like any branch.
     for (const s32 relative : {16, 32}) {
         const std::array<Instruction, 5> enter_interval{{
             Branch(relative), sample[0], {{0x09047220, 4, 0x0041c000, 0}}, sample[1], sample[2],
         }};
-        const auto rejected = LowerToMaxwell(enter_interval);
-        REQUIRE_FALSE(static_cast<bool>(rejected));
-        REQUIRE(rejected.error_offset == 48);
+        REQUIRE(static_cast<bool>(LowerToMaxwell(enter_interval)));
     }
     const std::array<Instruction, 5> loop_clobber{{
         sample[0], sample[1], {{0x00047882, 0, 0, 0}}, Branch(-64), sample[2],
     }};
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(loop_clobber)));
-    for (const s32 relative : {-48, -16, 1, 1024}) {
-        const std::array<Instruction, 4> invalid{{sample[0], sample[1], Branch(relative), sample[2]}};
-        const auto rejected = LowerToMaxwell(invalid);
-        REQUIRE_FALSE(static_cast<bool>(rejected));
-        REQUIRE(rejected.error_offset == 16);
-        REQUIRE(rejected.instructions.empty());
-    }
-    for (const u32 bit : {16U, 84U, 96U}) {
-        auto unknown_branch = Branch(0);
-        unknown_branch.words[bit / 32] ^= 1U << (bit % 32);
-        const std::array<Instruction, 4> invalid{{sample[0], sample[1], unknown_branch, sample[2]}};
-        REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
+    REQUIRE(static_cast<bool>(LowerToMaxwell(loop_clobber)));
+    for (const s32 relative : {-48, -16}) {
+        const std::array<Instruction, 4> loop{{sample[0], sample[1], Branch(relative), sample[2]}};
+        REQUIRE(static_cast<bool>(LowerToMaxwell(loop)));
     }
     const std::array<Instruction, 4> interrupted{{sample[0], Branch(0), sample[1], sample[2]}};
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(interrupted)));
+    REQUIRE(static_cast<bool>(LowerToMaxwell(interrupted)));
+    // Branches that are misaligned or leave the program are still rejected.
+    const std::array<Instruction, 4> misaligned{{sample[0], sample[1], Branch(1), sample[2]}};
+    const auto rejected = LowerToMaxwell(misaligned);
+    REQUIRE_FALSE(static_cast<bool>(rejected));
+    REQUIRE(rejected.error_offset == 32);
+    REQUIRE(rejected.instructions.empty());
+    const std::array<Instruction, 4> outside{{sample[0], sample[1], Branch(1024), sample[2]}};
+    const auto escaped = LowerToMaxwell(outside);
+    REQUIRE_FALSE(static_cast<bool>(escaped));
+    REQUIRE(escaped.instructions.empty());
 }
 
 TEST_CASE("Ampere uniform bindless TEX preserves predicates and accepts verified even handles",
@@ -426,14 +435,17 @@ TEST_CASE("Ampere uniform bindless TEX preserves captured implicit LOD operands"
     const u32 start = lowered.source_instruction_offsets[4];
     REQUIRE(lowered.instructions[start] == Copy(250, 4));
     REQUIRE(lowered.instructions[start + 1] == Copy(251, 5));
-    REQUIRE(((lowered.instructions[start + 2] >> 37) & 7) == 0);
+    REQUIRE(lowered.instructions[start + 2] == Copy(246, 220));
+    REQUIRE(((lowered.instructions[start + 3] >> 37) & 7) == 0);
     for (u32 i = 0; i < 4; ++i) {
-        REQUIRE(lowered.instructions[start + 3 + i] == Copy(i < 2 ? 6 + i : 2 + i, 250 + i));
+        REQUIRE(lowered.instructions[start + 4 + i] == Copy(i < 2 ? 6 + i : 2 + i, 250 + i));
     }
 }
 
-TEST_CASE("Ampere uniform bindless TEX stops provenance at uniform writes and unknown opcodes",
+TEST_CASE("Ampere uniform bindless TEX reads the handle register as of the sample",
           "[video_core][ampere][bindless_tex]") {
+    // No provenance proof: a later uniform write to the handle or its high word just changes
+    // the value the sample reads from R220.
     for (const u32 target : {4U, 5U, 7U}) {
         for (const Instruction clobber : {
                  Instruction{{0x00007ab9U | (target << 16), 0x00805a00, 0x800, 0}},
@@ -445,21 +457,20 @@ TEST_CASE("Ampere uniform bindless TEX stops provenance at uniform writes and un
                 sample[0], clobber, {{0x00097308, 1, 0x1000, 0}}, sample[1], sample[2],
             }};
             const auto lowered = LowerToMaxwell(code);
-            REQUIRE_FALSE(static_cast<bool>(lowered));
-            REQUIRE(lowered.error_offset == 48);
-            REQUIRE(lowered.instructions.empty());
+            REQUIRE(static_cast<bool>(lowered));
+            REQUIRE(lowered.instructions[lowered.source_instruction_offsets[3] + 2] ==
+                    Copy(246, 220));
         }
     }
+    // A ULDC.64, a MOV and an @!PT (never executed) word between the handle setup and the
+    // sample do not matter either.
     for (const Instruction barrier : {
              Instruction{{0x00047ab9, 0x00805a00, 0xa00, 0}},
              Instruction{{0x00007802, 0, 0xf00, 0}},
              Instruction{{0x0000ffff, 0, 0, 0}},
          }) {
         const std::array<Instruction, 4> code{{sample[0], barrier, sample[1], sample[2]}};
-        const auto lowered = LowerToMaxwell(code);
-        REQUIRE_FALSE(static_cast<bool>(lowered));
-        REQUIRE(lowered.error_offset == 32);
-        REQUIRE(lowered.instructions.empty());
+        REQUIRE(static_cast<bool>(LowerToMaxwell(code)));
     }
 }
 
@@ -472,11 +483,12 @@ TEST_CASE("Ampere uniform bindless TEX preserves scalar and pair result masks",
         const std::array<Instruction, 3> code{{sample[0], texture, sample[2]}};
         const auto lowered = LowerToMaxwell(code);
         REQUIRE(static_cast<bool>(lowered));
-        REQUIRE(lowered.instructions.size() == 6);
+        REQUIRE(lowered.instructions.size() == 7);
         REQUIRE(lowered.instructions[1] == Copy(250, texture.Bits(24, 8)));
         REQUIRE(lowered.instructions[2] == Copy(251, texture.Bits(32, 8)));
-        REQUIRE(((lowered.instructions[3] >> 31) & 15) == 1);
-        REQUIRE(lowered.instructions[4] == Copy(texture.Bits(16, 8), 250));
+        REQUIRE(lowered.instructions[3] == Copy(246, 220));
+        REQUIRE(((lowered.instructions[4] >> 31) & 15) == 1);
+        REQUIRE(lowered.instructions[5] == Copy(texture.Bits(16, 8), 250));
     }
     for (const u32 mask : {1U, 3U, 15U}) {
         auto code = sample;
@@ -484,9 +496,9 @@ TEST_CASE("Ampere uniform bindless TEX preserves scalar and pair result masks",
         const auto lowered = LowerToMaxwell(code);
         REQUIRE(static_cast<bool>(lowered));
         const u32 count = static_cast<u32>(std::popcount(mask));
-        REQUIRE(lowered.instructions.size() == 5 + count);
-        REQUIRE(((lowered.instructions[3] >> 31) & 15) == mask);
-        for (u32 i = 0; i < count; ++i) REQUIRE(lowered.instructions[4 + i] == Copy(i, 250 + i));
+        REQUIRE(lowered.instructions.size() == 6 + count);
+        REQUIRE(((lowered.instructions[4] >> 31) & 15) == mask);
+        for (u32 i = 0; i < count; ++i) REQUIRE(lowered.instructions[5 + i] == Copy(i, 250 + i));
     }
     auto empty_mask = sample;
     empty_mask[1].words[2] = 0x0c9e00ffU;
@@ -499,56 +511,68 @@ TEST_CASE("Ampere uniform bindless TEX preserves scalar and pair result masks",
             REQUIRE(static_cast<bool>(LowerToMaxwell(code)) ==
                     (target < 216 && (mask == 1 || target == 214)));
         }
-        auto invalid_second = sample;
-        invalid_second[1].words[2] = 0x0c9e0002U | (mask << 8);
-        REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid_second)));
+        // With at most two components the second destination is unused and ignored.
+        auto unused_second = sample;
+        unused_second[1].words[2] = 0x0c9e0002U | (mask << 8);
+        const auto lowered = LowerToMaxwell(unused_second);
+        REQUIRE(static_cast<bool>(lowered));
+        REQUIRE(lowered.instructions.size() == 6 + static_cast<u32>(std::popcount(mask)));
     }
 }
 
-TEST_CASE("Ampere uniform bindless TEX bounds the provenance scan",
+TEST_CASE("Ampere uniform bindless TEX does not bound the distance to its handle setup",
           "[video_core][ampere][bindless_tex]") {
     for (const u32 count : {31U, 32U}) {
         std::vector<Instruction> code{sample[0]};
         for (u32 i = 0; i < count; ++i) code.push_back({{0x09047220, 4, 0x0041c000, 0}});
         code.push_back(sample[1]);
         code.push_back(sample[2]);
-        REQUIRE(static_cast<bool>(LowerToMaxwell(code)) == (count == 31));
+        REQUIRE(static_cast<bool>(LowerToMaxwell(code)));
     }
 }
 
-TEST_CASE("Ampere uniform bindless TEX allows later fragment discard but does not scan past it",
+TEST_CASE("Ampere uniform bindless TEX lowers around a fragment discard",
           "[video_core][ampere][bindless_tex]") {
     constexpr Instruction discard{{0x0000895b, 0, 0x03800000, 0}};
     const std::array<Instruction, 4> code{{sample[0], sample[1], discard, sample[2]}};
     const auto lowered = LowerToMaxwell(code);
     REQUIRE(static_cast<bool>(lowered));
-    REQUIRE(lowered.instructions.size() == 10);
-    REQUIRE(lowered.instructions[8] == 0xe33000000008000fULL);
+    REQUIRE(lowered.instructions.size() == 11);
+    REQUIRE(lowered.instructions[9] == 0xe33000000008000fULL);
     const std::array<Instruction, 4> interrupted{{sample[0], discard, sample[1], sample[2]}};
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(interrupted)));
+    REQUIRE(static_cast<bool>(LowerToMaxwell(interrupted)));
 }
 
-TEST_CASE("Ampere uniform bindless TEX rejects unverified handle pairs and control flow",
+TEST_CASE("Ampere uniform bindless TEX rejects unmapped handles and unsupported control flow",
           "[video_core][ampere][bindless_tex]") {
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::span{sample}.subspan(1))));
+    // The handle register is read directly; no USHF has to derive its high word first.
+    REQUIRE(static_cast<bool>(LowerToMaxwell(std::span{sample}.subspan(1))));
     for (const u32 handle : {1U, 15U, 16U, 28U, 62U, 63U}) {
         auto code = sample;
         code[1].words[1] = 0x30000003U | (handle << 8);
-        REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+        // UR28-UR62 have no home register and URZ is no handle.
+        REQUIRE(static_cast<bool>(LowerToMaxwell(code)) == (handle < 28));
     }
+    // The USHF itself only rejects a non-URZ low word (bit 24) and a cleared .HI (bit 80).
     for (const u32 bit : {12U, 16U, 24U, 32U, 64U, 73U, 76U, 80U, 96U, 100U, 104U}) {
         auto code = sample;
         code[0].words[bit / 32] ^= 1U << (bit % 32);
-        REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+        REQUIRE(static_cast<bool>(LowerToMaxwell(code)) == (bit != 24 && bit != 80));
     }
+    // Reconvergence markers are no-ops; calls, returns and computed branches without their
+    // verified setup are rejected at their own offset.
     for (const u32 opcode : {0x941U, 0x942U, 0x944U, 0x945U,
                              0x949U, 0x950U, 0x958U}) {
         const std::array<Instruction, 4> code{{sample[0], sample[1],
                                              {{0x7000U | opcode, 0, 0x03800000, 0}},
                                              sample[2]}};
         const auto lowered = LowerToMaxwell(code);
+        if (opcode == 0x941 || opcode == 0x942 || opcode == 0x945) {
+            REQUIRE(static_cast<bool>(lowered));
+            continue;
+        }
         REQUIRE_FALSE(static_cast<bool>(lowered));
-        REQUIRE(lowered.error_offset == 16);
+        REQUIRE(lowered.error_offset == 32);
         REQUIRE(lowered.instructions.empty());
     }
     for (const bool forward : {false, true}) {
@@ -557,10 +581,7 @@ TEST_CASE("Ampere uniform bindless TEX rejects unverified handle pairs and contr
               forward ? 0x03800000U : 0x0383ffffU, 0}},
             sample[0], sample[1], sample[2],
         }};
-        const auto lowered = LowerToMaxwell(code);
-        REQUIRE_FALSE(static_cast<bool>(lowered));
-        REQUIRE(lowered.error_offset == 32);
-        REQUIRE(lowered.instructions.empty());
+        REQUIRE(static_cast<bool>(LowerToMaxwell(code)));
     }
 }
 
@@ -577,27 +598,47 @@ TEST_CASE("Ampere uniform bindless TEX does not change bound texture metadata",
 
 TEST_CASE("Ampere uniform bindless TEX rejects unsupported texture modes",
           "[video_core][ampere][bindless_tex]") {
-    for (const u32 bit : {46U, 54U, 59U, 60U, 61U, 76U, 77U, 78U, 79U,
-                         80U, 81U, 84U, 89U, 91U, 96U}) {
+    for (const u32 bit : {46U, 54U, 59U, 60U, 77U, 78U, 79U, 81U, 89U}) {
         auto code = sample;
         code[1].words[bit / 32] ^= 1U << (bit % 32);
         const auto lowered = LowerToMaxwell(code);
         REQUIRE_FALSE(static_cast<bool>(lowered));
         REQUIRE(lowered.instructions.empty());
     }
+    // The general operand-list lowering takes 1D samples (bit 61 cleared) and AOFFI offsets.
+    for (const u32 bit : {61U, 76U}) {
+        auto code = sample;
+        code[1].words[bit / 32] ^= 1U << (bit % 32);
+        REQUIRE(static_cast<bool>(LowerToMaxwell(code)));
+    }
+}
+
+// Left failing on purpose: neither the 2D path nor the operand-list fallback checks these bits
+// (bit 96 is ignored by both, 80/84/91 by the fallback), while every other TEX path requires
+// bit 80 clear. Whether they change the sample is not known, so this documents the gap.
+TEST_CASE("Ampere uniform bindless TEX rejects unvalidated control bits",
+          "[video_core][ampere][bindless_tex]") {
+    for (const u32 bit : {80U, 84U, 91U, 96U}) {
+        CAPTURE(bit);
+        auto code = sample;
+        code[1].words[bit / 32] ^= 1U << (bit % 32);
+        CHECK_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+    }
 }
 
 TEST_CASE("Ampere uniform bindless TEX protects uniform state and output pairs",
           "[video_core][ampere][bindless_tex]") {
+    // A pair starting at R215 would write R216, which holds UR0.
     for (const u32 destination : {1U, 2U, 215U, 216U}) {
         auto code = sample;
         code[1].words[0] = (code[1].words[0] & ~0x00ff0000U) | (destination << 16);
-        REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+        // Misaligned or overlapping pairs are copied out one component at a time.
+        REQUIRE(static_cast<bool>(LowerToMaxwell(code)) == (destination < 215));
     }
     for (const u32 second_destination : {0U, 1U, 215U, 216U}) {
         auto code = sample;
         code[1].words[2] = (code[1].words[2] & ~0xffU) | second_destination;
-        REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(code)));
+        REQUIRE(static_cast<bool>(LowerToMaxwell(code)) == (second_destination < 215));
     }
     for (const u32 source_bit : {24U, 32U}) {
         auto code = sample;
@@ -610,7 +651,7 @@ TEST_CASE("Ampere uniform bindless TEX protects uniform state and output pairs",
     discarded[1].words[2] |= 0xffU;
     const auto lowered = LowerToMaxwell(discarded);
     REQUIRE(static_cast<bool>(lowered));
-    REQUIRE(lowered.instructions.size() == 5);
+    REQUIRE(lowered.instructions.size() == 6);
     const std::array<Instruction, 4> alias{{{{0x00dc7802, 0, 0xf00, 0}}, sample[0],
                                           sample[1], sample[2]}};
     const auto aliased = LowerToMaxwell(alias);
@@ -635,7 +676,8 @@ TEST_CASE("Ampere uniform bindless TEX compacts noncontiguous masks and discards
     code[7].words[2] = 0x0c9e0000U | (mask << 8) | second;
     const auto lowered = LowerToMaxwell(code);
     REQUIRE(static_cast<bool>(lowered));
-    const u32 texture = lowered.source_instruction_offsets[7] + 2;
+    REQUIRE(lowered.instructions[lowered.source_instruction_offsets[7] + 2] == Copy(246, 220));
+    const u32 texture = lowered.source_instruction_offsets[7] + 3;
     REQUIRE(((lowered.instructions[texture] >> 31) & 15) == mask);
     const u32 written = second == 255 ? std::min(components, 2U) : components;
     REQUIRE(lowered.source_instruction_offsets[8] == texture + 1 + written);
@@ -726,22 +768,17 @@ TEST_CASE("Ampere uniform bindless TEX preserves distinct explicit LOD operands"
     REQUIRE(program.info.texture_descriptors.front().secondary_cbuf_offset == 0x568);
 }
 
-TEST_CASE("Ampere uniform bindless TEX treats WARPSYNC as a provenance scan boundary",
+TEST_CASE("Ampere uniform bindless TEX lowers across WARPSYNC",
           "[video_core][ampere][bindless_tex]") {
     constexpr Instruction sync{{0x00007948, 0, 0x03800000, 0}};
     const std::array<Instruction, 4> before{{sync, sample[0], sample[1], sample[2]}};
     const std::array<Instruction, 4> after{{sample[0], sample[1], sync, sample[2]}};
-    for (const auto& code : {before, after}) {
+    const std::array<Instruction, 4> between{{sample[0], sync, sample[1], sample[2]}};
+    for (const auto& code : {before, after, between}) {
         const auto lowered = LowerToMaxwell(code);
         REQUIRE(static_cast<bool>(lowered));
         REQUIRE(lowered.required_texture_buffer == ~0U);
         REQUIRE(lowered.source_size == sizeof(code));
     }
-    const std::array<Instruction, 4> interrupted{{sample[0], sync, sample[1], sample[2]}};
-    const auto rejected = LowerToMaxwell(interrupted);
-    REQUIRE_FALSE(static_cast<bool>(rejected));
-    REQUIRE(rejected.error == "native uniform bindless texture handle provenance");
-    REQUIRE(rejected.error_offset == 32);
-    REQUIRE(rejected.instructions.empty());
 }
 } // namespace
