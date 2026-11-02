@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
-#include <array>
-#include <atomic>
 #include <mutex>
 #include <numeric>
 #include <unordered_map>

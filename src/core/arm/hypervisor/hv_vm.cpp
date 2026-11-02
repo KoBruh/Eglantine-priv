@@ -731,7 +731,7 @@ void Vm::Map(u64 vaddr, u64 size, u64 paddr, Common::MemoryPermission perms) {
         for (u64 offset = 0; offset < size; offset += PageSize) {
             u64* entry = TableFor(vaddr + offset, true);
             if (entry == nullptr) {
-                return;
+                break; // out of table memory (logged): still invalidate what changed
             }
             const u64 old = *entry;
             const u64 value = Descriptor(paddr + offset, software);
