@@ -166,9 +166,9 @@ struct Symbolizer {
             return;
         }
         set_options(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
-        if (!initialize(GetCurrentProcess(), nullptr, TRUE)) {
-            from_address = nullptr;
-        }
+        // Fails when the process already has a symbol session (the crash reporter opens one at the
+        // first C++ exception, which games under the harness hit): SymFromAddr uses that one.
+        initialize(GetCurrentProcess(), nullptr, TRUE);
     }
 
     const std::string& Name(DWORD64 address) {
