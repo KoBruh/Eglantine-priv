@@ -209,8 +209,9 @@ ArmHypervisor::Resolution ArmHypervisor::HandleDataAbort(Vcpu& vcpu, u64 esr, u6
         }
         if (state.cached) {
             // A page the GPU caches protect: let them see the access, as fastmem's fault handler
-            // does. They unprotect the page; then the access is retried.
-            m_process->GetMemory().InvalidateNCE(page, PageMask + 1);
+            // does. They unprotect the page; then the access is retried. A read must say so: with
+            // reactive flushing the page is read-protected, and only a read copies the GPU's data back.
+            m_process->GetMemory().InvalidateNCE(page, PageMask + 1, is_write);
             vcpu.force_flush = true;
             if (m_fault_repeats > 1000) {
                 LOG_ERROR(Core_ARM, "Hypervisor: page {:#x} stays protected, unprotecting it", page);

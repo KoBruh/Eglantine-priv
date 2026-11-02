@@ -55,6 +55,15 @@ if(UNIX AND NOT APPLE)
     install(TARGETS yuzu-cmd)
 endif()
 
+# Hypervisor.framework (native execution, EDEN_NX2_HYPERVISOR=1) needs this entitlement; an ad-hoc
+# signature carries it for local builds.
+if(APPLE AND NOT CMAKE_GENERATOR MATCHES "Xcode")
+    add_custom_command(TARGET yuzu-cmd POST_BUILD
+        COMMAND codesign --force --sign - --entitlements
+                ${CMAKE_SOURCE_DIR}/src/yuzu/hypervisor.entitlements $<TARGET_FILE:yuzu-cmd>
+        COMMENT "Signing eden-cli with the hypervisor entitlement")
+endif()
+
 if(WIN32)
     # compile as a win32 gui application instead of a console application
     if(MSVC)
