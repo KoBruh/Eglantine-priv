@@ -45,11 +45,13 @@ TEST_CASE("Deferred backing commits shared granules without committing unused ra
     second[0x9000] = 73;
     REQUIRE(first[0x9000] == 73);
 
+    // Map commits the backing range it shows: VirtualProtect fails on the reserved pages of a
+    // fastmem view, so a mapped view is always committed.
     memory.Map(0x50000, 2 * GranuleSize, GranuleSize,
                Common::MemoryPermission::ReadWrite, false);
     REQUIRE(VirtualQuery(memory.VirtualBasePointer() + 0x50000, &region, sizeof(region)) ==
             sizeof(region));
-    REQUIRE(region.State == MEM_RESERVE);
+    REQUIRE(region.State == MEM_COMMIT);
     memory.MarkUsed(2 * GranuleSize + 0x1000, 0x1000);
     REQUIRE(VirtualQuery(memory.BackingBasePointer() + GranuleSize, &region, sizeof(region)) ==
             sizeof(region));
