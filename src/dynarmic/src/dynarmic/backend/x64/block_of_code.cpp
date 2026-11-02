@@ -303,6 +303,12 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     // r13 = fastmem pointer
     rcp(*this);
 
+    // rbp: the frame pointer of all JIT code, the host's saved in the stack layout. Every block runs
+    // in this frame, so it is set here once instead of on each block's entry and exit (half a
+    // billion times a second in some games); returning pops the host's rbp again.
+    mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
+    lea(rbp, ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
+
     cmp(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], 0);
     jne(return_to_caller_mxcsr_already_exited, T_NEAR);
 
@@ -322,6 +328,12 @@ void BlockOfCode::GenRunCode(std::function<void(BlockOfCode&)> rcp) {
     }
 
     rcp(*this);
+
+    // rbp: the frame pointer of all JIT code, the host's saved in the stack layout. Every block runs
+    // in this frame, so it is set here once instead of on each block's entry and exit (half a
+    // billion times a second in some games); returning pops the host's rbp again.
+    mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
+    lea(rbp, ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
 
     cmp(dword[ABI_JIT_PTR + jsi.offsetof_halt_reason], 0);
     jne(return_to_caller_mxcsr_already_exited, T_NEAR);

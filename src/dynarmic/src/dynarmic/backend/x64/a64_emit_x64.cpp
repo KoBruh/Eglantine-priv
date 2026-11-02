@@ -93,8 +93,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     // Start emitting.
     code.align();
     const auto* const entrypoint = code.getCurr();
-    code.mov(code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
-    code.lea(rbp, code.ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
+    // rbp is the JIT frame pointer for every block, set once on entry (BlockOfCode::GenRunCode).
     // DYNARMIC_BLOCK_COUNTS=1: count this block's executions (no host register is live at entry).
     if (::Dynarmic::Common::BlockCountsEnabled()) [[unlikely]] {
         auto* const counter = ::Dynarmic::Common::BlockCountsRegister(
@@ -163,7 +162,6 @@ finish_this_inst:
     reg_alloc.AssertNoMoreUses();
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());
-    code.mov(rbp, code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)]);
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     code.int3();
     for (auto& deferred_emit : ctx.deferred_emits)
