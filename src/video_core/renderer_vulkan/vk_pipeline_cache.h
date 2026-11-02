@@ -10,9 +10,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <future>
+#include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <optional>
 #include <type_traits>
@@ -121,6 +124,8 @@ public:
 
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipeline();
 
+    void TickFrame();
+
     [[nodiscard]] ComputePipeline* CurrentComputePipeline();
 
     void LoadDiskResources(u64 title_id, std::stop_token stop_loading,
@@ -170,7 +175,7 @@ private:
     std::unique_ptr<GraphicsPipeline> AdoptTranslatedGraphicsPipeline(
         std::future<TranslatedGraphicsPipeline>& translated);
 
-    void SerializeGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+    void SerializeGraphicsPipeline(const GraphicsPipeline& pipeline, const GraphicsPipelineCacheKey& key,
                                    GraphicsEnvironmentArray envs);
 
     /// With `allow_translation` false, only builds pipelines from reused shaders (else null).
@@ -237,6 +242,11 @@ private:
 
     /// Declared before the pipelines, which may have been linked from its libraries.
     GraphicsPipelineLibraryCache pipeline_libraries;
+    /// Destroys graphics pipelines unused for a while, once the GPU is done with them.
+    void EvictUnusedPipelines();
+    u64 frame_count{};
+    std::deque<std::pair<u64, std::unique_ptr<GraphicsPipeline>>> evicted_pipelines; ///< (tick, pipeline)
+    std::unordered_set<u64> used_and_evicted; ///< Key hashes of pipelines used this session, evicted since
 
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>> compute_cache;
     ::Common::unordered_map<ComputePipelineCacheKey, std::exception_ptr> rejected_tensor_pipelines;
@@ -251,6 +261,16 @@ private:
     Shader::HostTranslateInfo host_info;
 
     std::filesystem::path pipeline_cache_filename;
+
+    /// Key hashes of the graphics pipelines in the disk cache. Only those a recent session used
+    /// (used_pipelines) are built at boot; the rest are built when first needed, and not stored
+    /// again. Each built pipeline holds driver memory (title 1: 6.5k cached, a quarter used).
+    std::unordered_set<u64> disk_pipelines;
+    std::unordered_map<u64, u8> used_pipelines; ///< Key hash -> sessions since it was last used
+    std::unordered_set<const GraphicsPipeline*> used_this_session;
+    std::filesystem::path used_pipelines_filename;
+    std::chrono::steady_clock::time_point used_pipelines_saved{};
+    void SaveUsedPipelines();
 
     std::filesystem::path vulkan_pipeline_cache_filename;
     vk::PipelineCache vulkan_pipeline_cache;

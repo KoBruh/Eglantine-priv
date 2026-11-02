@@ -6,7 +6,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string_view>
 #include "common/logging.h"
 #include "common/random.h"
@@ -101,6 +105,26 @@ FileSys::VirtualDir FindBaseRomFSDirectory(const FileSys::VirtualDir& version_di
     return base_dir ? GetRomFSDirectory(base_dir) : nullptr;
 }
 
+// Building a loose RomFS walks every file and keeps an object for each (title 1: 206k files, ~150
+// MiB), so loaders of the same directory share one build while any of them holds it.
+FileSys::VirtualFile BuildLooseRomFS(const FileSys::VirtualDir& romfs_dir) {
+    static std::mutex cache_mutex;
+    static std::map<std::string, std::weak_ptr<FileSys::VfsFile>> cache;
+    std::scoped_lock lk{cache_mutex};
+    auto& cached = cache[romfs_dir->GetFullPath()];
+    if (auto built = cached.lock()) {
+        return built;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    auto built = FileSys::CreateRomFS(romfs_dir);
+    LOG_INFO(Loader, "Loose RomFS image ready: elapsed_ms={}",
+             std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - started)
+                 .count());
+    cached = built;
+    return built;
+}
+
 // RomFS for a loose ExeFS: the first .romfs file next to main, else a romfs/ directory next to
 // the exefs/ directory (the usual layout of an extracted title). An update in the <game>/base +
 // <game>/updates/<version> layout without a RomFS of its own uses the base title's. Extracted
@@ -120,42 +144,55 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     }
     if (const auto romfs_dir = GetRomFSDirectory(parent)) {
         LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
-        return FileSys::CreateRomFS(romfs_dir);
+        return BuildLooseRomFS(romfs_dir);
     }
     if (const auto base_romfs_dir = FindBaseRomFSDirectory(parent)) {
         LOG_INFO(Loader, "Using the base title's RomFS directory");
-        return FileSys::CreateRomFS(base_romfs_dir);
+        return BuildLooseRomFS(base_romfs_dir);
     }
     return nullptr;
 }
 
-// The display version of a dump without control data, from its RomFS: Nintendo EPD titles name
-// their resource size tables after it (System/Resource/ResourceSizeTable.Product.180.* in Mario
-// Kart World 1.8.0). A hotfix can keep its minor version's tables (Product.110 in a 1.1.1).
-std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
-    if (romfs_dir == nullptr) {
-        return {};
-    }
-    const auto system_dir = romfs_dir->GetSubdirectory("System");
-    const auto resource_dir = system_dir != nullptr ? system_dir->GetSubdirectory("Resource") : nullptr;
-    if (resource_dir == nullptr) {
-        return {};
-    }
-    constexpr std::string_view Prefix = "ResourceSizeTable.Product.";
+// The newest three-digit tag in a directory's file names of the form <prefix>NNN.<anything>.
+std::string NewestProductTag(const FileSys::VirtualDir& dir, std::string_view prefix) {
     std::string best;
-    for (const auto& file : resource_dir->GetFiles()) {
+    if (dir == nullptr) {
+        return best;
+    }
+    for (const auto& file : dir->GetFiles()) {
         const std::string file_name = file->GetName();
-        if (!file_name.starts_with(Prefix) || file_name.size() < Prefix.size() + 4) {
+        if (!file_name.starts_with(prefix) || file_name.size() < prefix.size() + 4) {
             continue;
         }
-        const std::string_view digits = std::string_view{file_name}.substr(Prefix.size(), 3);
-        if (file_name[Prefix.size() + 3] != '.' ||
+        const std::string_view digits = std::string_view{file_name}.substr(prefix.size(), 3);
+        if (file_name[prefix.size() + 3] != '.' ||
             !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; })) {
             continue;
         }
         if (std::string version{digits}; version > best) {
             best = version;
         }
+    }
+    return best;
+}
+
+// The display version of a dump without control data, from its RomFS: Nintendo EPD titles name
+// their resource size tables after it (System/Resource/ResourceSizeTable.Product.180.* in Mario
+// Kart World 1.8.0), and some name their game data list instead (GameData/GameDataList.Product.320.*
+// in Donkey Kong Bananza 3.2.0). A hotfix can keep its minor version's tables (Product.110 in a
+// 1.1.1).
+std::string RomFSProductVersion(const FileSys::VirtualDir& romfs_dir) {
+    if (romfs_dir == nullptr) {
+        return {};
+    }
+    const auto system_dir = romfs_dir->GetSubdirectory("System");
+    std::string best = NewestProductTag(
+        system_dir != nullptr ? system_dir->GetSubdirectory("Resource") : nullptr,
+        "ResourceSizeTable.Product.");
+    if (const auto game_data = NewestProductTag(romfs_dir->GetSubdirectory("GameData"),
+                                                "GameDataList.Product.");
+        game_data > best) {
+        best = game_data;
     }
     if (best.empty()) {
         return {};

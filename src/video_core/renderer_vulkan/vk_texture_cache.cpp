@@ -393,7 +393,8 @@ constexpr std::array<VkFormat, 2> OpaqueAstcViewFormats{VK_FORMAT_BC1_RGBA_UNORM
         return level_offset != 0 ? host_info() : info;
     }
     const u64 limit = TrimmedAstcArrayLimit(device);
-    while (level_offset + 1 < levels && decoded_bytes(level_offset) > limit) {
+    while (level_offset + 1 < static_cast<u32>(info.resources.levels) &&
+           decoded_bytes(level_offset) > limit) {
         ++level_offset;
     }
     const ImageInfo host = host_info();
@@ -1551,6 +1552,154 @@ void TextureCacheRuntime::ReinterpretImage(Image& dst, Image& src,
     });
 }
 
+bool TextureCacheRuntime::TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst,
+                                          ImageView& input_color, ImageView& motion_vectors,
+                                          std::array<f32, 2> jitter,
+                                          std::array<f32, 2> motion_scale) {
+    if (dst.Samples() != VK_SAMPLE_COUNT_1_BIT || ImageAspectMask(dst.format) != VK_IMAGE_ASPECT_COLOR_BIT) {
+        return false;
+    }
+    const VkFormat format =
+        MaxwellToVK::SurfaceFormat(device, FormatType::Optimal, false, dst.format).format;
+    const VkExtent2D extent{dst.size.width, dst.size.height};
+    const VkImage output = dst.ImageHandle();
+    bool reset = false;
+    if (!temporal_history.image || temporal_history.format != format ||
+        temporal_history.extent.width != extent.width ||
+        temporal_history.extent.height != extent.height) {
+        if (temporal_history.image) {
+            scheduler.Finish(); // the old history may still be sampled
+        }
+        temporal_history.image = memory_allocator.CreateImage(VkImageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = format,
+            .extent = {extent.width, extent.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        });
+        temporal_history.view = device.GetLogical().CreateImageView(VkImageViewCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .image = *temporal_history.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = format,
+            .components{},
+            .subresourceRange{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        });
+        temporal_history.format = format;
+        temporal_history.extent = extent;
+        reset = true;
+        LOG_INFO(Render_Vulkan, "Temporal upscale into {}x{} (format {})", extent.width, extent.height,
+                 static_cast<u32>(format));
+    }
+
+    // The history holds this pass's previous result, copied right after drawing it: the game may
+    // draw into its DLSS output afterwards (post-processing), which must not feed back. The history
+    // stays in the GENERAL layout, which the blit helper's descriptors use.
+    const VkImage history = *temporal_history.image;
+    const VkImageSubresourceLayers output_layers{
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .mipLevel = static_cast<u32>(dst.range.base.level),
+        .baseArrayLayer = static_cast<u32>(dst.range.base.layer),
+        .layerCount = 1,
+    };
+    static constexpr VkImageSubresourceLayers history_layers{
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .mipLevel = 0,
+        .baseArrayLayer = 0,
+        .layerCount = 1,
+    };
+    const auto barrier = [](VkImage image, VkAccessFlags src_access, VkAccessFlags dst_access,
+                            VkImageLayout old_layout, const VkImageSubresourceLayers& layers) {
+        return VkImageMemoryBarrier{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = src_access,
+            .dstAccessMask = dst_access,
+            .oldLayout = old_layout,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange{
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = layers.mipLevel,
+                .levelCount = 1,
+                .baseArrayLayer = layers.baseArrayLayer,
+                .layerCount = 1,
+            },
+        };
+    };
+    if (reset) {
+        // A new history image has no contents yet; the first frame does not read it.
+        scheduler.RequestOutsideRenderPassOperationContext();
+        scheduler.Record([history, barrier](vk::CommandBuffer cmdbuf) {
+            cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                   0, barrier(history, 0, VK_ACCESS_SHADER_READ_BIT,
+                                              VK_IMAGE_LAYOUT_UNDEFINED, history_layers));
+        });
+    }
+    const Region2D dst_region{
+        .start = {0, 0},
+        .end = {static_cast<s32>(extent.width), static_cast<s32>(extent.height)},
+    };
+    // Each frame weighs at most 0.1 against the history (scaled by how close its samples land to
+    // the pixel; the neighbourhood clip limits what older samples contribute).
+    constexpr f32 current_weight = 0.1f;
+    blit_image_helper.TemporalUpscale(dst_framebuffer, input_color, motion_vectors,
+                                      *temporal_history.view, dst_region, jitter, motion_scale,
+                                      reset ? 1.0f : current_weight);
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([output, history, extent, output_layers, barrier](vk::CommandBuffer cmdbuf) {
+        constexpr VkAccessFlags written = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        const std::array before{
+            barrier(output, written, VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
+                    output_layers),
+            barrier(history, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL, history_layers),
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, {}, {}, before);
+        const VkImageCopy copy{
+            .srcSubresource = output_layers,
+            .srcOffset = {0, 0, 0},
+            .dstSubresource = history_layers,
+            .dstOffset = {0, 0, 0},
+            .extent = {extent.width, extent.height, 1},
+        };
+        cmdbuf.CopyImage(output, VK_IMAGE_LAYOUT_GENERAL, history, VK_IMAGE_LAYOUT_GENERAL, copy);
+        const std::array after{
+            barrier(output, VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL, output_layers),
+            barrier(history, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL, history_layers),
+        };
+        cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                               {}, {}, after);
+    });
+    return true;
+}
+
 void TextureCacheRuntime::BlitImage(Framebuffer* dst_framebuffer, ImageView& dst, ImageView& src,
                                     const Region2D& dst_region, const Region2D& src_region,
                                     Tegra::Engines::Fermi2D::Filter filter,
@@ -2094,8 +2243,20 @@ u64 TextureCacheRuntime::GetDeviceMemoryUsage() const {
     return device.GetDeviceMemoryUsage();
 }
 
+u64 TextureCacheRuntime::CurrentTick() const noexcept {
+    return scheduler.CurrentTick();
+}
+
+bool TextureCacheRuntime::IsFree(u64 tick) const noexcept {
+    return scheduler.IsFree(tick);
+}
+
 u64 TextureCacheRuntime::GetDeviceMemoryBudget() const {
     return device.GetDeviceMemoryBudget();
+}
+
+u64 TextureCacheRuntime::GetDeviceMemorySlack() const {
+    return device.GetDeviceMemorySlack();
 }
 
 bool TextureCacheRuntime::CanDownloadMsaa(const VideoCommon::ImageInfo& info) const {
@@ -2177,8 +2338,20 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
 }
 
 void TextureCacheRuntime::ReclaimCompletedTranscodes() {
+    // Finished decode images wait for the next texture of their shape, up to this much memory.
+    static constexpr u64 MaxFreeTranscodeBytes = u64{256} << 20;
+    u64 free_bytes{};
+    for (const PendingTranscode& t : free_transcodes) {
+        free_bytes += t.bytes;
+    }
     while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
-        pending_transcode_bytes -= pending_transcodes.front().bytes;
+        PendingTranscode& done = pending_transcodes.front();
+        pending_transcode_bytes -= done.bytes;
+        if (free_bytes + done.bytes <= MaxFreeTranscodeBytes) {
+            done.unused_frames = 0;
+            free_bytes += done.bytes;
+            free_transcodes.push_back(std::move(done));
+        }
         pending_transcodes.pop_front();
     }
 }
@@ -2202,6 +2375,9 @@ void TextureCacheRuntime::TickFrame() {
         transcode_early_submits = 0;
     }
     static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
+    std::erase_if(free_transcodes, [](PendingTranscode& t) {
+        return ++t.unused_frames > MAX_UNUSED_SCRATCH_FRAMES;
+    });
     std::erase_if(msaa_scratch_images, [this](MsaaScratchImage& scratch) {
         if (!scheduler.IsFree(scratch.tick)) {
             scratch.unused_frames = 0;
@@ -4225,40 +4401,56 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     const u32 levels = static_cast<u32>(info.resources.levels) - skip;
     const u32 layers = static_cast<u32>(info.resources.layers);
     constexpr VkFormat DecodeFormat = VK_FORMAT_A8B8G8R8_UNORM_PACK32;
-    // The decode image lives only until the encode ran. Sub-allocated, not dedicated: streaming
-    // worlds transcode ~100 textures a second, and a vkAllocateMemory plus a vkFreeMemory for each
-    // took several percent of the GPU thread. VMA still gives large ones their own block.
-    PendingTranscode pending{
-        .tick = 0,
-        .bytes = 0,
-        .image = memory_allocator.CreateImage(VkImageCreateInfo{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .imageType = VK_IMAGE_TYPE_2D,
-            .format = DecodeFormat,
-            .extent = {width, height, 1},
-            .mipLevels = levels,
-            .arrayLayers = layers,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = VK_IMAGE_USAGE_STORAGE_BIT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = nullptr,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        }),
-        .views = {},
-    };
+    // A decode image of the same shape the GPU is done with: title 1's title screen decodes
+    // dozens of textures a frame, mostly of a few shapes. Making one took 263 us; from VMA's
+    // shared blocks 90 us, but freeing them there left ~1 GB of those blocks unused.
+    const auto reusable = std::ranges::find_if(free_transcodes, [&](const PendingTranscode& t) {
+        return t.width == width && t.height == height && t.levels == levels && t.layers == layers;
+    });
+    PendingTranscode pending;
+    if (reusable != free_transcodes.end()) {
+        pending = std::move(*reusable);
+        free_transcodes.erase(reusable);
+    } else {
+        pending = PendingTranscode{
+            .tick = 0,
+            .bytes = 0,
+            .image = memory_allocator.CreateImage(VkImageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .imageType = VK_IMAGE_TYPE_2D,
+                .format = DecodeFormat,
+                .extent = {width, height, 1},
+                .mipLevels = levels,
+                .arrayLayers = layers,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .tiling = VK_IMAGE_TILING_OPTIMAL,
+                .usage = VK_IMAGE_USAGE_STORAGE_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            }, true),
+            .views = {},
+            .width = width,
+            .height = height,
+            .levels = levels,
+            .layers = layers,
+            .unused_frames = 0,
+        };
+        for (u32 level = 0; level < levels; ++level) {
+            pending.views.push_back(
+                MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat));
+        }
+    }
+    // Counted against the transcode budget while the GPU works on it.
+    pending.bytes = 0;
     for (u32 level = 0; level < levels; ++level) {
         pending.bytes += u64{(std::max)(width >> level, 1U)} *
                          (std::max)(height >> level, 1U) * layers * 4;
     }
     pending.bytes = (std::max)(pending.bytes, pending.image.DeviceMemorySize());
-    for (u32 level = 0; level < levels; ++level) {
-        pending.views.push_back(
-            MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat));
-    }
     astc_decoder_pass->AssembleInto(
         info, skip, image.guest_size_bytes,
         ASTCDecoderPass::Target{
@@ -4266,7 +4458,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
             .aspect_mask = VK_IMAGE_ASPECT_COLOR_BIT,
             .initialized = false,
             .level_view = [&pending](s32 level) { return *pending.views[level]; },
-            .wait = false,
+            .wait = true,
         },
         map, swizzles);
 

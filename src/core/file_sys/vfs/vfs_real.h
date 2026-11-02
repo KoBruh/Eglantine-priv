@@ -68,7 +68,6 @@ private:
 private:
     friend class RealVfsDirectory;
     VirtualFile OpenFileFromEntry(std::string_view path, std::optional<u64> size,
-                                  std::optional<std::string> parent_path,
                                   OpenMode perms = OpenMode::Read);
 
 private:
@@ -85,7 +84,7 @@ class RealVfsFile : public VfsFile {
 public:
     RealVfsFile(RealVfsFilesystem& base, std::unique_ptr<FileReference> reference,
                 const std::string& path, OpenMode perms = OpenMode::Read,
-                std::optional<u64> size = {}, std::optional<std::string> parent_path = {});
+                std::optional<u64> size = {});
     ~RealVfsFile() override;
 
     std::string GetName() const override;
@@ -102,8 +101,8 @@ private:
 
     RealVfsFilesystem& base;
     std::unique_ptr<FileReference> reference;
+    // Only the path: a loose RomFS keeps one of these per file (title 1: 206k).
     std::string path;
-    std::string parent_path;
     std::optional<u64> size;
     OpenMode perms;
 };

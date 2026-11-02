@@ -3,7 +3,6 @@
 
 #include "audio_core/renderer/memory/pool_mapper.h"
 #include "audio_core/renderer/sink/circular_buffer_sink_info.h"
-#include "audio_core/renderer/upsampler/upsampler_manager.h"
 
 namespace AudioCore::Renderer {
 

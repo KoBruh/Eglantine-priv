@@ -68,9 +68,21 @@ public:
 
     u64 GetDeviceMemoryUsage() const;
 
+    /// GPU progress: the texture cache frees a deleted image once the GPU is past its last use.
+    [[nodiscard]] u64 CurrentTick() const noexcept;
+
+    [[nodiscard]] bool IsFree(u64 tick) const noexcept;
+
     u64 GetDeviceMemoryBudget() const;
 
+    u64 GetDeviceMemorySlack() const;
+
     bool CanReportMemoryUsage() const;
+
+    /// Images that did not fit the device memory budget so far (see MemoryAllocator).
+    u32 MemoryPressureEvents() const noexcept {
+        return memory_allocator.MemoryPressureEvents();
+    }
 
     void LogMemoryStatistics() const;
 
@@ -87,6 +99,12 @@ public:
                    const Region2D& dst_region, const Region2D& src_region,
                    Tegra::Engines::Fermi2D::Filter filter,
                    Tegra::Engines::Fermi2D::Operation operation);
+
+    /// Stands in for a DLSS evaluation: temporal upscale of input_color into dst, accumulated with
+    /// a copy of dst's previous contents (the last output). False when dst cannot take it.
+    bool TemporalUpscale(Framebuffer* dst_framebuffer, ImageView& dst, ImageView& input_color,
+                         ImageView& motion_vectors, std::array<f32, 2> jitter,
+                         std::array<f32, 2> motion_scale);
 
     void CopyImage(Image& dst, Image& src, std::span<const VideoCommon::ImageCopy> copies);
 
@@ -174,6 +192,15 @@ public:
     StagingBufferPool& staging_buffer_pool;
     BlitImageHelper& blit_image_helper;
     RenderPassCache& render_pass_cache;
+
+    /// TemporalUpscale's history: its previous result, copied right after drawing it.
+    struct TemporalHistory {
+        vk::Image image;
+        vk::ImageView view;
+        VkFormat format{};
+        VkExtent2D extent{};
+    } temporal_history;
+
     std::optional<ASTCDecoderPass> astc_decoder_pass;
     std::optional<BcEncoderPass> bc_encoder_pass;
 
@@ -182,12 +209,17 @@ public:
     void TranscodeAstcToBcn(Image& image, const StagingBufferRef& map,
                             std::span<const VideoCommon::SwizzleParameters> swizzles);
 
-    /// Temporary decode images, freed once the GPU is past `tick`.
+    /// Temporary decode images, reusable once the GPU is past `tick`.
     struct PendingTranscode {
         u64 tick;
         u64 bytes;
         vk::Image image;
         std::vector<vk::ImageView> views;
+        u32 width;
+        u32 height;
+        u32 levels;
+        u32 layers;
+        u32 unused_frames;
     };
     std::deque<PendingTranscode> pending_transcodes;
     void ReclaimCompletedTranscodes();
@@ -199,6 +231,8 @@ public:
     u64 transcode_early_submits{};
     TranscodeSubmissionBatch transcode_submission_batch;
     u64 transcode_frames{};
+    /// Decode images the GPU is done with, for the next texture of the same shape.
+    std::vector<PendingTranscode> free_transcodes;
 
     std::optional<BlockLinearUnswizzle3DPass> bl3d_unswizzle_pass;
     const Settings::ResolutionScalingInfo& resolution;
@@ -388,6 +422,11 @@ public:
 
     [[nodiscard]] VkImageUsageFlags UsageFlags() const noexcept {
         return (this->*current_image).UsageFlags();
+    }
+
+    /// Where the image's memory lies, for the collector (TextureCache::RunGarbageCollector).
+    [[nodiscard]] vk::Image::MemoryBlock MemoryBlock() const noexcept {
+        return original_image.GetMemoryBlock();
     }
 
     /// Returns true when the image is already initialized and mark it as initialized
