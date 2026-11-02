@@ -76,6 +76,11 @@ VkCommandBuffer CommandPool::Commit() {
             dld.vkTrimCommandPool(*device.GetLogical(), *pool.handle, 0);
         }
     }
+#elif defined(__APPLE__)
+    // MoltenVK records commands into host memory and keeps a reset buffer's command objects in
+    // per-type pools for the next recording. Releasing them and trimming the pool emptied those
+    // pools, so the Vulkan worker allocated every command again: the reset, trim and allocations
+    // took ~10% of its time in Pokemon Pokopia's world. The implicit reset at Begin is enough.
 #else
     // The implicit reset at Begin keeps a command buffer's memory, so each one held on to its
     // largest recording: title 1 grew ~200 of them, ~6 GB of mostly empty write-combined NVIDIA
