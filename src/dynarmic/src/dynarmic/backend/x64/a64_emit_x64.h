@@ -39,6 +39,10 @@ struct A64EmitContext final : public EmitContext {
     }
 
     const A64::UserConfig& conf;
+    /// The instruction emitted just before the current one, and whether the current one is the
+    /// block's last and the CheckBit terminal follows it with nothing that changes the host flags.
+    const IR::Inst* previous_inst = nullptr;
+    bool check_bit_terminal_next = false;
 };
 
 class A64EmitX64 final : public EmitX64 {
@@ -123,8 +127,14 @@ public:
     void EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;
     void EmitPatchMovRcx(CodePtr target_code_ptr = nullptr) override;
 
+    /// Where the CheckBit terminal finds the check bit: in the stack layout, or in the host flags
+    /// when the block's last instruction set it (NotZF after a test of the bit; ZF and CF are the
+    /// flags of the IsZero or TestBit it came from).
+    enum class CheckBitLocation : u8 { Stack, NotZF, ZF, CF };
+
 //data
     const A64::UserConfig conf;
+    CheckBitLocation check_bit_location = CheckBitLocation::Stack;
     RegAlloc reg_alloc; //reusable reg alloc
     BlockRangeInformation<u64> block_ranges;
     std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;

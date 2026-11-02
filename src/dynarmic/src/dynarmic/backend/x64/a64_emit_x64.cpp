@@ -140,8 +140,18 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     const IR::Inst* previous_inst = nullptr;
     const IR::Inst* flags_from = nullptr;
     bool flags_hold_nzcv = false;
+    // Nothing between the last instruction and a CheckBit terminal changes the host flags (cycle
+    // counting would subtract).
+    const IR::Inst* const check_bit_from_flags_at =
+        std::holds_alternative<IR::Term::CheckBit>(block.terminal) && !block.instructions.empty() &&
+                !conf.enable_cycle_counting && !conf.very_verbose_debugging_output
+            ? &block.instructions.back()
+            : nullptr;
+    check_bit_location = CheckBitLocation::Stack;
     for (auto& inst : block.instructions) {
         auto const opcode = inst.GetOpcode();
+        ctx.previous_inst = previous_inst;
+        ctx.check_bit_terminal_next = &inst == check_bit_from_flags_at;
         const bool nzcv_from_op = opcode == IR::Opcode::GetNZCVFromOp && ctx.reg_alloc.IsValueLive(&inst) &&
                                   inst.GetArg(0).GetInst() == previous_inst;
         // Call the relevant Emit* member function.
@@ -319,6 +329,28 @@ void A64EmitX64::EmitPushRSB(EmitContext& ctx, IR::Inst* inst) {
 
 void A64EmitX64::EmitA64SetCheckBit(A64EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (ctx.check_bit_terminal_next) {
+        // Only the CheckBit terminal right after this reads the bit: leave it in the host flags.
+        const IR::Value bit = inst->GetArg(0);
+        if (!bit.IsImmediate() && bit.GetInst() == ctx.previous_inst) {
+            // The flags are still those of the test (sete/setc and movzx keep them).
+            switch (bit.GetInst()->GetOpcode()) {
+            case IR::Opcode::IsZero32:
+            case IR::Opcode::IsZero64:
+                check_bit_location = CheckBitLocation::ZF;
+                return;
+            case IR::Opcode::TestBit:
+                check_bit_location = CheckBitLocation::CF;
+                return;
+            default:
+                break;
+            }
+        }
+        const Xbyak::Reg8 to_test = ctx.reg_alloc.UseGpr(code, args[0]).cvt8();
+        code.test(to_test, to_test);
+        check_bit_location = CheckBitLocation::NotZF;
+        return;
+    }
     const Xbyak::Reg8 to_store = ctx.reg_alloc.UseGpr(code, args[0]).cvt8();
     code.mov(code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], to_store);
 }
@@ -759,8 +791,21 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::If terminal, IR::LocationDescript
 
 bool EmitTerminalImpl(A64EmitX64& e, IR::Term::CheckBit terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
     Xbyak::Label fail;
-    e.code.cmp(e.code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], u8(0));
-    e.code.jz(fail);
+    switch (std::exchange(e.check_bit_location, A64EmitX64::CheckBitLocation::Stack)) {
+    case A64EmitX64::CheckBitLocation::Stack:
+        e.code.cmp(e.code.byte[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, check_bit)], u8(0));
+        e.code.jz(fail);
+        break;
+    case A64EmitX64::CheckBitLocation::NotZF:
+        e.code.jz(fail);
+        break;
+    case A64EmitX64::CheckBitLocation::ZF:
+        e.code.jnz(fail);
+        break;
+    case A64EmitX64::CheckBitLocation::CF:
+        e.code.jnc(fail);
+        break;
+    }
     e.EmitLeafTerminal(terminal.then_, initial_location, is_single_step);
     e.code.L(fail);
     e.EmitLeafTerminal(terminal.else_, initial_location, is_single_step);
