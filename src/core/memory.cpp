@@ -1526,6 +1526,24 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_wr
             mapped = false;
         },
         [&] { rasterizer = true; });
+#ifdef HAS_HYPERVISOR
+    if (rasterizer && !is_write) {
+        if (auto* vm = HypervisorFor(*impl->current_page_table)) {
+            // The Hypervisor blocks reads of every cached page under reactive flushing. Answer
+            // the read as Dynarmic's slow path does (an area the GPU copies back at every fence
+            // at once, any other after waiting for the GPU), which also has the GPU's later
+            // writes there copied back at fences; then let the guest read the page natively and
+            // keep trapping its writes. Releasing the page as a write would cost a GPU sync or an
+            // ordered wait for the GPU thread per read, and the caches uploaded the page again
+            // and blocked its reads by the next frame: in Pokemon Pokopia's world ~1,500 such
+            // faults a second left the main thread running guest code 9% of the time.
+            impl->HandleRasterizerDownload(GetInteger(vaddr), size,
+                                           ReadbackDiagnostics::Caller::ScalarRead);
+            vm->AllowCachedReads(GetInteger(vaddr), size);
+            return mapped && ptr != nullptr;
+        }
+    }
+#endif
     if (rasterizer && !is_write) {
         // Flushes the GPU's writes and records the read (later GPU writes there are copied back
         // at fences). A read trap is disarmed by this and leaves the page readable; a page read
@@ -1533,7 +1551,8 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_wr
         const bool trapped = impl->IsReadTrapArmed(GetInteger(vaddr));
         // Copy the GPU's writes back now (ordered): the invalidation below would otherwise find
         // the area still GPU-modified and sync the whole GPU to preserve it (the Hypervisor
-        // backend's world in Pokemon Pokopia went from 8.4-10.5 ms a frame to 13.8-15.2 ms).
+        // backend's world in Pokemon Pokopia went from 8.4-10.5 ms a frame to 13.8-15.2 ms, when
+        // it still came through here).
         Tegra::GPU::SetOrderedReadsOnThisThread(true);
         SCOPE_EXIT {
             Tegra::GPU::SetOrderedReadsOnThisThread(false);
