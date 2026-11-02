@@ -1262,14 +1262,20 @@ if (HAS_NCE)
     target_link_libraries(core PRIVATE merry::oaknut)
 endif()
 
-# Native execution of application code on Apple silicon (EDEN_NX2_HYPERVISOR=1).
-if (APPLE AND ARCHITECTURE_arm64)
+# Native execution of application code on Apple silicon (cpu_backend = Hypervisor).
+if (HAS_HYPERVISOR)
     target_sources(core PRIVATE
         arm/hypervisor/arm_hypervisor.cpp
         arm/hypervisor/arm_hypervisor.h
         arm/hypervisor/hv_vm.cpp
         arm/hypervisor/hv_vm.h)
-    target_compile_definitions(core PRIVATE HAS_HYPERVISOR)
+    # The NCE load/store interpreter performs accesses to unmapped pages.
+    if (NOT HAS_NCE)
+        target_sources(core PRIVATE
+            arm/nce/interpreter_visitor.cpp
+            arm/nce/interpreter_visitor.h
+            arm/nce/visitor_base.h)
+    endif()
     target_link_libraries(core PRIVATE "-framework Hypervisor")
 endif()
 

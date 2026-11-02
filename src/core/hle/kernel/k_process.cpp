@@ -1325,16 +1325,30 @@ void KProcess::InitializeInterfaces(KernelCore& kernel) {
         Core::MakeExclusiveMonitor(this->GetMemory(), Core::Hardware::NUM_CPU_CORES);
 
 #ifdef HAS_HYPERVISOR
-    // EDEN_NX2_HYPERVISOR=1: run the application natively when its VM is ready (Core::Memory
-    // attached it to this page table at initialization).
-    if (this->IsApplication() && this->Is64Bit() && kernel.IsMulticore() &&
-        Core::Hv::Vm::Get().IsAttached(this->GetPageTable().GetImpl()) &&
-        Core::Hv::Vm::Get().IsReady()) {
-        for (size_t i = 0; i < Core::Hardware::NUM_CPU_CORES; i++) {
-            m_arm_interfaces[i] = std::make_unique<Core::ArmHypervisor>(kernel.System(), this, i);
+    // cpu_backend = Hypervisor: run the application natively when its VM is ready (Core::Memory
+    // attached it to this page table at initialization); otherwise say why and use Dynarmic.
+    if (this->IsApplication() && Core::Hv::IsRequested()) {
+        auto& vm = Core::Hv::Vm::Get();
+        const bool attached = vm.IsAttached(this->GetPageTable().GetImpl()) && vm.IsReady();
+        if (attached && this->Is64Bit() && kernel.IsMulticore()) {
+            for (size_t i = 0; i < Core::Hardware::NUM_CPU_CORES; i++) {
+                m_arm_interfaces[i] =
+                    std::make_unique<Core::ArmHypervisor>(kernel.System(), this, i);
+            }
+            LOG_INFO(Kernel, "CPU backend: Hypervisor (application code runs natively)");
+            return;
         }
-        LOG_INFO(Kernel, "Running the application natively through Hypervisor.framework");
-        return;
+        std::string reason = vm.UnavailableReason();
+        if (reason.empty()) {
+            reason = !this->Is64Bit()         ? "it runs only 64-bit applications"
+                     : !kernel.IsMulticore() ? "it needs multicore CPU emulation (use_multi_core)"
+                                             : "the VM is not attached or not ready";
+        }
+        vm.Detach(reason);
+        LOG_WARNING(Kernel, "CPU backend: Hypervisor unavailable ({}); falling back to Dynarmic",
+                    reason);
+    } else if (this->IsApplication() && Core::Hv::IsTurnedOffByEnvironment()) {
+        LOG_INFO(Kernel, "CPU backend: Dynarmic (EDEN_NX2_HYPERVISOR=0 overrides cpu_backend)");
     }
 #endif
 

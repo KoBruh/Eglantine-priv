@@ -7,6 +7,7 @@
 #include <atomic>
 
 #include "core/arm/arm_interface.h"
+#include "core/arm/hypervisor/hv_vm.h"
 
 namespace Kernel {
 class KProcess;
@@ -68,13 +69,19 @@ private:
         u64 tpidrro_el0{};
     };
 
-    struct Vcpu;
-    Vcpu& CurrentVcpu();
+    using Vcpu = Hv::Vcpu;
     void WriteState(Vcpu& vcpu);
     void ReadState(Vcpu& vcpu);
     enum class Resolution { Continue, Return };
     Resolution HandleLowerSync(Vcpu& vcpu, u64 esr, u64 far, u64 elr, u64 spsr, HaltReason& out);
     Resolution HandleDataAbort(Vcpu& vcpu, u64 esr, u64 far, u64 elr);
+    void InvalidatePageOnEntry(Vcpu& vcpu, u64 page);
+    void UpdateCounter(Vcpu& vcpu);
+    void StoppedInCounterHandler(Vcpu& vcpu, u64 pc, bool& resume_as_is);
+    void PerformFaultingAccess(Vcpu& vcpu, u64 esr, u64 far, u64 elr, bool mapped);
+    bool PerformExclusiveOrAtomic(u32 insn);
+    bool PerformSimdStructure(u32 insn);
+    bool PerformFromSyndrome(Vcpu& vcpu, u64 esr, u64 far);
     void EmulateSystemRegister(Vcpu& vcpu, u64 esr);
 
     System& m_system;
@@ -91,6 +98,8 @@ private:
     // Exit statistics, logged every 10 seconds per core (EDEN_NX2_HYPERVISOR_STATS=1).
     struct Stats {
         u64 runs{}, svc{}, counter{}, data_abort{}, interrupt{}, cancel{}, vtimer{}, other{};
+        u64 emulated{}; ///< Data aborts performed through Core::Memory (unmapped and the like).
+        u64 skipped{};  ///< ...of which instructions that could not be performed.
         u64 native_ns{};
         s64 window_start_ns{};
     };
@@ -100,6 +109,15 @@ private:
 
     u64 m_last_fault_page{~u64{0}};
     u32 m_fault_repeats{};
+    // The counter reads served inside the VM (UpdateCounter).
+    u64 m_counter_frequency{};
+    u64 m_sleep_ticks{};
+    bool m_vtimer_set{};
+    bool m_counter_checked{};
+    bool m_counter_broken{};
+
+    u64 m_last_stale_pc{~u64{0}};
+    u32 m_stale_repeats{};
 };
 
 } // namespace Core

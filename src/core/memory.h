@@ -41,6 +41,10 @@ namespace Core::Memory {
 /// Counts unmapped reads on this host thread since the CPU callbacks last checked (debug aid).
 u32& UnmappedReadFlag();
 
+/// While set on this thread, ReadBlock and WriteBlock do not log unmapped bytes (a caller that
+/// rate-limits its own report of them, such as the hypervisor's fault handler, sets it).
+bool& QuietUnmappedAccesses();
+
 /**
  * Page size used by the ARM architecture. This is the smallest granularity with which memory can
  * be mapped.

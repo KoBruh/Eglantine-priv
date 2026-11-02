@@ -62,6 +62,11 @@ u32& UnmappedReadFlag() {
     return flag;
 }
 
+bool& QuietUnmappedAccesses() {
+    thread_local bool quiet{};
+    return quiet;
+}
+
 #ifdef HAS_HYPERVISOR
 /// The hypervisor VM when it mirrors this page table, so its stage-1 tables follow every change.
 static inline Core::Hv::Vm* HypervisorFor(const Common::PageTable& table) {
@@ -98,16 +103,24 @@ struct Memory::Impl {
 #endif
 
 #ifdef HAS_HYPERVISOR
-        // EDEN_NX2_HYPERVISOR=1: application code runs natively in a VM whose page tables mirror
-        // this one from the start, so every mapping below reaches them.
+        // cpu_backend = Hypervisor: application code runs natively in a VM whose page tables
+        // mirror this one from the start, so every mapping below reaches them. When it can't,
+        // the reason is kept for KProcess::InitializeInterfaces, which falls back to Dynarmic.
         // (The process's 64-bit flag is only set after this runs; a 64-bit address space,
         // 36 or 39 bits, tells the same.)
-        if (Core::Hv::IsRequested() && process.IsApplication() &&
-            current_page_table->GetAddressSpaceBits() >= 36 && system.IsMulticore()) {
-            auto& buffer = system.DeviceMemory().buffer;
-            Core::Hv::Vm::Get().Attach(*current_page_table,
-                                       current_page_table->GetAddressSpaceBits(),
-                                       buffer.BackingBasePointer(), buffer.BackingSize());
+        if (process.IsApplication() && Core::Hv::IsRequested()) {
+            auto& vm = Core::Hv::Vm::Get();
+            if (current_page_table->GetAddressSpaceBits() < 36) {
+                vm.Detach("it runs only 64-bit applications");
+            } else if (!system.IsMulticore()) {
+                vm.Detach("it needs multicore CPU emulation (use_multi_core)");
+            } else if (system.DebuggerEnabled()) {
+                vm.Detach("the GDB stub is on");
+            } else {
+                auto& buffer = system.DeviceMemory().buffer;
+                vm.Attach(*current_page_table, current_page_table->GetAddressSpaceBits(),
+                          buffer.BackingBasePointer(), buffer.BackingSize());
+            }
         }
 #endif
         std::scoped_lock lk{read_trap_mutex};
@@ -364,7 +377,9 @@ struct Memory::Impl {
     bool ReadBlockImpl(const Common::ProcessAddress addr, void* buffer, const std::size_t size, bool unsafe) {
         return WalkBlock(addr, size,
         [addr, size, &buffer](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
-            LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            if (!QuietUnmappedAccesses()) {
+                LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            }
             std::memset(reinterpret_cast<u8*>(buffer) + offset, 0, copy_amount);
         },
         [&](const std::size_t offset, const std::size_t copy_amount, const u8* const ptr) {
@@ -389,7 +404,9 @@ struct Memory::Impl {
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
         return WalkBlock(addr, size,
         [addr, size](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
-            LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            if (!QuietUnmappedAccesses()) {
+                LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            }
         },
         [&](const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
             std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);

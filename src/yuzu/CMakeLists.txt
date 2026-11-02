@@ -390,7 +390,7 @@ if (APPLE)
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE TRUE)
     set_target_properties(yuzu PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist)
 
-    # Hypervisor.framework (native execution, EDEN_NX2_HYPERVISOR=1) needs this entitlement; an
+    # Hypervisor.framework (native execution, the default CPU backend) needs this entitlement; an
     # ad-hoc signature carries it for local builds.
     if (NOT CMAKE_GENERATOR MATCHES "Xcode")
         # Signed outside the bundle: in place, codesign checks the bundle, whose MacOS folder
