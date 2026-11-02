@@ -296,8 +296,8 @@ struct FileBackend final : public Backend {
     }
 private:
     std::optional<FS::IOFile> file;
-    std::size_t bytes_written = 0;
-    bool enabled = true;
+    std::atomic_size_t bytes_written = 0;
+    std::atomic_bool enabled = true;
 };
 #endif
 #ifdef _WIN32
@@ -409,6 +409,10 @@ void Start() {
 }
 
 void Stop() {
+    Flush();
+}
+
+void Flush() {
     if (logging_instance)
         logging_instance->ForEachBackend([](Backend& backend) { backend.Flush(); });
 }

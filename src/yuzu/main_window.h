@@ -10,6 +10,7 @@
 #include <optional>
 
 #include <filesystem>
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QFutureWatcher>
@@ -37,9 +38,8 @@
 #endif
 
 #ifdef ENABLE_UPDATE_CHECKER
-#include <QFuture>
 #include <QFutureWatcher>
-#include "common/net/net.h"
+#include "frontend_common/update_checker.h"
 #endif
 
 class QtConfig;
@@ -437,7 +437,9 @@ private slots:
     void OnEmulationStopTimeExpired();
 
 #ifdef ENABLE_UPDATE_CHECKER
-    void OnEmulatorUpdateAvailable();
+    // `requested` is true when the user asked, so every outcome gets reported, not only updates.
+    void CheckForUpdates(bool requested);
+    void OnUpdateCheckFinished(const UpdateChecker::Result& result, bool requested);
 #endif
 
 private:
@@ -493,11 +495,6 @@ private:
     std::unique_ptr<PlayTime::PlayTimeManager> play_time_manager;
     std::shared_ptr<InputCommon::InputSubsystem> input_subsystem;
 
-#ifdef ENABLE_UPDATE_CHECKER
-    QFuture<std::optional<Common::Net::Release>> update_future;
-    QFutureWatcher<std::optional<Common::Net::Release>> update_watcher;
-#endif
-
     MultiplayerState* multiplayer_state = nullptr;
 
     GRenderWindow* render_window = nullptr;
@@ -543,6 +540,9 @@ private:
 
     // Whether emulation is currently running in yuzu.
     bool emulation_running = false;
+    bool boot_in_progress = false;
+    bool close_pending = false;
+    QElapsedTimer diagnostic_timer;
     // The path to the game currently running
     QString current_game_path;
     // Whether a user was set on the command line (skips UserSelector if it's forced to show up)

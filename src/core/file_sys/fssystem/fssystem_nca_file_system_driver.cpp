@@ -96,7 +96,7 @@ Result NcaFileSystemDriver::OpenStorageImpl(VirtualFile* out, NcaFsHeaderReader*
     // NCZ files serve already-decrypted body data (CTR sections are stored decrypted).
     // Skip the AES layers so we don't decrypt plaintext twice.
     const bool is_pre_decrypted =
-        m_reader->GetStorage() && m_reader->GetStorage()->HasDecryptedSections();
+        m_reader->GetDecryptedBodyStorage() != nullptr;
 
     // Declare the storage we're opening.
     VirtualFile storage;
@@ -390,7 +390,7 @@ Result NcaFileSystemDriver::OpenIndirectableStorageAsOriginal(
 
     // Create the appropriate storage for the encryption type.
     const bool is_pre_decrypted =
-        m_reader->GetStorage() && m_reader->GetStorage()->HasDecryptedSections();
+        m_reader->GetDecryptedBodyStorage() != nullptr;
     if (!is_pre_decrypted) {
         switch (header_reader->GetEncryptionType()) {
         case NcaFsHeader::EncryptionType::None:
@@ -417,8 +417,9 @@ Result NcaFileSystemDriver::OpenIndirectableStorageAsOriginal(
 
 Result NcaFileSystemDriver::CreateBodySubStorage(VirtualFile* out, s64 offset, s64 size) {
     // Create the body storage.
-    auto body_storage =
-        std::make_shared<SharedNcaBodyStorage>(m_reader->GetSharedBodyStorage(), m_reader);
+    auto body = m_reader->GetDecryptedBodyStorage();
+    auto body_storage = std::make_shared<SharedNcaBodyStorage>(
+        body ? std::move(body) : m_reader->GetSharedBodyStorage(), m_reader);
     R_UNLESS(body_storage != nullptr, ResultAllocationMemoryFailedAllocateShared);
 
     // Get the body storage size.
@@ -443,7 +444,7 @@ Result NcaFileSystemDriver::CreateAesCtrStorage(
     ASSERT(out != nullptr);
     ASSERT(base_storage != nullptr);
 
-    if (m_reader->GetStorage() && m_reader->GetStorage()->HasDecryptedSections()) {
+    if (m_reader->GetDecryptedBodyStorage() != nullptr) {
         *out = std::move(base_storage);
         R_SUCCEED();
     }
@@ -485,7 +486,7 @@ Result NcaFileSystemDriver::CreateAesXtsStorage(VirtualFile* out, VirtualFile ba
     ASSERT(out != nullptr);
     ASSERT(base_storage != nullptr);
 
-    if (m_reader->GetStorage() && m_reader->GetStorage()->HasDecryptedSections()) {
+    if (m_reader->GetDecryptedBodyStorage() != nullptr) {
         *out = std::move(base_storage);
         R_SUCCEED();
     }
@@ -831,7 +832,7 @@ Result NcaFileSystemDriver::CreateAesCtrExStorageMetaStorage(
     ASSERT(out != nullptr);
     ASSERT(base_storage != nullptr);
 
-    if (m_reader->GetStorage() && m_reader->GetStorage()->HasDecryptedSections()) {
+    if (m_reader->GetDecryptedBodyStorage() != nullptr) {
         *out = std::move(base_storage);
         R_SUCCEED();
     }
@@ -898,7 +899,7 @@ Result NcaFileSystemDriver::CreateAesCtrExStorage(
     ASSERT(meta_storage != nullptr);
     ASSERT(patch_info.HasAesCtrExTable());
 
-    if (m_reader->GetStorage() && m_reader->GetStorage()->HasDecryptedSections()) {
+    if (m_reader->GetDecryptedBodyStorage() != nullptr) {
         *out = std::move(base_storage);
         R_SUCCEED();
     }

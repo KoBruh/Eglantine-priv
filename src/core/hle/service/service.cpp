@@ -152,20 +152,29 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
     const bool auto_stub = Settings::values.use_auto_stub || env_auto_stub ||
                            std::string_view{service_name}.starts_with(Nx2StubPrefix) ||
                            (caller != nullptr && caller->IsSwitch2());
-    // Switch 2 stub sessions get polled every frame (title 1: nx2:camera 29, ~35 a second, two
-    // log lines each): report each command once, then answer with the same empty success.
-    // The video decoder sessions keep logging every request (reverse engineering, see below).
+    // The Switch 2 sessions' unknown commands (nx2:gsv 903/912/1003/427, vi2 301, syncpt 21,
+    // ...) were brought up against the result-only reply, which leaves the request's words in
+    // place; zeroed replies made Kirby Air Riders and the Yoshi demo panic (2162-0001) around
+    // their movies. Keep that reply for them until the commands are known.
     const std::string_view name{service_name};
-    if (name.starts_with(Nx2StubPrefix) && !name.starts_with("nx2:vdec")) {
+    const bool keep_request_words = name.starts_with(Nx2StubPrefix) || name.starts_with("nx2:");
+    // Auto-stubbed commands are reported once each: title 1 polls nx2:camera 29 every frame
+    // (~47 calls a second), and every report wrote a Critical line, which flushes the log file.
+    // The video decoder sessions keep logging every request (reverse engineering, see below).
+    if (auto_stub && !name.starts_with("nx2:vdec")) {
         static std::mutex reported_mutex;
         static std::set<std::pair<std::string, u32>> reported;
         std::scoped_lock lk{reported_mutex};
         if (!reported.emplace(service_name, ctx.GetCommand()).second) {
-            IPC::ResponseBuilder rb{ctx, 2};
+            IPC::ResponseBuilder rb{ctx, keep_request_words ? 2u : 2 + StubZeroedWords};
             rb.Push(ResultSuccess);
+            if (!keep_request_words) {
+                PushStubZeroes(rb);
+            }
             return;
         }
     }
+
     auto cmd_buf = ctx.CommandBuffer();
     std::string function_name = info == nullptr ? "<unknown>" : info->name;
 
@@ -181,11 +190,6 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
     UNIMPLEMENTED_MSG("Unknown / unimplemented {}", fmt::to_string(buf));
     if (auto_stub) {
         LOG_WARNING(Service, "Using auto stub fallback (repeats of this command are not logged)");
-        // The Switch 2 sessions' unknown commands (nx2:gsv 903/912/1003/427, vi2 301, syncpt 21,
-        // ...) were brought up against the result-only reply, which leaves the request's words in
-        // place; zeroed replies made Kirby Air Riders and the Yoshi demo panic (2162-0001) around
-        // their movies. Keep that reply for them until the commands are known.
-        const bool keep_request_words = name.starts_with(Nx2StubPrefix) || name.starts_with("nx2:");
         IPC::ResponseBuilder rb{ctx, keep_request_words ? 2u : 2 + StubZeroedWords};
         rb.Push(ResultSuccess);
         if (!keep_request_words) {

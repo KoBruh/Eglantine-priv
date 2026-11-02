@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <optional>
@@ -116,7 +117,8 @@ VK_DEFINE_HANDLE(VmaAllocator)
     EXTENSION(NV, GEOMETRY_SHADER_PASSTHROUGH, geometry_shader_passthrough)                        \
     EXTENSION(NV, VIEWPORT_ARRAY2, viewport_array2)                                                \
     EXTENSION(NV, VIEWPORT_SWIZZLE, viewport_swizzle)                                              \
-    EXTENSION(EXT, FILTER_CUBIC, filter_cubic)                                                     \
+    EXTENSION(NV, COOPERATIVE_MATRIX, cooperative_matrix)                                             \
+    EXTENSION(EXT, FILTER_CUBIC, filter_cubic)                                                         \
     EXTENSION(IMG, FILTER_CUBIC, filter_cubic_img)                                                 \
     EXTENSION(QCOM, FILTER_CUBIC_WEIGHTS, filter_cubic_weights)
 
@@ -324,14 +326,24 @@ public:
         return features.features.sparseBinding && graphics_family_sparse_binding;
     }
 
-    /// 2D images whose memory can be bound in parts, on the graphics queue.
-    bool IsSparseResidencyImage2DSupported() const {
-        return IsSparseBindingSupported() && features.features.sparseResidencyImage2D;
+    /// Images whose memory can be bound in parts, on the graphics queue.
+    bool IsSparseResidencyImageSupported(VkImageType type) const {
+        if (!IsSparseBindingSupported()) {
+            return false;
+        }
+        switch (type) {
+        case VK_IMAGE_TYPE_2D:
+            return features.features.sparseResidencyImage2D;
+        case VK_IMAGE_TYPE_3D:
+            return features.features.sparseResidencyImage3D;
+        default:
+            return false;
+        }
     }
 
     /// Whether a sparse image may bind the same memory to several of its blocks.
     bool IsSparseResidencyAliasedSupported() const {
-        return IsSparseResidencyImage2DSupported() && features.features.sparseResidencyAliased;
+        return IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D) && features.features.sparseResidencyAliased;
     }
 
     /// Whether images with no memory bound may be sampled and used as attachments. AMD's drivers
@@ -394,6 +406,7 @@ public:
 #define FN_MAX_LIMIT_LIST \
     FN_MAX_LIMIT_ELEM(ComputeSharedMemorySize) \
     FN_MAX_LIMIT_ELEM(PerStageDescriptorSampledImages) \
+    FN_MAX_LIMIT_ELEM(PerStageDescriptorStorageBuffers) \
     FN_MAX_LIMIT_ELEM(PerStageResources) \
     FN_MAX_LIMIT_ELEM(DescriptorSetSamplers) \
     FN_MAX_LIMIT_ELEM(DescriptorSetUniformBuffers) \
@@ -735,6 +748,28 @@ FN_MAX_LIMIT_LIST
         return features.host_query_reset.hostQueryReset != VK_FALSE;
     }
 
+    /// Returns true if the device supports VK_NV_cooperative_matrix (used for tensor ops).
+    bool IsExtCooperativeMatrixSupported() const {
+        return extensions.cooperative_matrix &&
+               features.cooperative_matrix_features.cooperativeMatrix &&
+               IsFloat16Supported() && SupportedSpirvVersion() >= 0x00010400 &&
+               cooperative_matrix_shape_supported &&
+               extensions.subgroup_size_control &&
+               features.subgroup_size_control.subgroupSizeControl &&
+               features.subgroup_size_control.computeFullSubgroups &&
+               IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT) &&
+               properties.subgroup_size_control.minSubgroupSize <= 32 &&
+               properties.subgroup_size_control.maxSubgroupSize >= 32 &&
+               (GetSubgroupSupportedStages() & VK_SHADER_STAGE_COMPUTE_BIT) &&
+               IsSubgroupFeatureSupported(VK_SUBGROUP_FEATURE_BASIC_BIT);
+    }
+
+    u32 GetMaxTensorWorkgroupSize() const {
+        return (std::min)({properties.properties.limits.maxComputeWorkGroupSize[0],
+                          properties.properties.limits.maxComputeWorkGroupInvocations,
+                          properties.subgroup_size_control.maxComputeWorkgroupSubgroups * 32U});
+    }
+
     /// Returns true if the device supports VK_EXT_transform_feedback.
     bool IsExtTransformFeedbackSupported() const {
         return extensions.transform_feedback;
@@ -1000,6 +1035,11 @@ FN_MAX_LIMIT_LIST
 
     u64 GetDeviceMemoryUsage() const;
 
+    [[nodiscard]] bool TracksMemoryHeap(size_t heap) const noexcept {
+        return std::find(valid_heap_memory.begin(), valid_heap_memory.end(), heap) !=
+               valid_heap_memory.end();
+    }
+
     /// The driver's current memory budget for this process (VK_EXT_memory_budget), in
     /// GetDeviceMemoryUsage() terms: the usage at which the main device-local heap reaches its
     /// budget. 0 without the extension.
@@ -1230,12 +1270,15 @@ private:
 #undef FEATURE_CORE
 #undef FEATURE_EXT
 
+        VkPhysicalDeviceCooperativeMatrixFeaturesNV cooperative_matrix_features{};
+
         VkPhysicalDeviceFeatures features{};
     };
 
     struct Properties {
         VkPhysicalDeviceDriverProperties driver{};
         VkPhysicalDeviceSubgroupProperties subgroup_properties{};
+        VkPhysicalDeviceCooperativeMatrixPropertiesNV cooperative_matrix{};
         VkPhysicalDeviceFloatControlsProperties float_controls{};
         VkPhysicalDevicePushDescriptorPropertiesKHR push_descriptor{};
         VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_buffer{};
@@ -1252,6 +1295,7 @@ private:
     Extensions extensions{};
     Features features{};
     Properties properties{};
+    bool cooperative_matrix_shape_supported{};
 
     VkPhysicalDeviceFeatures2 features2{};
     VkPhysicalDeviceProperties2 properties2{};

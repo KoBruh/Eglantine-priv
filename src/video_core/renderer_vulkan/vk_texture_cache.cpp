@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <limits>
 #include <array>
+#include <chrono>
 #include <cstdlib>
 #include <optional>
 #include <span>
@@ -187,8 +188,8 @@ constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
 // Image::BindLayers. Only formats uploaded layer by layer: huge ASTC arrays (GPU decode) and
 // formats the host samples as they are.
 [[nodiscard]] bool UsesSparseLayers(const Device& device, const ImageInfo& info, GPUVAddr gpu_addr) {
-    if (!device.CanUseUnbackedSparseImages() || !device.IsSparseResidencyImage2DSupported() ||
-        info.type != ImageType::e2D ||
+    if (!device.CanUseUnbackedSparseImages() ||
+        !device.IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D) || info.type != ImageType::e2D ||
         info.resources.layers <= 1 || info.num_samples != 1 ||
         VideoCore::Surface::GetFormatType(info.format) != VideoCore::Surface::SurfaceType::ColorTexture) {
         return false;
@@ -244,7 +245,7 @@ enum class SparseTilesMode {
         const char* value = std::getenv("EDEN_NX2_SPARSE_ALIASED");
         return value == nullptr ? '\0' : value[0];
     }();
-    if (!device.IsSparseResidencyImage2DSupported()) {
+    if (!device.IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D)) {
         return SparseTilesMode::None;
     }
     const bool aliased = device.IsSparseResidencyAliasedSupported() && force_aliased != '0';
@@ -1724,6 +1725,9 @@ void TextureCacheRuntime::ConvertImage(Framebuffer* dst, ImageView& dst_view, Im
         }
         break;
     case PixelFormat::A8B8G8R8_UNORM:
+        if (src_view.format == PixelFormat::X8_D24_UNORM) {
+            return blit_image_helper.ConvertX8D24ToABGR8(dst, src_view);
+        }
         if (src_view.format == PixelFormat::S8_UINT_D24_UNORM) {
             return blit_image_helper.ConvertD24S8ToABGR8(dst, src_view);
         }
@@ -1742,6 +1746,11 @@ void TextureCacheRuntime::ConvertImage(Framebuffer* dst, ImageView& dst_view, Im
     case PixelFormat::D16_UNORM:
         if (src_view.format == PixelFormat::R16_UNORM) {
             return blit_image_helper.ConvertR16ToD16(dst, src_view);
+        }
+        break;
+    case PixelFormat::X8_D24_UNORM:
+        if (src_view.format == PixelFormat::A8B8G8R8_UNORM) {
+            return blit_image_helper.ConvertABGR8ToX8D24(dst, src_view);
         }
         break;
     case PixelFormat::S8_UINT_D24_UNORM:
@@ -2167,9 +2176,30 @@ void TextureCacheRuntime::ReleaseMsaaScratchImage(VkImage image) {
     }
 }
 
-void TextureCacheRuntime::TickFrame() {
+void TextureCacheRuntime::ReclaimCompletedTranscodes() {
     while (!pending_transcodes.empty() && scheduler.IsFree(pending_transcodes.front().tick)) {
+        pending_transcode_bytes -= pending_transcodes.front().bytes;
         pending_transcodes.pop_front();
+    }
+}
+
+u64 TextureCacheRuntime::TranscodeBudgetBytes() const noexcept {
+    const u64 total = device.GetDeviceLocalMemory();
+    const u64 target = total != 0 ? total / 10 : u64{512} << 20;
+    return std::clamp(target, u64{256} << 20, u64{1024} << 20);
+}
+
+void TextureCacheRuntime::TickFrame() {
+    ReclaimCompletedTranscodes();
+    if (++transcode_frames % 600 == 0) {
+        LOG_INFO(Render_Vulkan,
+                 "ASTC temporary images: {} MiB pending, {} MiB peak, {} MiB budget, {} waits ({} us), {} early submits",
+                 pending_transcode_bytes >> 20, peak_transcode_bytes >> 20,
+                 TranscodeBudgetBytes() >> 20, transcode_budget_waits, transcode_wait_us,
+                 transcode_early_submits);
+        peak_transcode_bytes = pending_transcode_bytes;
+        transcode_budget_waits = transcode_wait_us = 0;
+        transcode_early_submits = 0;
     }
     static constexpr u32 MAX_UNUSED_SCRATCH_FRAMES = 60;
     std::erase_if(msaa_scratch_images, [this](MsaaScratchImage& scratch) {
@@ -4185,6 +4215,7 @@ void TextureCacheRuntime::AccelerateImageUploadLayers(
 void TextureCacheRuntime::TranscodeAstcToBcn(
     Image& image, const StagingBufferRef& map,
     std::span<const VideoCommon::SwizzleParameters> swizzles) {
+    ReclaimCompletedTranscodes();
     const ImageInfo& info = image.info;
     // The host image may hold only the guest levels from host_level_offset on (TrimmedHostInfo):
     // the staging data and swizzles then start at that level, and host level 0 is that level.
@@ -4199,6 +4230,7 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     // took several percent of the GPU thread. VMA still gives large ones their own block.
     PendingTranscode pending{
         .tick = 0,
+        .bytes = 0,
         .image = memory_allocator.CreateImage(VkImageCreateInfo{
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             .pNext = nullptr,
@@ -4218,6 +4250,11 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         }),
         .views = {},
     };
+    for (u32 level = 0; level < levels; ++level) {
+        pending.bytes += u64{(std::max)(width >> level, 1U)} *
+                         (std::max)(height >> level, 1U) * layers * 4;
+    }
+    pending.bytes = (std::max)(pending.bytes, pending.image.DeviceMemorySize());
     for (u32 level = 0; level < levels; ++level) {
         pending.views.push_back(
             MakeStorageView(device.GetLogical(), level, *pending.image, DecodeFormat));
@@ -4277,7 +4314,43 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     });
     image.UploadMemory(output.buffer, output.offset, copies);
     pending.tick = scheduler.CurrentTick();
+    transcode_submission_batch.Record(pending.tick, pending.bytes);
+    pending_transcode_bytes += pending.bytes;
+    peak_transcode_bytes = (std::max)(peak_transcode_bytes, pending_transcode_bytes);
     pending_transcodes.push_back(std::move(pending));
+    // Submit only after recording the upload, so its staging buffer remains valid for this tick.
+    const u64 budget = TranscodeBudgetBytes();
+    if (transcode_submission_batch.ShouldSubmitEarly(pending_transcode_bytes, budget,
+                                                     pending_transcodes.front().tick,
+                                                     scheduler.CurrentTick())) {
+        scheduler.Flush();
+        ++transcode_early_submits;
+    }
+    while (pending_transcode_bytes > budget && !pending_transcodes.empty()) {
+        const u64 wait_tick = pending_transcodes.front().tick;
+        const u64 current_tick = scheduler.CurrentTick();
+        const u64 known_gpu_tick = scheduler.GetMasterSemaphore().KnownGpuTick();
+        const u64 pending_bytes = pending_transcode_bytes;
+        const u64 oldest_bytes = pending_transcodes.front().bytes;
+        const u64 newest_bytes = pending_transcodes.back().bytes;
+        const u64 batch_bytes = transcode_submission_batch.BytesForTick(current_tick);
+        const size_t pending_count = pending_transcodes.size();
+        const auto begin = std::chrono::steady_clock::now();
+        scheduler.Wait(wait_tick);
+        ++transcode_budget_waits;
+        const auto elapsed = std::chrono::steady_clock::now() - begin;
+        const u64 wait_us = static_cast<u64>(
+            std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count());
+        transcode_wait_us += wait_us;
+        if (wait_us >= 10'000) {
+            LOG_INFO(Render_Vulkan,
+                     "ASTC budget wait detail: {} us; oldest tick {}, current {}, known GPU {}; "
+                     "{} MiB pending in {} images, oldest {} MiB, newest {} MiB, current batch {} MiB",
+                     wait_us, wait_tick, current_tick, known_gpu_tick, pending_bytes >> 20,
+                     pending_count, oldest_bytes >> 20, newest_bytes >> 20, batch_bytes >> 20);
+        }
+        ReclaimCompletedTranscodes();
+    }
 }
 
 void TextureCacheRuntime::TransitionImageLayout(Image& image) {

@@ -8,7 +8,6 @@
 
 #include <functional>
 #include <atomic>
-#include <condition_variable>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -18,6 +17,8 @@
 #include "common/polyfill_thread.h"
 #include "video_core/dma_pusher.h"
 #include "video_core/framebuffer_config.h"
+#include "video_core/rasterizer_download_area.h"
+#include "video_core/readback_dependency_diagnostics.h"
 
 namespace Tegra {
 struct FramebufferConfig;
@@ -77,6 +78,13 @@ struct FlushAndInvalidateRegionCommand final {
 /// Command to make the gpu look into pending requests
 struct GPUTickCommand final {};
 
+struct CpuReadCommand final {
+    DAddr addr;
+    u64 size;
+    VideoCore::RasterizerDownloadArea* result;
+    ReadbackDependencyDiagnostics::Record* diagnostic{};
+};
+
 /// Command to run a function on the GPU thread after the commands queued before it
 struct RunCommand final {
     std::function<void()> func;
@@ -84,17 +92,26 @@ struct RunCommand final {
 
 using CommandData =
     std::variant<std::monostate, SubmitListCommand, FlushRegionCommand, InvalidateRegionCommand,
-                 FlushAndInvalidateRegionCommand, GPUTickCommand, RunCommand>;
+                 FlushAndInvalidateRegionCommand, GPUTickCommand, RunCommand, CpuReadCommand>;
 
 struct CommandDataContainer {
     CommandDataContainer() = default;
 
-    explicit CommandDataContainer(CommandData&& data_, u64 next_fence_, bool block_)
-        : data{std::move(data_)}, fence{next_fence_}, block(block_) {}
+    explicit CommandDataContainer(CommandData&& data_, u64 next_fence_, bool block_,
+                                  u64 published_work_sequence_)
+        : data{std::move(data_)}, fence{next_fence_}, block(block_),
+          published_work_sequence{published_work_sequence_} {
+        if (const auto* read = std::get_if<CpuReadCommand>(&data); read && read->diagnostic) {
+            read->diagnostic->fence = fence;
+            read->diagnostic->published_sequence = published_work_sequence;
+            read->diagnostic->enqueued = ReadbackDependencyDiagnostics::Now();
+        }
+    }
 
     CommandData data;
     u64 fence{};
     bool block{};
+    u64 published_work_sequence{};
 };
 
 /// Struct used to synchronize the GPU thread
@@ -104,7 +121,10 @@ struct SynchState final {
     CommandQueue queue;
     u64 last_fence{};
     std::atomic<u64> signaled_fence{};
-    std::condition_variable_any cv;
+    std::atomic<u64> readback_generation{1};
+    std::atomic<u64> published_work_sequence{};
+    std::atomic<u64> async_guest_writes{};
+    bool shutting_down{};
 };
 
 /// Class used to manage the GPU thread
@@ -130,6 +150,17 @@ public:
     void FlushAndInvalidateRegion(DAddr addr, u64 size, bool is_async);
 
     void TickGPU(bool is_async);
+
+    VideoCore::RasterizerDownloadArea ReadMemory(DAddr addr, u64 size, bool is_async);
+
+    u64 ReadbackGeneration() const;
+    void InvalidateReadbackCache();
+    void BeginAsyncGuestWrite();
+    void EndAsyncGuestWrite();
+
+    bool IsCurrentThread() const {
+        return thread.get_id() == std::this_thread::get_id();
+    }
 
     /// Runs func on the GPU thread once the commands queued before it have been processed.
     void Run(std::function<void()>&& func, bool is_async);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <qdebug.h>
+#include <chrono>
 #include "core/core.h"
 #include "core/cpu_manager.h"
 #include "emu_thread.h"
@@ -26,6 +27,8 @@ void EmuThread::run() {
     // execution.
     gpu.ObtainContext();
 
+    const auto cache_started = std::chrono::steady_clock::now();
+    LOG_INFO(Frontend, "Disk shader resource loading started");
     emit LoadProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0);
     if (Settings::values.use_disk_shader_cache.GetValue()) {
         QtCommon::system->Renderer().ReadRasterizer()->LoadDiskResources(
@@ -35,6 +38,10 @@ void EmuThread::run() {
             });
     }
     emit LoadProgress(VideoCore::LoadCallbackStage::Complete, 0, 0);
+    LOG_INFO(Frontend, "Disk shader resource loading completed: elapsed_ms={} cancelled={}",
+             std::chrono::duration_cast<std::chrono::milliseconds>(
+                 std::chrono::steady_clock::now() - cache_started).count(),
+             stop_token.stop_requested());
 
     gpu.ReleaseContext();
     gpu.Start();
@@ -74,6 +81,8 @@ void EmuThread::run() {
     }
 
     // Shutdown the main emulated process
+    LOG_INFO(Frontend, "Emulation thread entering core shutdown");
+    Common::Log::Flush();
     QtCommon::system->DetachDebugger();
     QtCommon::system->ShutdownMainProcess();
 }

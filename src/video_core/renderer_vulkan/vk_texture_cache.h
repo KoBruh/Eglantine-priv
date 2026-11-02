@@ -12,6 +12,7 @@
 #include "video_core/texture_cache/texture_cache_base.h"
 
 #include "shader_recompiler/shader_info.h"
+#include "video_core/renderer_vulkan/transcode_budget_policy.h"
 #include "video_core/renderer_vulkan/vk_compute_pass.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
@@ -184,10 +185,20 @@ public:
     /// Temporary decode images, freed once the GPU is past `tick`.
     struct PendingTranscode {
         u64 tick;
+        u64 bytes;
         vk::Image image;
         std::vector<vk::ImageView> views;
     };
     std::deque<PendingTranscode> pending_transcodes;
+    void ReclaimCompletedTranscodes();
+    [[nodiscard]] u64 TranscodeBudgetBytes() const noexcept;
+    u64 pending_transcode_bytes{};
+    u64 peak_transcode_bytes{};
+    u64 transcode_budget_waits{};
+    u64 transcode_wait_us{};
+    u64 transcode_early_submits{};
+    TranscodeSubmissionBatch transcode_submission_batch;
+    u64 transcode_frames{};
 
     std::optional<BlockLinearUnswizzle3DPass> bl3d_unswizzle_pass;
     const Settings::ResolutionScalingInfo& resolution;
@@ -420,6 +431,14 @@ public:
     /// Device memory BindLayers has bound to the image's layers (an unbacked image has no other).
     u64 SparseBoundBytes() const noexcept {
         return sparse_layers.bound_bytes;
+    }
+
+    [[nodiscard]] u64 MemoryBytes() const noexcept {
+        return original_image ? original_image.DeviceMemorySize() + sparse_layers.bound_bytes : 0;
+    }
+
+    [[nodiscard]] u64 ScaledMemoryBytes() const noexcept {
+        return scaled_image.DeviceMemorySize();
     }
 
     bool IsRescaled() const noexcept;

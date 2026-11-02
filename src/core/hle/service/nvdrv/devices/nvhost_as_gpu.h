@@ -23,6 +23,7 @@
 #include "common/swap.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/hle/service/nvdrv/devices/nvdevice.h"
+#include "core/hle/service/nvdrv/devices/nx2_gpu_mapping_table.h"
 
 namespace Tegra {
 class MemoryManager;
@@ -83,7 +84,6 @@ private:
     };
     static_assert(sizeof(IoctlMappingModify) == 0x20);
 
-    NvResult ModifyMappingKind(IoctlMappingModify& params);
 
     struct IoctlAllocAsEx {
         u32_le flags{}; // usually passes 1
@@ -253,6 +253,7 @@ private:
         bool shared; ///< Borrows an existing backing range; this entry must not free it
     };
     std::map<std::pair<u64, u64>, Nx2DeviceRange> nx2_device_ranges;
+    Nx2GpuMappingTable nx2_gpu_views;
     void Nx2Release(u64 cpu_address, u64 size);
 
     // Switch 2 sparse regions: a device range per region, mapped for the GPU when it's created;
@@ -261,6 +262,7 @@ private:
     void Nx2BackSparse(u64 gpu_address, u64 cpu_address, u64 size);
     // A tile of a sparse region (nx2:gpu 216): its device pages show process memory, or nothing.
     void Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size);
+    void Nx2Reserve(u64 gpu_address, u64 size);
     std::map<u64, std::pair<u64, DAddr>> nx2_sparse_ranges; ///< GPU address -> (size, device)
 };
 

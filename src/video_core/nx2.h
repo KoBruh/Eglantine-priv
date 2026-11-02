@@ -51,11 +51,14 @@ inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     }
     const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
                                    g_nx2_gpu_written_pages.size() * 64 - 1);
-    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
-        auto& word = g_nx2_gpu_written_pages[page / 64];
-        const u64 bit = u64{1} << (page % 64);
-        if ((word.load(std::memory_order_relaxed) & bit) == 0) {
-            word.fetch_or(bit, std::memory_order_relaxed);
+    const u64 first = device_address >> Nx2WrittenPageBits;
+    for (u64 index = first / 64; first <= last && index <= last / 64; ++index) {
+        const u64 low = index == first / 64 ? first % 64 : 0;
+        const u64 high = index == last / 64 ? last % 64 : 63;
+        const u64 bits = (~u64{0} >> (63 - high)) & (~u64{0} << low);
+        auto& word = g_nx2_gpu_written_pages[index];
+        if ((word.load(std::memory_order_relaxed) & bits) != bits) {
+            word.fetch_or(bits, std::memory_order_relaxed);
         }
     }
 }
@@ -73,6 +76,34 @@ inline void Nx2ClearGpuWrittenPages() {
         return false;
     }
     return (g_nx2_gpu_written_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1;
+}
+
+template <typename Translate>
+[[nodiscard]] bool Nx2HasGpuWrittenPage(GPUVAddr address, size_t size, Translate&& translate) {
+    if (size == 0) {
+        return false;
+    }
+    const GPUVAddr last = address + size - 1;
+    if (last < address) {
+        return true;
+    }
+    constexpr GPUVAddr mask = (GPUVAddr{1} << Nx2WrittenPageBits) - 1;
+    for (GPUVAddr page = address & ~mask;; page += mask + 1) {
+        if (const auto device = translate(page); device && Nx2IsGpuWritten(*device)) {
+            return true;
+        }
+        if (page == (last & ~mask)) {
+            return false;
+        }
+    }
+}
+
+template <typename Drain, typename Translate, typename Flush>
+void Nx2SynchronizeGpuWrittenCommands(GPUVAddr address, size_t size, Drain&& drain,
+                                     Translate&& translate, Flush&& flush) {
+    if (size == 0) return;
+    drain();
+    if (Nx2HasGpuWrittenPage(address, size, translate)) flush();
 }
 
 // NVN2 queues release their progress values into the second page of a two-page GPU-accessible
@@ -173,7 +204,7 @@ inline std::map<u64, Nx2SparseRegionState> g_nx2_sparse_state;
 inline void Nx2SparseRegionCreated(u64 gpu_address, u64 size, u64 block_size) {
     std::scoped_lock lk{g_nx2_sparse_state_mutex};
     g_nx2_sparse_state[gpu_address] = {size, block_size,
-                                       std::vector<bool>((size + block_size - 1) / block_size)};
+                                     std::vector<bool>((size + block_size - 1) / block_size), {}};
 }
 
 inline void Nx2SparseRegionDestroyed(u64 gpu_address) {

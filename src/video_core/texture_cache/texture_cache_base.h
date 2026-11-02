@@ -454,7 +454,8 @@ private:
 
     /// Records a GPU remap of a small part of a large 2D image for a partial re-upload instead of
     /// marking the whole image remapped (which replaces it). False if the image does not qualify.
-    bool MarkPartialRemap(ImageBase& image, GPUVAddr gpu_addr, size_t size);
+    bool MarkPartialRemap(ImageBase& image, Tegra::MemoryManager& memory, GPUVAddr gpu_addr,
+                          size_t size);
 
     /// Tracks the pages of a partial write again and forgets them.
     void RestorePartialPages(ImageBase& image);
@@ -462,11 +463,19 @@ private:
     /// Uploads the block rows the recorded pages cover. Returns false if the layout is not handled.
     bool RefreshPartialContents(Image& image);
 
+    bool ReplaceUnwrittenSparse(ImageId image_id);
+
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false);
 
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
+
+    /// Per image view, the (channel, descriptor) entries of the channels' image_views maps that
+    /// point to it. Deleting an image erased them by scanning every map (title 1: ~5,000 entries,
+    /// 50-130 us for each deleted image, dozens a frame while the collector runs).
+    std::unordered_map<ImageViewId, boost::container::small_vector<std::pair<size_t, TICEntry>, 2>>
+        image_view_descriptors;
 
     /// Remove framebuffers using the given image views from the cache
     void RemoveFramebuffers(std::span<const ImageViewId> removed_views);
@@ -500,7 +509,7 @@ private:
     void InvalidateScale(Image& image);
     bool ScaleUp(Image& image);
     bool ScaleDown(Image& image);
-    u64 GetScaledImageSizeBytes(const ImageBase& image);
+    u64 GetScaledImageSizeBytes(const Image& image);
 
     /// The device memory an image counts for in total_used_memory between two driver readings:
     /// none for an unbacked image (too large to back, or over unwritten sparse blocks), what is

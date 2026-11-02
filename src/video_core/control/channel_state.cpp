@@ -73,7 +73,7 @@ void ChannelState::Init(Core::System& system, u64 program_id_) {
     program_id = program_id_;
     payload.emplace(system, *memory_manager, *this);
     BindNvkDefaultSubchannels(*payload);
-    if (g_nx2_ampere) {
+    if (g_nx2_ampere && switch2) {
         // Switch 2 command streams use Ampere classes with Turing+ (MME64) macros, and its
         // block-linear surfaces the console's GOB swizzle.
         memory_manager->EnableNativeTiling();

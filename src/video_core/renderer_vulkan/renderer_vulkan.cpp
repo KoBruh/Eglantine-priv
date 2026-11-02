@@ -273,7 +273,18 @@ void RendererVulkan::Report() const {
     LOG_INFO(Render_Vulkan, "Driver: {}", driver_name);
     LOG_INFO(Render_Vulkan, "Device: {}", model_name);
     LOG_INFO(Render_Vulkan, "Vulkan: {}", api_version);
-    LOG_INFO(Render_Vulkan, "Available VRAM: {:.2f} GiB", available_vram);
+    LOG_INFO(Render_Vulkan, "Initial cache allowance: {:.2f} GiB", available_vram);
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+    budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+    const auto memory = device.GetPhysical().GetMemoryProperties(
+        device.CanReportMemoryUsage() ? &budget : nullptr);
+    for (u32 heap = 0; heap < memory.memoryProperties.memoryHeapCount; ++heap) {
+        LOG_INFO(Render_Vulkan, "Driver heap {}: size={} MiB budget={} MiB usage={} MiB local={}",
+                 heap, memory.memoryProperties.memoryHeaps[heap].size >> 20,
+                 budget.heapBudget[heap] >> 20, budget.heapUsage[heap] >> 20,
+                 (memory.memoryProperties.memoryHeaps[heap].flags &
+                  VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0);
+    }
 }
 
 vk::Buffer RendererVulkan::RenderToBuffer(std::span<const Tegra::FramebufferConfig> framebuffers,

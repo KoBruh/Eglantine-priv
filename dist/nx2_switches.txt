@@ -1,4 +1,4 @@
-# Switch NX2 - read at every start of Eglantine (GUI and CLI alike).
+# Switch NX2 - read at every start of the Eglantine GUI. The CLI frontend does not read it.
 # One NAME=VALUE per line. Lines starting with # are ignored.
 # A variable already set in the environment wins over this file.
 # Between files, %APPDATA%\eden\nx2_switches.txt (yours) wins over this one, so editing

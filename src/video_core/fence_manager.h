@@ -18,6 +18,7 @@
 #include <queue>
 
 #include "common/common_types.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/thread.h"
 #include "video_core/delayed_destruction_ring.h"
@@ -87,6 +88,8 @@ public:
         auto [should_flush, committed_flushes] = CommitCacheFlushes();
         if (!delay_fence && committed_flushes == 0 && SkipEmptyFence()) {
             Nx2Profile::Scope skipped_scope{Nx2Profile::Zone::FenceSkipped};
+            gpu.BeginAsyncGuestWrite();
+            SCOPE_EXIT { gpu.EndAsyncGuestWrite(); };
             func();
             rasterizer.InvalidateGPUCache();
             return;
@@ -109,6 +112,8 @@ public:
         pending_flushes.push_back(committed_flushes);
         QueueFence(new_fence);
         if (!delay_fence) {
+            gpu.BeginAsyncGuestWrite();
+            SCOPE_EXIT { gpu.EndAsyncGuestWrite(); };
             func();
         }
         fences.push(std::move(new_fence));
@@ -199,6 +204,8 @@ private:
                     return;
                 }
             }
+            gpu.BeginAsyncGuestWrite();
+            SCOPE_EXIT { gpu.EndAsyncGuestWrite(); };
             PopAsyncFlushes(pending_flushes.front());
             pending_flushes.pop_front();
             auto operations = std::move(pending_operations.front());
@@ -261,6 +268,8 @@ private:
                     take_front();
                 }
             }
+            gpu.BeginAsyncGuestWrite();
+            SCOPE_EXIT { gpu.EndAsyncGuestWrite(); };
             size_t texture_pops = 0;
             size_t buffer_pops = 0;
             for (const Released& released : batch) {

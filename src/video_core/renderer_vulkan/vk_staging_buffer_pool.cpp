@@ -15,6 +15,7 @@
 #include "common/bit_util.h"
 #include "common/common_types.h"
 #include "common/literals.h"
+#include "common/logging.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_staging_buffer_pool.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -125,6 +126,27 @@ void StagingBufferPool::TickFrame() {
     ReleaseCache(MemoryUsage::DeviceLocal);
     ReleaseCache(MemoryUsage::Upload);
     ReleaseCache(MemoryUsage::Download);
+    TrimLargeBuffers(device_local_cache);
+    TrimLargeBuffers(upload_cache);
+    TrimLargeBuffers(download_cache);
+    if (++frame_count % 600 == 0) {
+        const auto bytes = [](const StagingBuffersCache& cache) {
+            u64 result{};
+            for (const auto& level : cache) {
+                for (const auto& entry : level.entries) {
+                    result += entry.capacity;
+                }
+            }
+            return result;
+        };
+        LOG_INFO(Render_Vulkan,
+                 "Staging pool: {} MiB device, {} MiB upload, {} MiB download; last 600 frames: "
+                 "{} created, {} reused, {} MiB allocation rounding avoided",
+                 bytes(device_local_cache) >> 20, bytes(upload_cache) >> 20,
+                 bytes(download_cache) >> 20, buffers_created, buffers_reused,
+                 rounding_bytes_avoided >> 20);
+        buffers_created = buffers_reused = rounding_bytes_avoided = 0;
+    }
 }
 
 StagingBufferRef StagingBufferPool::GetStreamBuffer(size_t size) {
@@ -181,10 +203,10 @@ StagingBufferRef StagingBufferPool::GetStagingBuffer(size_t size, MemoryUsage us
 std::optional<StagingBufferRef> StagingBufferPool::TryGetReservedBuffer(size_t size,
                                                                         MemoryUsage usage,
                                                                         bool deferred) {
-    StagingBuffers& cache_level = GetCache(usage)[Common::Log2Ceil(size)];
+    StagingBuffers& cache_level = GetCache(usage)[Common::Log2Ceil((std::max)(size, size_t{1}))];
 
-    const auto is_free = [this](const StagingBuffer& entry) {
-        return !entry.deferred && scheduler.IsFree(entry.tick);
+    const auto is_free = [this, size](const StagingBuffer& entry) {
+        return entry.capacity >= size && !entry.deferred && scheduler.IsFree(entry.tick);
     };
     auto& entries = cache_level.entries;
     const auto hint_it = entries.begin() + cache_level.iterate_index;
@@ -199,16 +221,18 @@ std::optional<StagingBufferRef> StagingBufferPool::TryGetReservedBuffer(size_t s
     it->tick = deferred ? (std::numeric_limits<u64>::max)() : scheduler.CurrentTick();
     ASSERT(!it->deferred);
     it->deferred = deferred;
-    return it->Ref();
+    ++buffers_reused;
+    return it->Ref(size);
 }
 
 StagingBufferRef StagingBufferPool::CreateStagingBuffer(size_t size, MemoryUsage usage, bool deferred) {
-    auto const log2_size = Common::Log2Ceil<u32>(u32(size));
+    const auto log2_size = static_cast<u32>(Common::Log2Ceil((std::max)(size, size_t{1})));
+    const size_t capacity = StagingBufferAllocationSize(size);
     VkBufferCreateInfo buffer_ci = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .pNext = nullptr,
         .flags = 0,
-        .size = 1ULL << log2_size,
+        .size = capacity,
         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
@@ -239,10 +263,13 @@ StagingBufferRef StagingBufferPool::CreateStagingBuffer(size_t size, MemoryUsage
         .usage = usage,
         .log2_level = log2_size,
         .index = unique_ids++,
+        .capacity = capacity,
         .tick = deferred ? (std::numeric_limits<u64>::max)() : scheduler.CurrentTick(),
         .deferred = deferred,
     });
-    return entry.Ref();
+    ++buffers_created;
+    rounding_bytes_avoided += (1ULL << log2_size) - capacity;
+    return entry.Ref(size);
 }
 
 StagingBufferPool::StagingBuffersCache& StagingBufferPool::GetCache(MemoryUsage usage) {
@@ -270,7 +297,7 @@ void StagingBufferPool::ReleaseLevel(StagingBuffersCache& cache, size_t log2) {
     const size_t old_size = entries.size();
 
     const auto is_deletable = [this](const StagingBuffer& entry) {
-        return scheduler.IsFree(entry.tick);
+        return !entry.deferred && scheduler.IsFree(entry.tick);
     };
     const size_t begin_offset = staging.delete_index;
     const size_t end_offset = (std::min)(begin_offset + deletions_per_tick, old_size);
@@ -285,6 +312,22 @@ void StagingBufferPool::ReleaseLevel(StagingBuffersCache& cache, size_t log2) {
     }
     if (staging.iterate_index > new_size) {
         staging.iterate_index = 0;
+    }
+}
+
+void StagingBufferPool::TrimLargeBuffers(StagingBuffersCache& cache) {
+    StagingBufferIdleBudget budget;
+    for (size_t log2 = Common::Log2Ceil(LargeStagingBufferSize); log2 < NUM_LEVELS; ++log2) {
+        auto& level = cache[log2];
+        const auto should_release = [this, &budget](const StagingBuffer& entry) {
+            return budget.ShouldRelease(entry.capacity, entry.deferred, scheduler.IsFree(entry.tick));
+        };
+        const auto old_size = level.entries.size();
+        std::erase_if(level.entries, should_release);
+        if (level.entries.size() != old_size) {
+            level.delete_index = 0;
+            level.iterate_index = 0;
+        }
     }
 }
 

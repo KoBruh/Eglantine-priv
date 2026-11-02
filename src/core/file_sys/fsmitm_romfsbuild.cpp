@@ -55,15 +55,17 @@ static_assert(sizeof(RomFSFileEntry) == 0x20, "RomFSFileEntry has incorrect size
 
 struct RomFSBuildFileContext;
 
+// The context's vectors own every node until Build finishes. Links only describe the
+// resulting RomFS tree; owning them would form parent/child reference cycles.
 struct RomFSBuildDirectoryContext {
     std::string path;
     u32 cur_path_ofs = 0;
     u32 path_len = 0;
     u32 entry_offset = 0;
-    std::shared_ptr<RomFSBuildDirectoryContext> parent;
-    std::shared_ptr<RomFSBuildDirectoryContext> child;
-    std::shared_ptr<RomFSBuildDirectoryContext> sibling;
-    std::shared_ptr<RomFSBuildFileContext> file;
+    RomFSBuildDirectoryContext* parent{};
+    RomFSBuildDirectoryContext* child{};
+    RomFSBuildDirectoryContext* sibling{};
+    RomFSBuildFileContext* file{};
 };
 
 struct RomFSBuildFileContext {
@@ -73,8 +75,8 @@ struct RomFSBuildFileContext {
     u32 entry_offset = 0;
     u64 offset = 0;
     u64 size = 0;
-    std::shared_ptr<RomFSBuildDirectoryContext> parent;
-    std::shared_ptr<RomFSBuildFileContext> sibling;
+    RomFSBuildDirectoryContext* parent{};
+    RomFSBuildFileContext* sibling{};
     VirtualFile source;
 };
 
@@ -168,7 +170,7 @@ bool RomFSBuildContext::AddDirectory(std::shared_ptr<RomFSBuildDirectoryContext>
     num_dirs++;
     dir_table_size +=
         sizeof(RomFSDirectoryEntry) + Common::AlignUp(dir_ctx->path_len - dir_ctx->cur_path_ofs, 4);
-    dir_ctx->parent = std::move(parent_dir_ctx);
+    dir_ctx->parent = parent_dir_ctx.get();
     directories.emplace_back(std::move(dir_ctx));
 
     return true;
@@ -180,7 +182,7 @@ bool RomFSBuildContext::AddFile(std::shared_ptr<RomFSBuildDirectoryContext> pare
     num_files++;
     file_table_size +=
         sizeof(RomFSFileEntry) + Common::AlignUp(file_ctx->path_len - file_ctx->cur_path_ofs, 4);
-    file_ctx->parent = std::move(parent_dir_ctx);
+    file_ctx->parent = parent_dir_ctx.get();
     files.emplace_back(std::move(file_ctx));
 
     return true;
@@ -249,7 +251,7 @@ std::vector<std::pair<u64, VirtualFile>> RomFSBuildContext::Build() {
     for (auto it = files.rbegin(); it != files.rend(); ++it) {
         auto& cur_file = *it;
         cur_file->sibling = cur_file->parent->file;
-        cur_file->parent->file = cur_file;
+        cur_file->parent->file = cur_file.get();
     }
 
     // Determine directory offsets.
@@ -264,7 +266,7 @@ std::vector<std::pair<u64, VirtualFile>> RomFSBuildContext::Build() {
     for (auto it = directories.rbegin(); (*it) != root; ++it) {
         auto& cur_dir = *it;
         cur_dir->sibling = cur_dir->parent->child;
-        cur_dir->parent->child = cur_dir;
+        cur_dir->parent->child = cur_dir.get();
     }
 
     // Create output map.

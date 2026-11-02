@@ -100,6 +100,7 @@ add_library(
     scratch_buffer.h
     settings.cpp
     settings.h
+    game_presets.h
     settings_common.cpp
     settings_common.h
     settings_enums.h

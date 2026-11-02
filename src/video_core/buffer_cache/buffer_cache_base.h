@@ -30,6 +30,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/slot_vector.h"
+#include "shader_recompiler/shader_info.h"
 #include "video_core/buffer_cache/buffer_base.h"
 #include "video_core/buffer_cache/virtual_range_cache.h"
 #include "video_core/control/channel_state_cache.h"
@@ -58,12 +59,13 @@ constexpr u32 NUM_VERTEX_BUFFERS = 32;
 constexpr u32 NUM_TRANSFORM_FEEDBACK_BUFFERS = 4;
 constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
 constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
-// Native compute shaders bind up to 18 global memory ranges; the enable masks are 32 bits wide.
-constexpr u32 NUM_STORAGE_BUFFERS = 32;
+constexpr u32 NUM_STORAGE_BUFFERS = Shader::Info::MAX_SSBOS;
+constexpr u32 NUM_COMPUTE_STORAGE_BUFFERS = Shader::Info::MAX_SSBOS;
 constexpr u32 NUM_TEXTURE_BUFFERS = 32;
 constexpr u32 NUM_STAGES = 5;
 
 static_assert(NUM_GRAPHICS_UNIFORM_BUFFERS <= 32, "fast bitmask must fit u32");
+static_assert(NUM_COMPUTE_STORAGE_BUFFERS <= 32, "storage buffer bitmask must fit u32");
 
 using UniformBufferSizes = std::array<std::array<u32, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES>;
 using ComputeUniformBufferSizes = std::array<u32, NUM_COMPUTE_UNIFORM_BUFFERS>;
@@ -136,7 +138,7 @@ public:
     Binding indirect_buffer_binding;
 
     std::array<Binding, NUM_COMPUTE_UNIFORM_BUFFERS> compute_uniform_buffers;
-    std::array<Binding, NUM_STORAGE_BUFFERS> compute_storage_buffers;
+    std::array<Binding, NUM_COMPUTE_STORAGE_BUFFERS> compute_storage_buffers;
     std::array<TextureBufferBinding, NUM_TEXTURE_BUFFERS> compute_texture_buffers;
 
     std::array<u32, NUM_STAGES> enabled_uniform_buffer_masks{};
@@ -244,6 +246,12 @@ public:
     bool OnCPUWrite(DAddr device_addr, u64 size);
 
     void DownloadMemory(DAddr device_addr, u64 size);
+
+    /// Between BeginDownloadBatch and EndDownloadBatch the downloads of DownloadMemory are only
+    /// queued; the outermost EndDownloadBatch waits for the GPU once and writes all of them to
+    /// guest memory. The buffer cache mutex stays locked in between (it is recursive).
+    void BeginDownloadBatch();
+    void EndDownloadBatch();
 
     std::optional<VideoCore::RasterizerDownloadArea> GetFlushArea(DAddr device_addr, u64 size);
 
@@ -483,6 +491,13 @@ private:
     /// Downloads the GPU-written data of several buffers with one wait for the GPU.
     void DownloadBuffersMemory(std::span<const BufferId> buffer_ids);
 
+    /// Waits once for the downloads queued by a download batch and writes them to guest memory.
+    void FinishDownloadBatch();
+
+    [[nodiscard]] bool DownloadBatchEnabled() const noexcept {
+        return true;
+    }
+
     void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
 
     [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
@@ -587,13 +602,14 @@ private:
     /// Queues the parts of a GPU write to [addr, addr + size) that are copied back at the next
     /// fence.
     void QueueDownload(DAddr addr, u64 size) {
-        if (AsyncBufferDownloads()) {
+        if (DownloadsAtFence(addr, size)) {
             uncommitted_gpu_modified_ranges.Add(addr, size);
             return;
         }
         cpu_read_ranges.ForEachInRange(addr, size, [this](DAddr start, DAddr end) {
             uncommitted_gpu_modified_ranges.Add(start, end - start);
         });
+        ArmReadTraps(addr, size);
     }
 
     // Async Buffers
@@ -603,6 +619,17 @@ private:
     std::optional<Async_Buffer> current_buffer;
 
     std::deque<Async_Buffer> async_buffers_death_ring;
+
+    // Download batch (BeginDownloadBatch). Each entry is one deferred staging buffer; in `copies`
+    // src_offset holds the guest (device) address the data goes to and dst_offset the position in
+    // the staging buffer, staging offset included.
+    struct BatchedDownload {
+        Async_Buffer staging;
+        boost::container::small_vector<BufferCopy, 4> copies;
+    };
+    u64 batched_download_bytes{};
+    u32 download_batch_depth{0};
+    boost::container::small_vector<BatchedDownload, 4> batched_downloads;
 
     size_t immediate_buffer_capacity = 0;
     Common::ScratchBuffer<u8> immediate_buffer_alloc;
@@ -618,6 +645,7 @@ private:
     u64 frame_tick = 0;
     u64 total_used_memory = 0;
     u64 buffer_bytes = 0; ///< The buffers' own size (total_used_memory may be the device's)
+    u64 native_buffer_threshold = 512ULL << 20;
     u64 minimum_memory = 0;
     u64 critical_memory = 0;
     BufferId inline_buffer_id;

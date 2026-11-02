@@ -350,7 +350,11 @@ struct Values {
                                                         "resolution_setup", Category::Renderer};
 
     SwitchableSetting<VSyncMode, true> vsync_mode{linkage,
+#ifdef _WIN32
+                                                  VSyncMode::FifoRelaxed,
+#else
                                                   VSyncMode::Fifo,
+#endif
                                                   "use_vsync",
                                                   Category::Renderer,
                                                   Specialization::RuntimeList,
@@ -511,7 +515,7 @@ struct Values {
                                          linkage, 0, "bg_blue", Category::Renderer, Specialization::Default, true, true};
 
     SwitchableSetting<GpuAccuracy, true> gpu_accuracy{linkage,
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
                                                       GpuAccuracy::Low,
 #else
                                                       GpuAccuracy::High,
@@ -522,7 +526,11 @@ struct Values {
                                                       true,
                                                       true};
 
+#ifdef _WIN32
+    GpuAccuracy current_gpu_accuracy{GpuAccuracy::Low};
+#else
     GpuAccuracy current_gpu_accuracy{GpuAccuracy::High};
+#endif
 
     SwitchableSetting<DmaAccuracy, true> dma_accuracy{linkage,
                                                       DmaAccuracy::Default,
@@ -574,7 +582,11 @@ struct Values {
                                                                true};
 
     SwitchableSetting<AstcRecompression, true> astc_recompression{linkage,
+#ifdef _WIN32
+                                                                  AstcRecompression::Bc3,
+#else
                                                                   AstcRecompression::Uncompressed,
+#endif
                                                                   "astc_recompression",
                                                                   Category::RendererAdvanced};
 
@@ -613,7 +625,7 @@ struct Values {
     SwitchableSetting<bool> mkw_smooth{linkage, false, "mkw_smooth", Category::RendererAdvanced};
 
     SwitchableSetting<bool> use_reactive_flushing{linkage,
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
                                                   false,
 #else
                                                   true,
@@ -672,8 +684,13 @@ struct Values {
     SwitchableSetting<bool> emulate_bgr565{linkage, false, "emulate_bgr565",
                                             Category::RendererHacks};
 
+#ifdef _WIN32
+    SwitchableSetting<bool> use_asynchronous_shaders{linkage, true, "use_asynchronous_shaders",
+                                                     Category::RendererHacks};
+#else
     SwitchableSetting<bool> use_asynchronous_shaders{linkage, false, "use_asynchronous_shaders",
                                                      Category::RendererHacks};
+#endif
 
     SwitchableSetting<GpuUnswizzleSize> gpu_unswizzle_texture_size{linkage,
                                                   GpuUnswizzleSize::Large,

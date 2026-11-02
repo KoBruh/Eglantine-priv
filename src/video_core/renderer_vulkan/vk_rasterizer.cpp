@@ -29,6 +29,7 @@
 #include "video_core/gpu_logging/gpu_logging.h"
 #include "video_core/control/channel_state.h"
 #include "video_core/native_query_trace.h"
+#include "video_core/readback_diagnostics.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
@@ -235,6 +236,8 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
       fence_manager(*this, gpu, texture_cache, buffer_cache, query_cache, device, scheduler),
       wfi_event(device.GetLogical().CreateEvent()) {
     scheduler.SetQueryCache(query_cache);
+    LOG_INFO(Render_Vulkan, "Detailed GPU profiler enabled: {}",
+             VideoCommon::Nx2Profile::Enabled());
 }
 
 RasterizerVulkan::~RasterizerVulkan() {
@@ -307,20 +310,26 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         const GPUVAddr program =
             (u64{reset_regs.pipelines[1].reserved[0] & 0xff} << 32) | reset_regs.pipelines[1].reserved[1];
         static std::unordered_map<GPUVAddr, bool> reset_programs;
-        auto [entry, inserted] = reset_programs.try_emplace(program, false);
-        if (inserted) {
-            std::array<u32, 44> code{};
-            const GPUVAddr code_address = program + 128;
-            if (gpu_memory->IsFullyMappedRange(code_address, sizeof(code))) {
-                gpu_memory->ReadBlockUnsafe(code_address, code.data(), sizeof(code));
-                entry->second = code == NX2_INDIRECT_RESET_PROGRAM;
+        static GPUVAddr last_program = ~GPUVAddr{0};
+        static bool last_is_reset = false;
+        if (program != last_program) {
+            auto [entry, inserted] = reset_programs.try_emplace(program, false);
+            if (inserted) {
+                std::array<u32, 44> code{};
+                const GPUVAddr code_address = program + 128;
+                if (gpu_memory->IsFullyMappedRange(code_address, sizeof(code))) {
+                    gpu_memory->ReadBlockUnsafe(code_address, code.data(), sizeof(code));
+                    entry->second = code == NX2_INDIRECT_RESET_PROGRAM;
+                }
+                if (entry->second) {
+                    LOG_INFO(HW_GPU, "Indirect draw reset program at {:#x}: its stores are done here",
+                             program);
+                }
             }
-            if (entry->second) {
-                LOG_INFO(HW_GPU, "Indirect draw reset program at {:#x}: its stores are done here",
-                         program);
-            }
+            last_program = program;
+            last_is_reset = entry->second;
         }
-        if (entry->second) {
+        if (last_is_reset) {
             const auto& reset_draw = maxwell3d->draw_manager.draw_state;
             const auto& cbuf0 = maxwell3d->state.shader_stages[0].const_buffers[0];
             const GPUVAddr list = gpu_memory->Read<u64>(cbuf0.address + 0x110);
@@ -745,6 +754,7 @@ void RasterizerVulkan::DrawTexture() {
         gpu.TickWork();
     };
     FlushWork();
+    gpu_memory->FlushCaching();
 
     std::scoped_lock l{texture_cache.mutex};
     texture_cache.SynchronizeDescriptors(false);
@@ -1085,16 +1095,30 @@ void RasterizerVulkan::FlushRegion(DAddr addr, u64 size, VideoCommon::CacheType 
         return;
     }
     if (True(which & VideoCommon::CacheType::TextureCache)) {
+        VideoCommon::ReadbackDiagnostics::Scope diagnostic{
+            VideoCommon::ReadbackDiagnostics::Event::TextureReadback, size};
         std::scoped_lock lock{texture_cache.mutex};
         texture_cache.DownloadMemory(addr, size);
     }
     if ((True(which & VideoCommon::CacheType::BufferCache))) {
+        VideoCommon::ReadbackDiagnostics::Scope diagnostic{
+            VideoCommon::ReadbackDiagnostics::Event::BufferReadback, size};
         std::scoped_lock lock{buffer_cache.mutex};
         buffer_cache.DownloadMemory(addr, size);
     }
     if ((True(which & VideoCommon::CacheType::QueryCache))) {
+        VideoCommon::ReadbackDiagnostics::Scope diagnostic{
+            VideoCommon::ReadbackDiagnostics::Event::QueryReadback, size};
         query_cache.FlushRegion(addr, size);
     }
+}
+
+void RasterizerVulkan::BeginFlushBatch() {
+    buffer_cache.BeginDownloadBatch();
+}
+
+void RasterizerVulkan::EndFlushBatch() {
+    buffer_cache.EndDownloadBatch();
 }
 
 bool RasterizerVulkan::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
@@ -1103,6 +1127,9 @@ bool RasterizerVulkan::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheT
         if (buffer_cache.IsRegionGpuModified(addr, size)) {
             return true;
         }
+    }
+    if (True(which & VideoCommon::CacheType::QueryCache) && query_cache.IsRegionGpuModified(addr, size)) {
+        return true;
     }
     if (!Settings::IsGPULevelHigh()) {
         return false;
@@ -1115,6 +1142,13 @@ bool RasterizerVulkan::MustFlushRegion(DAddr addr, u64 size, VideoCommon::CacheT
 }
 
 VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64 size) {
+    VideoCommon::ReadbackDiagnostics::Scope diagnostic{
+        VideoCommon::ReadbackDiagnostics::Event::FlushArea, size};
+    VideoCore::RasterizerDownloadArea result{
+        .start_address = Common::AlignDown(addr, Core::DEVICE_PAGESIZE),
+        .end_address = Common::AlignUp(addr + size, Core::DEVICE_PAGESIZE),
+        .preemtive = true,
+    };
     {
         // Guest CPU reads of buffer memory decide which GPU-written buffer data is copied back.
         std::scoped_lock lock{buffer_cache.mutex};
@@ -1126,22 +1160,22 @@ VideoCore::RasterizerDownloadArea RasterizerVulkan::GetFlushArea(DAddr addr, u64
         std::scoped_lock lock{texture_cache.mutex};
         auto area = texture_cache.GetFlushArea(addr, size);
         if (area) {
-            return *area;
+            result.start_address = (std::min)(result.start_address, area->start_address);
+            result.end_address = (std::max)(result.end_address, area->end_address);
+            result.preemtive = area->preemtive;
         }
     }
     if (buffer_cache.FlushesOnCpuRead()) {
         std::scoped_lock lock{buffer_cache.mutex};
-        auto area = buffer_cache.GetFlushArea(addr, size);
+        auto area = buffer_cache.GetFlushArea(result.start_address,
+                                              result.end_address - result.start_address);
         if (area) {
-            return *area;
+            result.start_address = (std::min)(result.start_address, area->start_address);
+            result.end_address = (std::max)(result.end_address, area->end_address);
+            result.preemtive &= area->preemtive;
         }
     }
-    VideoCore::RasterizerDownloadArea new_area{
-        .start_address = Common::AlignDown(addr, Core::DEVICE_PAGESIZE),
-        .end_address = Common::AlignUp(addr + size, Core::DEVICE_PAGESIZE),
-        .preemtive = true,
-    };
-    return new_area;
+    return result;
 }
 
 void RasterizerVulkan::InvalidateRegion(DAddr addr, u64 size, VideoCommon::CacheType which) {
@@ -1177,12 +1211,10 @@ void RasterizerVulkan::InnerInvalidation(std::span<const std::pair<DAddr, std::s
             buffer_cache.WriteMemory(addr, size);
         }
     }
-    {
-        for (const auto& [addr, size] : sequences) {
-            query_cache.InvalidateRegion(addr, size);
-            pipeline_cache.InvalidateRegion(addr, size);
-        }
+    for (const auto& [addr, size] : sequences) {
+        query_cache.InvalidateRegion(addr, size);
     }
+    pipeline_cache.InvalidateRegions(sequences);
 }
 
 bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {

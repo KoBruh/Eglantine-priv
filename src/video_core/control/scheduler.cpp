@@ -69,6 +69,7 @@ void Scheduler::ResumePending(GPU& gpu) {
             if (!dma_pusher.HasPendingAcquire() || !dma_pusher.CanResumeAcquire()) {
                 continue;
             }
+            gpu.InvalidateReadbackCache();
             BindChannel(gpu, state->bind_id);
             dma_pusher.DispatchCalls();
             progress = true;

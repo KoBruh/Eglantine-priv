@@ -448,6 +448,7 @@ void Puller::CallPullerMethod(DmaPusher& dma_pusher, const MethodCall& method_ca
         LOG_ERROR(HW_GPU, "Special puller engine method {:X} not implemented", method);
         if (static bool dumped = false; g_nx2_ampere && !dumped) {
             dumped = true;
+            GpfifoCapture::Flush("unknown-host-method");
             dma_pusher.DumpCurrentEntry("unknown host method");
         }
         break;

@@ -139,7 +139,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {210, C<&IHidServer::EndPermitVibrationSession>, "EndPermitVibrationSession"},
         {211, C<&IHidServer::IsVibrationDeviceMounted>, "IsVibrationDeviceMounted"},
         {212, C<&IHidServer::SendVibrationValueInBool>, "SendVibrationValueInBool"},
-        {213, C<&IHidServer::Unknown213>, "Unknown213"},
+        {213, &IHidServer::SendNx2VibrationValue, "SendNx2VibrationValue"},
         {214, C<&IHidServer::SendNx2VibrationValues>, "SendNx2VibrationValues (guessed)"},
         {220, C<&IHidServer::GetNativeInputFlag220>, "GetNativeInputFlag220"},
         {300, C<&IHidServer::ActivateConsoleSixAxisSensor>, "ActivateConsoleSixAxisSensor"},
@@ -1117,12 +1117,23 @@ Result IHidServer::IsVibrationDeviceMounted(
     R_SUCCEED();
 }
 
-Result IHidServer::SendNx2VibrationValues() {
-    LOG_DEBUG(Service_HID, "(STUBBED) called");
-    R_SUCCEED();
+void IHidServer::SendNx2VibrationValue(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const u16 mode = rp.Pop<u16>();
+    if (mode != 2) {
+        LOG_WARNING(Service_HID, "(STUBBED) unsupported vibration mode {}", mode);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+        return;
+    }
+    const auto handle = rp.PopRaw<Core::HID::VibrationDeviceHandle>();
+    const auto value = rp.PopRaw<Core::HID::VibrationValue>();
+    const auto result = GetResourceManager()->SendVibrationValue(ctx.GetPID(), handle, value);
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(result);
 }
 
-Result IHidServer::Unknown213() {
+Result IHidServer::SendNx2VibrationValues() {
     LOG_DEBUG(Service_HID, "(STUBBED) called");
     R_SUCCEED();
 }

@@ -71,11 +71,9 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "drain sync", "drain written", "drain dma read", "drain release",
 };
 
-// Read once at startup: Enabled() runs several times per method write (no guard to check).
-inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
-
 inline bool Enabled() {
-    return g_enabled;
+    static const bool enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+    return enabled;
 }
 
 // Nanoseconds; from the host's own counter where the wall clock reads it directly (the zones

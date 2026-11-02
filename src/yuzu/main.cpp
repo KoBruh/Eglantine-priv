@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -172,13 +173,8 @@ static Qt::HighDpiScaleFactorRoundingPolicy GetHighDpiRoundingPolicy() {
 #endif
 }
 
-// The NX2 switches are read from the environment (EDEN_NX2_*), which a GUI launch has no way to
-// set. nx2_switches.txt holds "NAME=VALUE" lines, one per line, '#' comments. A variable already
-// in the real environment always wins, so a launcher script can still override one run; between
-// files the later one wins, so the copy next to the executable (shipped with the build) can be
-// overridden by %APPDATA%\eden\nx2_switches.txt without editing the one that gets replaced.
 static void ParseSwitchFile(const std::filesystem::path& path,
-                            std::vector<std::pair<std::string, std::string>>& entries) {
+                            std::map<std::string, std::string>& switches) {
     std::ifstream file{path};
     if (!file) {
         return;
@@ -197,27 +193,31 @@ static void ParseSwitchFile(const std::filesystem::path& path,
         std::string name = line.substr(0, eq);
         std::string value = line.substr(eq + 1);
         name.erase(name.find_last_not_of(" \t") + 1);
-        value.erase(0, value.find_first_not_of(" \t"));
+        value.erase(0, value.find_first_not_of(" \t\""));
         if (!name.empty()) {
-            entries.emplace_back(std::move(name), std::move(value));
+            switches.insert_or_assign(std::move(name), std::move(value));
         }
     }
 }
 
 static void LoadNx2Switches(const char* argv0) {
-    std::vector<std::pair<std::string, std::string>> entries;
+    std::map<std::string, std::string> switches;
+#ifdef __APPLE__
+    ParseSwitchFile(Common::FS::GetBundleDirectory() / "Contents/Resources/nx2_switches.txt",
+                    switches);
+#endif
     std::error_code ec;
     const std::filesystem::path exe = std::filesystem::absolute(argv0, ec);
     if (!ec) {
-        ParseSwitchFile(exe.parent_path() / "nx2_switches.txt", entries);
+        ParseSwitchFile(exe.parent_path() / "nx2_switches.txt", switches);
     }
     if (const char* appdata = std::getenv("APPDATA")) {
-        ParseSwitchFile(std::filesystem::path{appdata} / "eden" / "nx2_switches.txt", entries);
+        ParseSwitchFile(std::filesystem::path{appdata} / "eden" / "nx2_switches.txt", switches);
     } else if (const char* home = std::getenv("HOME")) {
         ParseSwitchFile(std::filesystem::path{home} / ".config" / "eden" / "nx2_switches.txt",
-                        entries);
+                        switches);
     }
-    for (const auto& [name, value] : entries) {
+    for (const auto& [name, value] : switches) {
         if (std::getenv(name.c_str()) != nullptr) {
             continue;
         }

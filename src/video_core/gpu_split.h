@@ -42,6 +42,10 @@ public:
         return instance;
     }
 
+    static bool IsBackThread() {
+        return back_thread_context;
+    }
+
     /// Whether the front sends work to the back (front thread only).
     [[nodiscard]] bool Active() const {
         return active;
@@ -182,6 +186,7 @@ private:
     Tegra::Engines::EngineInterface* back_engine{};
 
     static GpuSplit instance;
+    static inline thread_local bool back_thread_context{};
 
     // Aligned to 128 bytes to prevent both false sharing and spatial prefetcher interference
     // between front and back threads on modern x86-64 multi-core architectures.

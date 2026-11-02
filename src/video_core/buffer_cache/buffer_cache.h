@@ -13,12 +13,15 @@
 #include <vector>
 #include <fmt/ranges.h>
 
+#include "common/memory_detect.h"
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "video_core/buffer_cache/native_memory_policy.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/nx2.h"
 #include "video_core/nx2_profile.h"
+#include "video_core/cache_tracking_diagnostics.h"
 #include "video_core/texture_cache/util.h"
 
 namespace VideoCommon {
@@ -142,9 +145,22 @@ void BufferCache<P>::TickFrame() {
         // title 1's buffers were ~200 MiB of an 8 GB GPU's ~6.8 GB in use, yet this collector
         // ran aggressively every frame on the device-wide figure, evicting up to 64 buffers (and
         // downloading the GPU-written ones, ~5% of the GPU thread) that were recreated later.
-        // Collect when the buffers themselves are large.
-        if (buffer_bytes >= 1_GiB) {
-            RunGarbageCollector(buffer_bytes >= 2_GiB);
+        // Keep a larger working set when both GPU and system commit have room. The fixed
+        // 512 MiB threshold evicted geometry even on the target VM with ample free memory.
+        if constexpr (requires { runtime.GetDeviceMemoryBudget(); }) {
+            if (frame_tick % 30 == 0) {
+                const auto threshold = NativeBufferCacheThreshold(
+                    runtime.GetDeviceMemoryBudget(), total_used_memory,
+                    Common::GetAvailableCommitMemory());
+                if (threshold != native_buffer_threshold) {
+                    LOG_INFO(HW_GPU, "Native buffer cache collection threshold: {} MiB",
+                             threshold >> 20);
+                    native_buffer_threshold = threshold;
+                }
+            }
+        }
+        if (buffer_bytes >= native_buffer_threshold) {
+            RunGarbageCollector(buffer_bytes >= 2 * native_buffer_threshold);
         }
     } else if (total_used_memory >= minimum_memory) {
         RunGarbageCollector(total_used_memory >= critical_memory);
@@ -167,6 +183,8 @@ void BufferCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size
 
 template <class P>
 void BufferCache<P>::WriteMemory(DAddr device_addr, u64 size) {
+    CacheTrackingDiagnostics::Record(CacheTrackingDiagnostics::Event::BufferCpuMark,
+                                      device_addr, size);
     if (IsRegionGpuModified(device_addr, size)) {
         ClearDownload(device_addr, size);
         gpu_modified_ranges.Subtract(device_addr, size);
@@ -190,6 +208,8 @@ void BufferCache<P>::CachedWriteMemory(DAddr device_addr, u64 size) {
     tmp_buffer.resize_destructive(size);
     device_memory.ReadBlockUnsafe(device_addr, tmp_buffer.data(), size);
 
+    CacheTrackingDiagnostics::Record(CacheTrackingDiagnostics::Event::BufferInlineRetain,
+                                      device_addr, size, aligned_start, aligned_end - aligned_start);
     InlineMemoryImplementation(device_addr, size, tmp_buffer);
 }
 
@@ -231,6 +251,27 @@ void BufferCache<P>::DownloadMemory(DAddr device_addr, u64 size) {
     ForEachBufferInRange(device_addr, size, [&](BufferId, Buffer& buffer) {
         DownloadBufferMemory(buffer, device_addr, size);
     });
+}
+
+template <class P>
+void BufferCache<P>::BeginDownloadBatch() {
+    if (!DownloadBatchEnabled()) {
+        return;
+    }
+    mutex.lock();
+    ++download_batch_depth;
+}
+
+template <class P>
+void BufferCache<P>::EndDownloadBatch() {
+    if (!DownloadBatchEnabled()) {
+        return;
+    }
+    ASSERT(download_batch_depth > 0);
+    if (--download_batch_depth == 0 && !batched_downloads.empty()) {
+        FinishDownloadBatch();
+    }
+    mutex.unlock();
 }
 
 template <class P>
@@ -280,12 +321,7 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
         const DAddr diff = base_address - *cpu_src_address;
         const DAddr new_base_address = *cpu_dest_address + diff;
         tmp_intervals.push_back({new_base_address, size});
-        if (DownloadsAtFence(new_base_address, size)) {
-            uncommitted_gpu_modified_ranges.Add(new_base_address, size);
-        } else {
-            QueueDownload(new_base_address, size);
-            ArmReadTraps(new_base_address, size);
-        }
+        QueueDownload(new_base_address, size);
     };
     gpu_modified_ranges.ForEachInRange(*cpu_src_address, amount, mirror);
     // This subtraction in this order is important for overlapping copies.
@@ -486,6 +522,11 @@ void BufferCache<P>::UnbindGraphicsStorageBuffers(size_t stage) {
 template <class P>
 bool BufferCache<P>::BindGraphicsStorageBuffer(size_t stage, size_t ssbo_index, u32 cbuf_index,
                                                u32 cbuf_offset, bool is_written) {
+    if (ssbo_index >= channel_state->storage_buffers[stage].size()) {
+        LOG_ERROR(HW_GPU, "Storage buffer index {} exceeds maximum storage buffer count",
+                  ssbo_index);
+        return false;
+    }
     const bool already_enabled =
         ((channel_state->enabled_storage_buffers[stage] >> ssbo_index) & 1U) != 0;
     if constexpr (requires { runtime.ShouldLimitDynamicStorageBuffers(); }) {
@@ -770,6 +811,12 @@ void BufferCache<P>::PopAsyncBuffers() {
                                            end - start);
         });
         async_downloads.Subtract(device_addr, copy.size, [&](DAddr start, DAddr end) {
+            if (uncommitted_gpu_modified_ranges.Intersects(start, end - start) ||
+                std::ranges::any_of(committed_gpu_modified_ranges, [&](const auto& ranges) {
+                    return ranges.Intersects(start, end - start);
+                })) {
+                return;
+            }
             gpu_modified_ranges.Subtract(start, end - start);
         });
     }
@@ -1070,6 +1117,11 @@ void BufferCache<P>::BindHostGraphicsUniformBuffer(size_t stage, u32 index, u32 
             }
         }
         // Stream buffer path to avoid stalling on non-Nvidia drivers or Vulkan
+        if constexpr (!IS_OPENGL) {
+            if (runtime.BindSmallUniformReusing(device_memory, stage, index, device_addr, size)) {
+                return;
+            }
+        }
         const std::span<u8> span = runtime.BindMappedUniformBuffer(stage, binding_index, size);
         device_memory.ReadBlockUnsafe(device_addr, span.data(), size);
         return;
@@ -1158,9 +1210,7 @@ bool BufferCache<P>::BindMultiRangeStorage(const Binding& binding, bool is_writt
             const MultiRangeSegment& segment = pool[binding.segment_first + index];
             Buffer& buffer = slot_buffers[segment.buffer_id];
             TouchBuffer(buffer, segment.buffer_id);
-            if (SynchronizeBuffer(buffer, segment.device_addr, segment.size)) {
-                runtime.InvalidateMultiRange(key);
-            }
+            SynchronizeBuffer(buffer, segment.device_addr, segment.size);
             const u32 offset = buffer.Offset(segment.device_addr);
             buffer.MarkUsage(offset, segment.size);
             if (is_written) {
@@ -1168,6 +1218,7 @@ bool BufferCache<P>::BindMultiRangeStorage(const Binding& binding, bool is_writt
             }
             runtime.PushMultiRangeSource(buffer, offset, segment.size);
         }
+        runtime.InvalidateMultiRange(key);
         return runtime.BindMultiRangeStorageBuffer(key, is_written);
     } else {
         return false;
@@ -1646,12 +1697,7 @@ void BufferCache<P>::MarkWrittenBuffer(BufferId buffer_id, DAddr device_addr, u3
     }
     memory_tracker.MarkRegionAsGpuModified(device_addr, size);
     gpu_modified_ranges.Add(device_addr, size);
-    if (DownloadsAtFence(device_addr, size)) {
-        uncommitted_gpu_modified_ranges.Add(device_addr, size);
-    } else {
-        QueueDownload(device_addr, size);
-        ArmReadTraps(device_addr, size);
-    }
+    QueueDownload(device_addr, size);
     if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed)) {
         Tegra::Nx2MarkGpuWritten(device_addr, size);
     }
@@ -2085,7 +2131,35 @@ void BufferCache<P>::DownloadBuffersMemory(std::span<const BufferId> buffer_ids)
 }
 
 template <class P>
+void BufferCache<P>::FinishDownloadBatch() {
+    boost::container::small_vector<BatchedDownload, 4> downloads;
+    downloads.swap(batched_downloads);
+    batched_download_bytes = 0;
+    runtime.Finish();
+    for (BatchedDownload& download : downloads) {
+        const u8* const mapped_memory = download.staging.mapped_span.data();
+        for (const BufferCopy& copy : download.copies) {
+            const u64 staging_position = copy.dst_offset - download.staging.offset;
+            device_memory.WriteBlockUnsafe(static_cast<DAddr>(copy.src_offset),
+                                           mapped_memory + staging_position, copy.size);
+        }
+        runtime.FreeDeferredStagingBuffer(download.staging);
+    }
+}
+
+template <class P>
 void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64 size) {
+    // Only the part of the range inside this buffer is this buffer's to download: the caller
+    // passes the whole range to every buffer it touches, and the tracker clears what it visits.
+    const DAddr buffer_begin = buffer.CpuAddr();
+    const DAddr range_begin = (std::max)(buffer_begin, device_addr);
+    const DAddr range_end =
+        (std::min)(static_cast<DAddr>(buffer_begin + buffer.SizeBytes()), device_addr + size);
+    if (range_begin >= range_end) {
+        return;
+    }
+    device_addr = range_begin;
+    size = range_end - range_begin;
     boost::container::small_vector<BufferCopy, 1> copies;
     u64 total_size_bytes = 0;
     u64 largest_copy = 0;
@@ -2116,6 +2190,32 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
     }
 
     if constexpr (USE_MEMORY_MAPS) {
+        if (download_batch_depth > 0) {
+            // Inside a download batch: record the copies, the wait and the write to guest memory
+            // happen once in FinishDownloadBatch. The staging buffer is deferred so that the pool
+            // keeps it until then.
+            auto batch_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
+            const std::span<BufferCopy> batch_span(copies.data(), copies.data() + copies.size());
+            for (BufferCopy& copy : copies) {
+                copy.dst_offset += batch_staging.offset;
+                buffer.MarkUsage(copy.src_offset, copy.size);
+            }
+            runtime.CopyBuffer(batch_staging.buffer, buffer, batch_span, true);
+            BatchedDownload& batched = batched_downloads.emplace_back();
+            batched.staging = batch_staging;
+            batched_download_bytes += total_size_bytes;
+            for (const BufferCopy& copy : copies) {
+                BufferCopy queued{copy};
+                // From here on src_offset is the guest address the data is written to.
+                queued.src_offset = static_cast<u64>(buffer.CpuAddr()) + copy.src_offset;
+                batched.copies.push_back(queued);
+            }
+            // A large flush may span many buffers: do not retain all their staging at once.
+            if (batched_download_bytes >= 64_MiB) {
+                FinishDownloadBatch();
+            }
+            return;
+        }
         auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes);
         const u8* const mapped_memory = download_staging.mapped_span.data();
         const std::span<BufferCopy> copies_span(copies.data(), copies.data() + copies.size());
