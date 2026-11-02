@@ -222,7 +222,7 @@ TEST_CASE("A64: a W register read back as X is zero-extended", "[a64]") {
     CHECK(jit.GetRegister(14) == 0xabcdef0012345678 + 0x12345679);
 }
 
-TEST_CASE("A64: 64-bit add, subtract and compare with an immediate", "[a64]") {
+TEST_CASE("A64: 64-bit add, subtract and compare with an immediate, and shifts", "[a64]") {
     HaltingEnv env;
     A64::Jit jit{NoCycleCountingConfig(env)};
     env.jit = &jit;
@@ -237,6 +237,10 @@ TEST_CASE("A64: 64-bit add, subtract and compare with an immediate", "[a64]") {
     code.ADD(X6, X0, 8);
     code.ADD(X7, X0, X6);            // X0 and X6 both still needed below
     code.ADD(X8, X6, X0);
+    code.LSR(X9, X0, 1);             // UBFM: a rotate and a mask, folded to a shift
+    code.LSR(W10, W0, 31);
+    code.UBFX(X11, X0, 4, 60);
+    code.UBFX(X12, X0, 4, 59);       // not a plain shift
     code.BRK(0);
 
     for (const u64 x0 : {u64(0), u64(0x1f), u64(0x20), u64(0xffffffffffffffff), u64(0xfffffffffff00000), u64(0x8000000000000000)}) {
@@ -252,5 +256,9 @@ TEST_CASE("A64: 64-bit add, subtract and compare with an immediate", "[a64]") {
         CHECK(jit.GetRegister(6) == x0 + 8);
         CHECK(jit.GetRegister(7) == x0 + x0 + 8);
         CHECK(jit.GetRegister(8) == x0 + x0 + 8);
+        CHECK(jit.GetRegister(9) == x0 >> 1);
+        CHECK(jit.GetRegister(10) == u32(x0) >> 31);
+        CHECK(jit.GetRegister(11) == x0 >> 4);
+        CHECK(jit.GetRegister(12) == ((x0 >> 4) & ((u64(1) << 59) - 1)));
     }
 }

@@ -1025,6 +1025,42 @@ static void FoldZeroExtendXToLong(IR::Inst& inst) {
     inst.ReplaceUsesWith(IR::Value{value});
 }
 
+/// RotateRight(x, r) & (ones >> r) is x >> r: UBFM's LSR alias, which the translator emits as a
+/// rotate and a mask (and on x64 a 64-bit mask is a constant to load first).
+static void FoldRotateRightAndMaskToShift(IR::Block& block, IR::Inst& inst) {
+    if ((inst.GetOpcode() != Op::And32 && inst.GetOpcode() != Op::And64) || inst.HasAssociatedPseudoOperation()) {
+        return;
+    }
+    const bool is_32_bit = inst.GetOpcode() == Op::And32;
+    const IR::Value lhs = inst.GetArg(0), rhs = inst.GetArg(1);
+    if (lhs.IsImmediate() || !rhs.IsImmediate()) {
+        return;
+    }
+    IR::Inst* const rotate = lhs.GetInstRecursive();
+    if (rotate->GetOpcode() != (is_32_bit ? Op::BitRotateRight32 : Op::BitRotateRight64) || !rotate->GetArg(1).IsImmediate()) {
+        return;
+    }
+    if (is_32_bit && (!rotate->GetArg(2).IsImmediate() || rotate->GetArg(2).GetU1())) {
+        return;
+    }
+    const unsigned bits = is_32_bit ? 32 : 64;
+    const unsigned r = rotate->GetArg(1).GetU8();
+    if (r == 0 || r >= bits) {
+        return;
+    }
+    const u64 ones = is_32_bit ? u64(0xffffffff) : ~u64(0);
+    if (rhs.GetImmediateAsU64() != (ones >> r)) {
+        return;
+    }
+    IR::IREmitter ir{block};
+    ir.SetInsertionPointBefore(&inst);
+    if (is_32_bit) {
+        inst.ReplaceUsesWith(ir.LogicalShiftRight(IR::U32{rotate->GetArg(0)}, ir.Imm8(u8(r))));
+    } else {
+        inst.ReplaceUsesWith(ir.LogicalShiftRight(IR::U64{rotate->GetArg(0)}, ir.Imm8(u8(r))));
+    }
+}
+
 static void ConstantPropagation(IR::Block& block) {
     for (auto& inst : block.instructions) {
         auto const opcode = inst.GetOpcode();
@@ -1162,6 +1198,7 @@ static void ConstantPropagation(IR::Block& block) {
         case Op::And32:
         case Op::And64:
             FoldAND(inst, opcode == Op::And32);
+            FoldRotateRightAndMaskToShift(block, inst);
             break;
         case Op::Eor32:
         case Op::Eor64:
