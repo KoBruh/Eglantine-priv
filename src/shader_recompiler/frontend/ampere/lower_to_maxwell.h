@@ -755,28 +755,35 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
             break;
         }
         case 0x899: { // USHF.L.U32; accept a zero word outside the selected half.
-            const u32 dst = insn.Bits(16, 8), low = insn.Bits(24, 8), high = insn.Bits(64, 8);
-            if (insn.words[2] == (0x08011400U | high) && low == 63 && high < 16 &&
-                dst < 16 && native_predicate == 7 && insn.words[1] <= 32) {
-                emit(0x3828000000000000ULL | predicate | (dst + 216) |
-                     (u64{high + 216} << 8) | (u64{insn.words[1]} << 20) | (u64{1} << 48));
+            // Any uniform register that has a home (uniform_register): Pokopia's night compute
+            // shaders shift UR16, past the UR0-UR15 this first accepted.
+            const u32 low = insn.Bits(24, 8), high = insn.Bits(64, 8);
+            const u32 dst_reg = uniform_register(insn.Bits(16, 8));
+            const u32 low_reg = uniform_register(low), high_reg = uniform_register(high);
+            const bool dst_ok = dst_reg != ~0U && dst_reg != 255;
+            const bool low_ok = low_reg != ~0U && low_reg != 255;
+            const bool high_ok = high_reg != ~0U && high_reg != 255;
+            if (insn.words[2] == (0x08011400U | high) && low == 63 && high_ok &&
+                dst_ok && native_predicate == 7 && insn.words[1] <= 32) {
+                emit(0x3828000000000000ULL | predicate | dst_reg |
+                     (u64{high_reg} << 8) | (u64{insn.words[1]} << 20) | (u64{1} << 48));
                 break;
             }
             // Logical right shifts of one register (bit 76 right, bit 80 high word, bits 73-74
             // U32): USHF.R.U32 URd, URa, n, URZ and USHF.R.U32.HI URd, URZ, n, URb.
-            const bool right_low = insn.words[2] == 0x0800163f && low < 16;
-            const bool right_high = insn.words[2] == (0x08011600U | high) && low == 63 && high < 16;
-            if ((right_low || right_high) && dst < 16 && native_predicate == 7 && insn.words[1] <= 32) {
-                emit(0x3828000000000000ULL | predicate | (dst + 216) |
-                     (u64{(right_high ? high : low) + 216} << 8) | (u64{insn.words[1]} << 20));
+            const bool right_low = insn.words[2] == 0x0800163f && low_ok;
+            const bool right_high = insn.words[2] == (0x08011600U | high) && low == 63 && high_ok;
+            if ((right_low || right_high) && dst_ok && native_predicate == 7 && insn.words[1] <= 32) {
+                emit(0x3828000000000000ULL | predicate | dst_reg |
+                     (u64{right_high ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
                 break;
             }
-            const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high < 16;
-            const bool low_result = insn.words[2] == 0x0800063f && low < 16;
-            if (dst >= 16 || native_predicate != 7 || insn.words[1] > 32 || (!high_result && !low_result))
+            const bool high_result = insn.words[2] == (0x08010600U | high) && low == 63 && high_ok;
+            const bool low_result = insn.words[2] == 0x0800063f && low_ok;
+            if (!dst_ok || native_predicate != 7 || insn.words[1] > 32 || (!high_result && !low_result))
                 return fail(index, "native uniform shift mode");
-            emit(0x3848000000000000ULL | predicate | (dst + 216) |
-                 (u64{(high_result ? high : low) + 216} << 8) | (u64{insn.words[1]} << 20));
+            emit(0x3848000000000000ULL | predicate | dst_reg |
+                 (u64{high_result ? high_reg : low_reg} << 8) | (u64{insn.words[1]} << 20));
             break;
         }
         case 0xb82: { // LDC, 8 to 64 bits, indexed byte offset
@@ -1485,8 +1492,10 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
                  (u64{swizzle} << 50) | (u64{array ? 8U : volume ? 7U : dimension == 0 ? 0U : 2U} << 53));
             break;
         }
-        case 0x91a: // DEPBAR.LE SB5, 1: scoreboard wait, represented by IR data dependencies.
-            if (insn.words[0] != 0x791a || (insn.words[1] & ~0xfc0U) != 0xd000 || insn.words[2]) {
+        case 0x91a: // DEPBAR.LE SBn, count{, mask}: scoreboard waits, represented by IR data dependencies.
+            // Any scoreboard (bits 44-46), count (38-43) and set of further scoreboards to wait on
+            // (32-37): Pokopia's night compute shaders wait with DEPBAR.LE SB0, 0x0, {3,2,1}.
+            if (insn.words[0] != 0x791a || (insn.words[1] & ~0x7fffU) != 0x8000 || insn.words[2]) {
                 return fail(index, "native dependency barrier mode");
             }
             break;
@@ -1976,12 +1985,35 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
                  (u64{source} << 8) | (u64{shift} << 20) | (u64{insn.Bits(75, 1)} << 39));
             break;
         }
-        case 0x419: { // SHF.L.W.U32.HI Rd, RZ, Rb, imm (high word of imm:0 << Rb) = imm << (Rb & 31)
-            if (insn.Bits(24, 8) != 255 || (insn.words[2] & ~0xffU) != 0x00010e00)
+        case 0x896: { // UPRMT URd, URa, imm, URc (Pokopia: 0x9910, a half sign-extended)
+            // Byte i of the result is byte (s & 7) of c:a, or its sign bit repeated when s & 8,
+            // built in R250 as for PRMT (0x816) from the registers the uniform ones live in.
+            const u32 dst = uniform_register(insn.Bits(16, 8)), a = uniform_register(insn.Bits(24, 8));
+            const u32 c = uniform_register(insn.Bits(64, 8));
+            if (dst == ~0U || dst == 255 || a == ~0U || c == ~0U || native_predicate != 7 ||
+                insn.words[1] > 0xffff || (insn.words[2] & ~0xffU) != 0x08000000U)
+                return fail(index, "native uniform permutation mode");
+            mov_imm(250, 0);
+            for (u32 i = 0; i < 4; ++i) {
+                const u32 select = (insn.words[1] >> (i * 4)) & 0xf;
+                const u32 source = select & 4 ? c : a, position = (select & 3) * 8;
+                emit(0x3800000000000000ULL | predicate | 251 | (u64{source} << 8) |
+                     (u64{select & 8 ? (position + 7) | (1U << 8) : position | (8U << 8)} << 20) |
+                     (u64{(select >> 3) & 1} << 48));
+                emit(0x36f0000000000000ULL | predicate | 250 | (u64{251} << 8) |
+                     (u64{(i * 8) | (8U << 8)} << 20) | (u64{250} << 39));
+            }
+            emit(0x5c10000000000000ULL | predicate | dst | (u64{250} << 8) | (u64{255} << 20));
+            break;
+        }
+        case 0x419: { // SHF.L[.W].U32.HI Rd, RZ, Rb, imm: the high word of imm:0 << Rb = imm << Rb
+            // .W (bit 75) wraps the shift (Rb & 31); without it the shift clamps at 32, which leaves
+            // 0: Maxwell's SHL, whose bit 39 is the same wrap (Pokopia's night compute shaders).
+            if (insn.Bits(24, 8) != 255 || (insn.words[2] & ~0x8ffU) != 0x00010600)
                 return fail(index, "native funnel shift immediate mode");
             mov_imm(250, insn.words[1]);
             emit(base(0x5c48000000000000ULL) | (u64{250} << 8) | (u64{insn.Bits(64, 8)} << 20) |
-                 (u64{1} << 39));
+                 (u64{insn.Bits(75, 1)} << 39));
             break;
         }
         case 0x805: { // CS2R SRZ
@@ -1990,7 +2022,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
             mov_imm(static_cast<u32>(dest) + 1, 0);
             break;
         }
-        case 0x306: case 0xd06: { // I2F.F32.U8, low byte, round-to-nearest (0xd06: uniform source)
+        case 0x306: case 0xd06: { // I2F.F32.U8 Rd, Rs.Bn, round-to-nearest (0xd06: uniform source)
             const u32 source = opcode == 0xd06 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
             if (opcode == 0x306 && insn.words[2] == 0x00101000 && !(insn.words[1] & 0xcfffff00U)) {
                 // I2F.U16 Rd, Rs(.H1): Maxwell's 16-bit source format, byte selector 0 or 2.
@@ -1998,10 +2030,13 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code,
                      (u64{insn.Bits(60, 2) * 2} << 41));
                 break;
             }
+            // Bits 60-61 select the source byte (.B1-.B3; Pokopia's night compute shaders), as
+            // Maxwell I2F's selector at bits 41-42 does for an 8-bit source.
             if (insn.words[2] != (opcode == 0xd06 ? 0x08001000U : 0x1000U) ||
-                (insn.words[1] & 0xffffff00U) || source == ~0U)
+                (insn.words[1] & 0xcfffff00U) || source == ~0U)
                 return fail(index, "native byte-to-float conversion mode");
-            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{source} << 20));
+            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{source} << 20) |
+                 (u64{insn.Bits(60, 2)} << 41));
             break;
         }
         case 0x245: case 0xa45: case 0xc45: { // I2FP.F32.U32
