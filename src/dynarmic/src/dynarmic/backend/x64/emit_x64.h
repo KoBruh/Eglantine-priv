@@ -106,6 +106,10 @@ public:
     virtual std::string LocationDescriptorToFriendlyName(const IR::LocationDescriptor&) const = 0;
     void EmitAddCycles(size_t cycles);
     Xbyak::Label EmitCond(IR::Cond cond);
+    // Set just before a terminal when the host flags still hold the guest NZCV that was last
+    // stored (an add or subtract materialized them and only register writes followed): EmitCond
+    // then tests them directly instead of reloading cpsr_nzcv. EmitCond clears it.
+    bool nzcv_in_host_flags = false;
     BlockDescriptor RegisterBlock(const IR::LocationDescriptor& location_descriptor, CodePtr entrypoint, size_t size);
     void PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, IR::LocationDescriptor target);
 

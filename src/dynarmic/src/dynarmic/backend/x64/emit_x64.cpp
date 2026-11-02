@@ -295,9 +295,17 @@ void EmitX64::EmitAddCycles(size_t cycles) {
 Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
     Xbyak::Label pass;
 
-    code.mov(eax, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
-
-    code.LoadRequiredFlagsForCondFromRax(cond);
+    if (nzcv_in_host_flags) {
+        // SF, ZF and OF are the operation's and CF is already the guest's carry (what
+        // LoadRequiredFlagsForCondFromRax restores); HI and LS test it inverted, as after sahf.
+        nzcv_in_host_flags = false;
+        if (cond == IR::Cond::HI || cond == IR::Cond::LS) {
+            code.cmc();
+        }
+    } else {
+        code.mov(eax, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
+        code.LoadRequiredFlagsForCondFromRax(cond);
+    }
 
     switch (cond) {
     case IR::Cond::EQ:

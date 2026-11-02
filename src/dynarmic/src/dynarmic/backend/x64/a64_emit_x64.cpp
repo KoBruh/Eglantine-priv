@@ -132,8 +132,16 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
 #undef A64OPC
     };
 
+    // Whether the host flags hold the guest NZCV last stored: an add or subtract materializes them
+    // (GetNZCVFromOp right after it), SetNZCV stores that value, and only register writes (plain
+    // movs) follow until the terminal.
+    const IR::Inst* previous_inst = nullptr;
+    const IR::Inst* flags_from = nullptr;
+    bool flags_hold_nzcv = false;
     for (auto& inst : block.instructions) {
         auto const opcode = inst.GetOpcode();
+        const bool nzcv_from_op = opcode == IR::Opcode::GetNZCVFromOp && ctx.reg_alloc.IsValueLive(&inst) &&
+                                  inst.GetArg(0).GetInst() == previous_inst;
         // Call the relevant Emit* member function.
         switch (opcode) {
 #define OPCODE(name, type, ...) case IR::Opcode::name: goto opcode_branch;
@@ -153,6 +161,25 @@ a64_branch:
         (this->*a64_handlers[size_t(opcode) - std::size(opcode_handlers)])(ctx, &inst);
 finish_this_inst:
         ctx.reg_alloc.EndOfAllocScope();
+        switch (opcode) {
+        case IR::Opcode::GetNZCVFromOp:
+            flags_from = nzcv_from_op ? &inst : nullptr;
+            flags_hold_nzcv = false;
+            break;
+        case IR::Opcode::A64SetNZCV:
+            flags_hold_nzcv = flags_from != nullptr && !inst.GetArg(0).IsImmediate() &&
+                              inst.GetArg(0).GetInst() == flags_from;
+            break;
+        case IR::Opcode::A64SetW:
+        case IR::Opcode::A64SetX:
+        case IR::Opcode::A64SetSP:
+            break;
+        default:
+            flags_from = nullptr;
+            flags_hold_nzcv = false;
+            break;
+        }
+        previous_inst = &inst;
 #ifndef NDEBUG
         if (conf.very_verbose_debugging_output)
             EmitVerboseDebuggingOutput(reg_alloc);
@@ -162,7 +189,9 @@ finish_this_inst:
     reg_alloc.AssertNoMoreUses();
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());
+    nzcv_in_host_flags = flags_hold_nzcv && !conf.enable_cycle_counting;
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
+    nzcv_in_host_flags = false;
     code.int3();
     for (auto& deferred_emit : ctx.deferred_emits)
         deferred_emit();
