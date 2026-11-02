@@ -98,16 +98,24 @@ struct Memory::Impl {
 #endif
 
 #ifdef HAS_HYPERVISOR
-        // EDEN_NX2_HYPERVISOR=1: application code runs natively in a VM whose page tables mirror
-        // this one from the start, so every mapping below reaches them.
+        // cpu_backend = Hypervisor: application code runs natively in a VM whose page tables
+        // mirror this one from the start, so every mapping below reaches them. When it can't,
+        // the reason is kept for KProcess::InitializeInterfaces, which falls back to Dynarmic.
         // (The process's 64-bit flag is only set after this runs; a 64-bit address space,
         // 36 or 39 bits, tells the same.)
-        if (Core::Hv::IsRequested() && process.IsApplication() &&
-            current_page_table->GetAddressSpaceBits() >= 36 && system.IsMulticore()) {
-            auto& buffer = system.DeviceMemory().buffer;
-            Core::Hv::Vm::Get().Attach(*current_page_table,
-                                       current_page_table->GetAddressSpaceBits(),
-                                       buffer.BackingBasePointer(), buffer.BackingSize());
+        if (process.IsApplication() && Core::Hv::IsRequested()) {
+            auto& vm = Core::Hv::Vm::Get();
+            if (current_page_table->GetAddressSpaceBits() < 36) {
+                vm.Detach("it runs only 64-bit applications");
+            } else if (!system.IsMulticore()) {
+                vm.Detach("it needs multicore CPU emulation (use_multi_core)");
+            } else if (system.DebuggerEnabled()) {
+                vm.Detach("the GDB stub is on");
+            } else {
+                auto& buffer = system.DeviceMemory().buffer;
+                vm.Attach(*current_page_table, current_page_table->GetAddressSpaceBits(),
+                          buffer.BackingBasePointer(), buffer.BackingSize());
+            }
         }
 #endif
         std::scoped_lock lk{read_trap_mutex};

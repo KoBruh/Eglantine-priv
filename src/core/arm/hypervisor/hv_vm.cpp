@@ -7,9 +7,13 @@
 #include <Hypervisor/Hypervisor.h>
 #include <libkern/OSCacheControl.h>
 #include <sys/mman.h>
+#include <sys/sysctl.h>
+
+#include <fmt/format.h>
 
 #include "common/alignment.h"
 #include "common/logging.h"
+#include "common/settings.h"
 #include "core/arm/hypervisor/hv_vm.h"
 #include "core/device_memory.h"
 
@@ -72,12 +76,31 @@ u32 IpsFor(u32 bits) {
 
 } // namespace
 
-bool IsRequested() {
-    static const bool requested = [] {
+namespace {
+/// EDEN_NX2_HYPERVISOR: -1 when unset, else 0 or 1.
+int EnvironmentOverride() {
+    static const int forced = [] {
         const char* value = std::getenv("EDEN_NX2_HYPERVISOR");
-        return value != nullptr && value[0] != '0';
+        if (value == nullptr || value[0] == '\0') {
+            return -1;
+        }
+        return value[0] != '0' ? 1 : 0;
     }();
-    return requested;
+    return forced;
+}
+
+bool IsSelected() {
+    return Settings::values.cpu_backend.GetValue() == Settings::CpuBackend::Hypervisor;
+}
+} // namespace
+
+bool IsRequested() {
+    const int forced = EnvironmentOverride();
+    return forced >= 0 ? forced == 1 : IsSelected();
+}
+
+bool IsTurnedOffByEnvironment() {
+    return EnvironmentOverride() == 0 && IsSelected();
 }
 
 Vm::Vm() {
@@ -95,6 +118,13 @@ bool Vm::CreateVm() {
     if (vm_created) {
         return true;
     }
+    int hv_support = 0;
+    size_t hv_support_size = sizeof(hv_support);
+    if (sysctlbyname("kern.hv_support", &hv_support, &hv_support_size, nullptr, 0) != 0 ||
+        hv_support == 0) {
+        unavailable_reason = "this Mac does not offer Hypervisor.framework (kern.hv_support is 0)";
+        return false;
+    }
     hv_vm_config_t config = hv_vm_config_create();
     uint32_t max_ipa = 0;
     if (hv_vm_config_get_max_ipa_size(&max_ipa) == HV_SUCCESS && max_ipa >= 36) {
@@ -104,10 +134,10 @@ bool Vm::CreateVm() {
     const hv_return_t result = hv_vm_create(config);
     os_release(config);
     if (result != HV_SUCCESS) {
-        LOG_CRITICAL(Core_ARM,
-                     "Hypervisor: hv_vm_create failed ({:#x}). The app needs the "
-                     "com.apple.security.hypervisor entitlement; falling back to Dynarmic",
-                     static_cast<u32>(result));
+        unavailable_reason = fmt::format(
+            "hv_vm_create failed ({:#x}): the binary needs the com.apple.security.hypervisor "
+            "entitlement",
+            static_cast<u32>(result));
         return false;
     }
 
@@ -115,12 +145,12 @@ bool Vm::CreateVm() {
         mmap(nullptr, PoolSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
     if (pool == MAP_FAILED) {
         pool = nullptr;
-        LOG_CRITICAL(Core_ARM, "Hypervisor: page table pool allocation failed");
+        unavailable_reason = "the page table pool could not be allocated";
         return false;
     }
     if (hv_vm_map(pool, PoolIpa, PoolSize, HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC) !=
         HV_SUCCESS) {
-        LOG_CRITICAL(Core_ARM, "Hypervisor: mapping the page table pool failed");
+        unavailable_reason = "the page table pool could not be mapped into the VM";
         return false;
     }
     vm_created = true;
@@ -133,9 +163,10 @@ bool Vm::Attach(Common::PageTable& table, size_t address_space_bits, u8* backing
     std::scoped_lock lk{mutex};
     ready.store(false, std::memory_order_release);
     attached_table = nullptr;
+    unavailable_reason.clear();
 
     if (address_space_bits > 48 || address_space_bits < 32) {
-        LOG_ERROR(Core_ARM, "Hypervisor: unsupported {}-bit address space", address_space_bits);
+        unavailable_reason = fmt::format("unsupported {}-bit address space", address_space_bits);
         return false;
     }
     if (!CreateVm()) {
@@ -153,8 +184,8 @@ bool Vm::Attach(Common::PageTable& table, size_t address_space_bits, u8* backing
             hv_vm_map(backing, DramMemoryMap::Base, backing_size,
                       HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC);
         if (result != HV_SUCCESS) {
-            LOG_CRITICAL(Core_ARM, "Hypervisor: mapping {:#x} bytes of guest DRAM failed ({:#x})",
-                         backing_size, static_cast<u32>(result));
+            unavailable_reason = fmt::format("mapping {:#x} bytes of guest DRAM failed ({:#x})",
+                                             backing_size, static_cast<u32>(result));
             return false;
         }
         mapped_backing = backing;
@@ -200,6 +231,18 @@ bool Vm::Attach(Common::PageTable& table, size_t address_space_bits, u8* backing
     LOG_INFO(Core_ARM, "Hypervisor: attached a {}-bit address space, {:#x} bytes of DRAM",
              address_space_bits, backing_size);
     return true;
+}
+
+void Vm::Detach(std::string reason) {
+    std::scoped_lock lk{mutex};
+    ready.store(false, std::memory_order_release);
+    attached_table = nullptr;
+    unavailable_reason = std::move(reason);
+}
+
+std::string Vm::UnavailableReason() const {
+    std::scoped_lock lk{mutex};
+    return unavailable_reason;
 }
 
 u64 Vm::Tcr() const {

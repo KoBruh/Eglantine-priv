@@ -250,14 +250,20 @@ struct Values {
                                             Specialization::Default};
 
     // Cpu
+    // Hypervisor exists only on Apple silicon; elsewhere the range keeps a stored Hypervisor
+    // value from being selected.
     SwitchableSetting<CpuBackend, true> cpu_backend{linkage,
-#ifdef HAS_NCE
+#if defined(HAS_HYPERVISOR)
+                                                    CpuBackend::Hypervisor,
+#elif defined(HAS_NCE)
                                                     CpuBackend::Nce,
 #else
                                                     CpuBackend::Dynarmic,
 #endif
                                                     CpuBackend::Dynarmic,
-#ifdef HAS_NCE
+#if defined(HAS_HYPERVISOR)
+                                                    CpuBackend::Hypervisor,
+#elif defined(HAS_NCE)
                                                     CpuBackend::Nce,
 #else
                                                     CpuBackend::Dynarmic,

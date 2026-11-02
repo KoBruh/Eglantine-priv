@@ -55,7 +55,7 @@ if(UNIX AND NOT APPLE)
     install(TARGETS yuzu-cmd)
 endif()
 
-# Hypervisor.framework (native execution, EDEN_NX2_HYPERVISOR=1) needs this entitlement; an ad-hoc
+# Hypervisor.framework (native execution, the default CPU backend) needs this entitlement; an ad-hoc
 # signature carries it for local builds.
 if(APPLE AND NOT CMAKE_GENERATOR MATCHES "Xcode")
     add_custom_command(TARGET yuzu-cmd POST_BUILD

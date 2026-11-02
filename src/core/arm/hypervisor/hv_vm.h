@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstddef>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "common/common_types.h"
@@ -19,9 +20,12 @@ struct PageTable;
 
 namespace Core::Hv {
 
-/// EDEN_NX2_HYPERVISOR=1: run application code natively on Apple silicon through
-/// Hypervisor.framework instead of translating it with Dynarmic.
+/// Whether application code should run natively through Hypervisor.framework instead of being
+/// translated by Dynarmic: cpu_backend = Hypervisor, the default on Apple silicon.
+/// EDEN_NX2_HYPERVISOR=0 or =1 overrides the setting.
 bool IsRequested();
+/// EDEN_NX2_HYPERVISOR=0 turned the backend off although cpu_backend selects it.
+bool IsTurnedOffByEnvironment();
 
 /**
  * The process-wide virtual machine that application code runs in.
@@ -40,6 +44,10 @@ public:
     /// and starts an empty set of stage-1 tables. Returns false if the VM can't be used.
     bool Attach(Common::PageTable& table, size_t address_space_bits, u8* backing,
                 size_t backing_size);
+    /// Stops mirroring any page table: the application runs on another backend, for `reason`.
+    void Detach(std::string reason);
+    /// Why the last application could not use this backend (empty if it could).
+    std::string UnavailableReason() const;
     bool IsAttached(const Common::PageTable& table) const {
         return attached_table == &table;
     }
@@ -109,6 +117,7 @@ private:
     void KickRunning();
 
     mutable std::mutex mutex;
+    std::string unavailable_reason;
     std::atomic<bool> ready{};
     bool vm_created{};
     Common::PageTable* attached_table{};
