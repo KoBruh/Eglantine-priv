@@ -1531,6 +1531,13 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_wr
         // at fences). A read trap is disarmed by this and leaves the page readable; a page read
         // protected by reactive flushing is released as a write would release it.
         const bool trapped = impl->IsReadTrapArmed(GetInteger(vaddr));
+        // Copy the GPU's writes back now (ordered): the invalidation below would otherwise find
+        // the area still GPU-modified and sync the whole GPU to preserve it (the Hypervisor
+        // backend's world in Pokemon Pokopia went from 8.4-10.5 ms a frame to 13.8-15.2 ms).
+        Tegra::GPU::SetOrderedReadsOnThisThread(true);
+        SCOPE_EXIT {
+            Tegra::GPU::SetOrderedReadsOnThisThread(false);
+        };
         impl->HandleRasterizerDownload(GetInteger(vaddr), size,
                                        ReadbackDiagnostics::Caller::ScalarRead);
         if (!trapped) {

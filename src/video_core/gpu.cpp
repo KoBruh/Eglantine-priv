@@ -60,6 +60,11 @@ constexpr u64 GpuClockMultiplier(Settings::GpuClock clock) {
 }
 } // Anonymous namespace
 
+namespace {
+// GPU::SetOrderedReadsOnThisThread.
+thread_local bool t_ordered_reads = false;
+} // namespace
+
 struct GPU::Impl {
     explicit Impl(Core::System& system_, bool is_async_, bool use_nvdec_)
         : system{system_}
@@ -255,7 +260,7 @@ struct GPU::Impl {
             const char* value = std::getenv("EDEN_NX2_ORDERED_READS");
             return value != nullptr && std::strcmp(value, "1") == 0;
         }();
-        if (!ordered_reads && g_nx2_ampere.load(std::memory_order_relaxed) &&
+        if (!ordered_reads && !t_ordered_reads && g_nx2_ampere.load(std::memory_order_relaxed) &&
             system.GetCurrentHostThreadID() < Core::Hardware::NUM_CPU_CORES) {
             auto area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
             if (area.preemtive) {
@@ -573,6 +578,10 @@ void GPU::PushGPUEntries(s32 channel, Tegra::CommandList&& entries) {
 
 VideoCore::RasterizerDownloadArea GPU::OnCPURead(PAddr addr, u64 size) {
     return impl->OnCPURead(addr, size);
+}
+
+void GPU::SetOrderedReadsOnThisThread(bool ordered) {
+    t_ordered_reads = ordered;
 }
 
 u64 GPU::ReadbackGeneration() const {

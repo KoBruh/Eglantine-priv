@@ -248,6 +248,12 @@ public:
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
     [[nodiscard]] VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size);
 
+    /// While set on the calling thread, OnCPURead always waits for the GPU and copies the area
+    /// back, even when it is copied at every fence. The fault handlers of native execution
+    /// (Hypervisor, NCE) set it: they invalidate the area right after the read, and an area still
+    /// marked GPU-modified then costs a whole GPU sync to preserve.
+    static void SetOrderedReadsOnThisThread(bool ordered);
+
     u64 ReadbackGeneration() const;
     void InvalidateReadbackCache();
     void BeginAsyncGuestWrite();
