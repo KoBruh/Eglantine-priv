@@ -299,9 +299,25 @@ HostLoc RegAlloc::UseScratchImpl(BlockOfCode& code, IR::Value use_value, std::bi
     if (HostLocIsRegister(current_location) && desired_locations.test(size_t(current_location)) && !LocInfo(current_location).IsLocked()) {
         if (LocInfo(current_location).IsLastUse()) {
             LocInfo(current_location).is_set_last_use = true;
-        } else {
-            MoveOutOfTheWay(code, current_location);
+            LocInfo(current_location).WriteLock();
+            return current_location;
         }
+        // The value is still needed: modify a copy in a free register rather than spilling the
+        // value to the stack and reloading it at every later use (a base address used by several
+        // loads and stores with offsets went through memory each time).
+        for (size_t i = 0; i < desired_locations.size(); ++i) {
+            const HostLoc candidate = HostLoc(i);
+            if (!desired_locations.test(i) || candidate == current_location || candidate == HostLoc::RBP ||
+                (candidate >= HostLoc::R13 && candidate <= HostLoc::R15)) {
+                continue;
+            }
+            if (LocInfo(candidate).IsEmpty() && !LocInfo(candidate).IsLocked()) {
+                CopyToScratch(code, bit_width, candidate, current_location);
+                LocInfo(candidate).WriteLock();
+                return candidate;
+            }
+        }
+        MoveOutOfTheWay(code, current_location);
         LocInfo(current_location).WriteLock();
         return current_location;
     }
