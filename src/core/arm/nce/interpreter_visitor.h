@@ -105,7 +105,17 @@ private:
     const u64& m_pc;
 };
 
+/// Performs the load or store at pc through `memory` (unmapped bytes read as zero and writes to
+/// them are dropped, as for Dynarmic) and returns the next pc, or nullopt if the instruction is
+/// not a load or store this interpreter knows.
+std::optional<u64> MatchAndExecuteOneInstruction(Core::Memory::Memory& memory,
+                                                 std::span<u64, 31> regs,
+                                                 std::span<u128, 32> vregs, u64& sp,
+                                                 const u64& pc);
+
+#ifdef HAS_NCE
 std::optional<u64> MatchAndExecuteOneInstruction(Core::Memory::Memory& memory, mcontext_t* context,
                                                  fpsimd_context* fpsimd_context);
+#endif
 
 } // namespace Core

@@ -1269,6 +1269,13 @@ if (HAS_HYPERVISOR)
         arm/hypervisor/arm_hypervisor.h
         arm/hypervisor/hv_vm.cpp
         arm/hypervisor/hv_vm.h)
+    # The NCE load/store interpreter performs accesses to unmapped pages.
+    if (NOT HAS_NCE)
+        target_sources(core PRIVATE
+            arm/nce/interpreter_visitor.cpp
+            arm/nce/interpreter_visitor.h
+            arm/nce/visitor_base.h)
+    endif()
     target_link_libraries(core PRIVATE "-framework Hypervisor")
 endif()
 

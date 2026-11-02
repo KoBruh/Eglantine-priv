@@ -62,6 +62,11 @@ u32& UnmappedReadFlag() {
     return flag;
 }
 
+bool& QuietUnmappedAccesses() {
+    thread_local bool quiet{};
+    return quiet;
+}
+
 #ifdef HAS_HYPERVISOR
 /// The hypervisor VM when it mirrors this page table, so its stage-1 tables follow every change.
 static inline Core::Hv::Vm* HypervisorFor(const Common::PageTable& table) {
@@ -372,7 +377,9 @@ struct Memory::Impl {
     bool ReadBlockImpl(const Common::ProcessAddress addr, void* buffer, const std::size_t size, bool unsafe) {
         return WalkBlock(addr, size,
         [addr, size, &buffer](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
-            LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            if (!QuietUnmappedAccesses()) {
+                LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            }
             std::memset(reinterpret_cast<u8*>(buffer) + offset, 0, copy_amount);
         },
         [&](const std::size_t offset, const std::size_t copy_amount, const u8* const ptr) {
@@ -397,7 +404,9 @@ struct Memory::Impl {
     bool WriteBlockImpl(const Common::ProcessAddress addr, const void* buffer, const std::size_t size, bool unsafe) {
         return WalkBlock(addr, size,
         [addr, size](const std::size_t offset, const std::size_t copy_amount, const Common::ProcessAddress current_vaddr) {
-            LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            if (!QuietUnmappedAccesses()) {
+                LOG_ERROR(HW_Memory, "Unmapped @ {:#016x} (start address = {:#016x}, size = {})", GetInteger(current_vaddr), GetInteger(addr), size);
+            }
         },
         [&](const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
             std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
