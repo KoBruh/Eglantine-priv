@@ -2177,8 +2177,8 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 (insn.words[2] & ~0x04800fffU) != 0x081e0000U || handle == ~0U || handle == 255 ||
                 (a != 255 && a >= 216) || (b != 255 && b >= 216) || count == 0 ||
                 (dest != 255 && (dest + first > 216 || (first > 1 && (dest & 1)))) ||
-                (count > 2 && (second == 255 || second + count - 2 > 216 ||
-                               (count == 4 && (second & 1)))))
+                (count > 2 && second != 255 && (second + count - 2 > 216 ||
+                                                (count == 4 && (second & 1)))))
                 goto native_texture_operand_list;
             const auto copy = [&](u32 target, u32 source) {
                 emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) |
@@ -2190,9 +2190,10 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             emit(0xde80000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
                  (u64{2} << 28) | (u64{mask} << 31) | (u64{lod} << 37) |
                  (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+            // Components 0/1 go to the first destination, 2/3 to the second; RZ discards them.
             for (u32 i = 0; i < count; ++i) {
-                const u32 target =
-                    i < 2 ? (dest == 255 ? 255U : static_cast<u32>(dest) + i) : second + i - 2;
+                const u32 target = i < 2 ? (dest == 255 ? 255U : static_cast<u32>(dest) + i)
+                                         : (second == 255 ? 255U : second + i - 2);
                 if (target != 255) copy(target, 250 + i);
             }
             break;
