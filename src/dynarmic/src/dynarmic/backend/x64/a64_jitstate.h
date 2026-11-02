@@ -56,6 +56,9 @@ struct A64JitState {
     std::array<u64, RSB_SIZE> rsb_location_descriptors;
     std::array<u64, RSB_SIZE> rsb_codeptrs;
 
+    // DYNARMIC_AB: the experiment bit of the current phase, part of every location hash.
+    u64 experiment_bits = 0;
+
     u32 GetPstate() const {
         return NZCV::FromX64(cpsr_nzcv);
     }
@@ -77,7 +80,7 @@ struct A64JitState {
     u64 GetUniqueHash() const noexcept {
         const u64 fpcr_u64 = u64(fpcr & A64::LocationDescriptor::fpcr_mask) << A64::LocationDescriptor::fpcr_shift;
         const u64 pc_u64 = pc & A64::LocationDescriptor::pc_mask;
-        return pc_u64 | fpcr_u64;
+        return pc_u64 | fpcr_u64 | experiment_bits;
     }
 };
 

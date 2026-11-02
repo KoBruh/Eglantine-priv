@@ -10,6 +10,7 @@
 
 #include <memory>
 
+#include "dynarmic/common/jit_map.h"
 #include "dynarmic/frontend/A64/a64_location_descriptor.h"
 #include "dynarmic/frontend/A64/decoder/a64.h"
 #include "dynarmic/frontend/A64/translate/impl/impl.h"
@@ -138,7 +139,8 @@ bool NZCVDeadAtExit(const IR::Block& block, const MemoryReadCodeFuncType& memory
 void Translate(IR::Block& block, LocationDescriptor descriptor, MemoryReadCodeFuncType memory_read_code, TranslationOptions options) {
     const bool single_step = descriptor.SingleStepping();
     // Not when single-stepping: the state after each step must be complete.
-    const bool analyze_nzcv_at_exit = options.analyze_nzcv_at_exit && !single_step;
+    const bool analyze_nzcv_at_exit = options.analyze_nzcv_at_exit && !single_step &&
+                                      !Common::AbOff(Common::AbDeadNZCV, descriptor.Experiment());
     TranslatorVisitor visitor{block, descriptor, std::move(options)};
 
     bool should_continue = true;

@@ -20,4 +20,26 @@ unsigned long long* BlockCountsRegister(unsigned long long pc, unsigned long lon
 // Records where the counted block's code was emitted, once it is.
 void BlockCountsSetHost(unsigned long long* counter, const void* host, std::size_t size);
 
+// DYNARMIC_AB=<ms>: an A/B comparison inside one run. The JITs alternate between phase 0 and
+// phase 1 every <ms> milliseconds of wall time (checked when a run starts); blocks are compiled
+// apart for each phase (A64::LocationDescriptor's experiment bit), so both stay in the cache.
+// Phase 1 turns off the features in DYNARMIC_AB_FEATURES (a mask, all by default); phase 0 does
+// instead with DYNARMIC_AB_INVERT=1, which cancels any difference between the phases themselves. The cycles
+// spent running JIT code and, with DYNARMIC_BLOCK_COUNTS=1, the block executions are recorded
+// per phase.
+enum AbFeature : unsigned {
+    AbReturnHash = 2,
+    AbLogicalHostFlags = 4,
+    AbDeadNZCV = 8,
+    AbIndirectSiteCache = 16,
+    AbInlineReturn = 32,
+    AbScalarsInXmm = 64,
+    AbFpCompareFlags = 128,
+};
+bool AbEnabled();
+unsigned AbCurrentPhase();
+// Whether code compiled for this phase (the experiment bit of its location) leaves the feature off.
+bool AbOff(AbFeature feature, bool experiment);
+void AbAddCycles(unsigned phase, unsigned long long cycles);
+
 }  // namespace Dynarmic::Common

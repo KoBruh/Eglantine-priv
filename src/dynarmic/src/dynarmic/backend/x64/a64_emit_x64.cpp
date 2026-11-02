@@ -105,7 +105,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
     FindFoldedAddresses(ctx);
     host_carry_is_borrow = false;
-    scalars_stay_in_xmm = true;
+    scalars_stay_in_xmm = !::Dynarmic::Common::AbOff(::Dynarmic::Common::AbScalarsInXmm, ctx.Location().Experiment());
 
     // Start emitting.
     code.align();
@@ -119,10 +119,12 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
             [&] {
                 // Leaf terminals as 10 + their index (none, ReturnToDispatch, LinkBlock,
                 // LinkBlockFast, PopRSBHint, FastDispatchHint); If, CheckBit and CheckHalt as 2-4.
+                // DYNARMIC_AB phase 1 blocks have 0x100 added.
+                const unsigned phase = A64::LocationDescriptor{block.Location()}.Experiment() ? 0x100 : 0;
                 if (const auto* leaf = std::get_if<IR::Term::LeafTerminal>(&block.terminal)) {
-                    return static_cast<unsigned>(10 + leaf->index());
+                    return static_cast<unsigned>(10 + leaf->index()) | phase;
                 }
-                return static_cast<unsigned>(block.terminal.index());
+                return static_cast<unsigned>(block.terminal.index()) | phase;
             }());
         code.mov(rax, reinterpret_cast<u64>(counter));
         code.inc(code.qword[rax]);
@@ -160,6 +162,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     // The host flags hold the compare fp_compare_for_terminal set them to, for the terminal.
     bool flags_hold_fp_compare = false;
     bool fpcr_may_change = false;
+    const bool logical_flags_off = ::Dynarmic::Common::AbOff(::Dynarmic::Common::AbLogicalHostFlags, ctx.Location().Experiment());
     // Nothing between the last instruction and a CheckBit terminal changes the host flags (cycle
     // counting would subtract).
     const IR::Inst* const check_bit_from_flags_at =
@@ -177,7 +180,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
         const bool nzcv_from_add_sub = opcode == IR::Opcode::GetNZCVFromOp && !inst.GetArg(0).IsImmediate() &&
                                        IsAddOrSub(inst.GetArg(0).GetInst()->GetOpcode());
         const bool nzcv_from_op = opcode == IR::Opcode::GetNZCVFromOp &&
-                                  (!nzcv_from_add_sub || inst.GetArg(0).GetInst() == previous_inst);
+                                  (nzcv_from_add_sub ? inst.GetArg(0).GetInst() == previous_inst : !logical_flags_off);
         // A select on the guest flags tests the host flags directly while they hold them.
         const bool select_on_host_flags = flags_hold_nzcv && (opcode == IR::Opcode::ConditionalSelect32 ||
                                                               opcode == IR::Opcode::ConditionalSelect64 ||
@@ -277,7 +280,7 @@ finish_this_inst:
     fp_compare_in_host_flags = flags_hold_fp_compare && !conf.enable_cycle_counting;
     // The guest NZCV was not stored: the terminal must find it in the host flags.
     ASSERT(!dropped_nzcv_store || nzcv_in_host_flags || fp_compare_in_host_flags);
-    fpcr_is_block_fpcr = !fpcr_may_change;
+    fpcr_is_block_fpcr = !fpcr_may_change && !::Dynarmic::Common::AbOff(::Dynarmic::Common::AbReturnHash, ctx.Location().Experiment());
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     nzcv_in_host_flags = false;
     fp_compare_in_host_flags = false;
@@ -344,7 +347,8 @@ void A64EmitX64::DropDeadNZCVStore(IR::Block& block) {
     }
     const auto from_op = std::prev(set_nzcv);
     if ((from_op->GetOpcode() == IR::Opcode::FPCompare32 || from_op->GetOpcode() == IR::Opcode::FPCompare64) &&
-        set_nzcv->GetArg(0).GetInst() == &*from_op && cond != IR::Cond::AL && cond != IR::Cond::NV) {
+        set_nzcv->GetArg(0).GetInst() == &*from_op && cond != IR::Cond::AL && cond != IR::Cond::NV &&
+        !::Dynarmic::Common::AbOff(::Dynarmic::Common::AbFpCompareFlags, A64::LocationDescriptor{block.Location()}.Experiment())) {
         fp_compare_for_terminal = &*from_op;
         fp_compare_cond = cond;
         if (block.nzcv_dead_at_exit) {
@@ -369,6 +373,9 @@ void A64EmitX64::DropDeadNZCVStore(IR::Block& block) {
             op->GetAssociatedPseudoOperation(IR::Opcode::GetOverflowFromOp)) {
             return;
         }
+    } else if (::Dynarmic::Common::AbOff(::Dynarmic::Common::AbLogicalHostFlags, A64::LocationDescriptor{block.Location()}.Experiment())) {
+        // GetNZCVFromOp tests the value itself: the flags are the NZCV only with that on.
+        return;
     }
     set_nzcv->Invalidate();
     block.instructions.erase(set_nzcv);
@@ -406,6 +413,9 @@ void A64EmitX64::GenTerminalHandlers() {
         code.and_(ebx, A64::LocationDescriptor::fpcr_mask);
         code.shl(rbx, A64::LocationDescriptor::fpcr_shift);
         code.or_(rbx, rcx);
+        if (::Dynarmic::Common::AbEnabled()) {
+            code.or_(rbx, qword[code.ABI_JIT_PTR + offsetof(A64JitState, experiment_bits)]);
+        }
     };
 
     Xbyak::Label fast_dispatch_cache_miss;
@@ -951,7 +961,8 @@ void EmitLocationHashOfStoredPC(A64EmitX64& e, IR::LocationDescriptor block_loca
 
 bool EmitTerminalImpl(A64EmitX64& e, IR::Term::PopRSBHint, IR::LocationDescriptor initial_location, bool is_single_step) {
     if (e.conf.HasOptimization(OptimizationFlag::ReturnStackBuffer) && !is_single_step) {
-        if (e.fpcr_is_block_fpcr && e.terminal_handler_fast_dispatch_hint_rbx) {
+        if (e.fpcr_is_block_fpcr && e.terminal_handler_fast_dispatch_hint_rbx &&
+            !::Dynarmic::Common::AbOff(::Dynarmic::Common::AbInlineReturn, A64::LocationDescriptor{initial_location}.Experiment())) {
             // The handler's work inline, so that each return has its own indirect jump.
             EmitLocationHashOfStoredPC(e, initial_location);
             e.code.cmp(dword[e.code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
@@ -978,7 +989,8 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::PopRSBHint, IR::LocationDescripto
 bool EmitTerminalImpl(A64EmitX64& e, IR::Term::FastDispatchHint, IR::LocationDescriptor initial_location, bool is_single_step) {
     if (!e.conf.HasOptimization(OptimizationFlag::FastDispatch) || is_single_step) {
         e.code.ReturnFromRunCode();
-    } else if (e.fpcr_is_block_fpcr) {
+    } else if (e.fpcr_is_block_fpcr &&
+               !::Dynarmic::Common::AbOff(::Dynarmic::Common::AbIndirectSiteCache, A64::LocationDescriptor{initial_location}.Experiment())) {
         // This branch's own entry: the block it went to last, else the table (which fills it).
         const auto& entry = e.site_caches.emplace_back();
         EmitLocationHashOfStoredPC(e, initial_location);
@@ -986,6 +998,9 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::FastDispatchHint, IR::LocationDes
         e.code.cmp(rbx, qword[rsi + offsetof(A64EmitX64::FastDispatchEntry, location_descriptor)]);
         e.code.jne(e.terminal_handler_fast_dispatch_site_miss);
         e.code.jmp(ptr[rsi + offsetof(A64EmitX64::FastDispatchEntry, code_ptr)]);
+    } else if (e.fpcr_is_block_fpcr) {
+        EmitLocationHashOfStoredPC(e, initial_location);
+        e.code.jmp(e.terminal_handler_fast_dispatch_hint_rbx);
     } else {
         e.code.jmp(e.terminal_handler_fast_dispatch_hint);
     }

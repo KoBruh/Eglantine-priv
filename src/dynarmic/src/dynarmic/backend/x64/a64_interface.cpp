@@ -10,6 +10,13 @@
 #include <memory>
 #include <mutex>
 
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall QueryThreadCycleTime(void* thread, unsigned long long* cycles);
+extern "C" __declspec(dllimport) void* __stdcall GetCurrentThread();
+#else
+#    include <x86intrin.h>
+#endif
+
 #include <boost/icl/interval_set.hpp>
 #include "common/assert.h"
 #include "dynarmic/common/fp/fpcr.h"
@@ -22,6 +29,7 @@
 #include "dynarmic/backend/x64/devirtualize.h"
 #include "dynarmic/backend/x64/jitstate_info.h"
 #include "dynarmic/common/atomic.h"
+#include "dynarmic/common/jit_map.h"
 #include "dynarmic/frontend/A64/translate/a64_translate.h"
 #include "dynarmic/interface/A64/a64.h"
 #include "dynarmic/ir/basic_block.h"
@@ -51,6 +59,17 @@ static std::function<void(BlockOfCode&)> GenRCP(const A64::UserConfig& conf) {
     };
 }
 
+// DYNARMIC_AB: the CPU cycles this thread has used (time it was not running stays out).
+static unsigned long long ThreadCycles() {
+#ifdef _WIN32
+    unsigned long long cycles = 0;
+    QueryThreadCycleTime(GetCurrentThread(), &cycles);
+    return cycles;
+#else
+    return __rdtsc();
+#endif
+}
+
 static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code) {
     return Optimization::PolyfillOptions{
         .sha256 = !code.HasHostFeature(HostFeature::SHA),
@@ -75,6 +94,12 @@ public:
         ASSERT(!is_executing);
         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
         is_executing = true;
+        const bool ab = Common::AbEnabled();
+        const unsigned ab_phase = ab ? Common::AbCurrentPhase() : 0;
+        if (ab) {
+            jit_state.experiment_bits = u64(ab_phase) << LocationDescriptor::experiment_bit;
+        }
+        const unsigned long long ab_start = ab ? ThreadCycles() : 0;
         // TODO: Check code alignment
         const CodePtr current_code_ptr = [this] {
             // RSB optimization
@@ -86,6 +111,9 @@ public:
             return CodePtr((uintptr_t(GetCurrentBlock()) + 15) & ~uintptr_t(15));
         }();
         const HaltReason hr = block_of_code.RunCode(&jit_state, current_code_ptr);
+        if (ab) {
+            Common::AbAddCycles(ab_phase, ThreadCycles() - ab_start);
+        }
         PerformRequestedCacheInvalidation(hr);
         is_executing = false;
         return hr;
