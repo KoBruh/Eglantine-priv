@@ -214,6 +214,11 @@ public:
     void AllocStackSpace(BlockOfCode& code, const size_t stack_space) noexcept;
     void ReleaseStackSpace(BlockOfCode& code, const size_t stack_space) noexcept;
 
+    /// While set, loading an immediate leaves the host flags alone (mov instead of xor for zero).
+    inline void SetPreserveHostFlags(bool preserve) noexcept {
+        preserve_host_flags = preserve;
+    }
+
     inline void EndOfAllocScope() noexcept {
         // After every IR instruction: skip the locations it left alone.
         for (auto& iter : hostloc_info)
@@ -266,6 +271,7 @@ private:
     std::bitset<32> gpr_order;
     std::bitset<32> xmm_order;
     size_t reserved_stack_space = 0;
+    bool preserve_host_flags = false;
 };
 
 }  // namespace Dynarmic::Backend::X64

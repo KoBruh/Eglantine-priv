@@ -154,6 +154,11 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
         ctx.check_bit_terminal_next = &inst == check_bit_from_flags_at;
         const bool nzcv_from_op = opcode == IR::Opcode::GetNZCVFromOp && ctx.reg_alloc.IsValueLive(&inst) &&
                                   inst.GetArg(0).GetInst() == previous_inst;
+        // A select on the guest flags tests the host flags directly while they hold them.
+        const bool select_on_host_flags = flags_hold_nzcv && (opcode == IR::Opcode::ConditionalSelect32 ||
+                                                              opcode == IR::Opcode::ConditionalSelect64 ||
+                                                              opcode == IR::Opcode::ConditionalSelectNZCV);
+        nzcv_in_host_flags = select_on_host_flags;
         // Call the relevant Emit* member function.
         switch (opcode) {
 #define OPCODE(name, type, ...) case IR::Opcode::name: goto opcode_branch;
@@ -185,7 +190,17 @@ finish_this_inst:
         case IR::Opcode::A64SetW:
         case IR::Opcode::A64SetX:
         case IR::Opcode::A64SetSP:
-            break;
+        case IR::Opcode::A64GetW:
+        case IR::Opcode::A64GetX:
+            break;  // plain moves
+        case IR::Opcode::ConditionalSelect32:
+        case IR::Opcode::ConditionalSelect64:
+        case IR::Opcode::ConditionalSelectNZCV:
+            if (!select_on_host_flags) {
+                flags_from = nullptr;
+                flags_hold_nzcv = false;
+            }
+            break;  // cmov keeps the flags (and a cmc for HI or LS is undone)
         default:
             flags_from = nullptr;
             flags_hold_nzcv = false;
@@ -198,6 +213,7 @@ finish_this_inst:
 #endif
     }
 
+    nzcv_in_host_flags = false;
     reg_alloc.AssertNoMoreUses();
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());

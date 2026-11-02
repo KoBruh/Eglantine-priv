@@ -136,15 +136,27 @@ void EmitX64::EmitTestBit(EmitContext& ctx, IR::Inst* inst) {
     ctx.reg_alloc.DefineValue(code, inst, result);
 }
 
-static void EmitConditionalSelect(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bitsize) {
+static void EmitConditionalSelect(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bitsize, bool nzcv_in_host_flags) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Reg32 nzcv = ctx.reg_alloc.ScratchGpr(code, HostLoc::RAX).cvt32();
+    const IR::Cond cond = args[0].GetImmediateCond();
+    // With the guest NZCV still in the host flags (as after LoadRequiredFlagsForCondFromRax, but
+    // with the carry not inverted for HI and LS), test them directly; loading the operands must not
+    // change the flags then (no xor for a zero).
+    const bool invert_carry = nzcv_in_host_flags && (cond == IR::Cond::HI || cond == IR::Cond::LS);
+    ctx.reg_alloc.SetPreserveHostFlags(nzcv_in_host_flags);
+    const Xbyak::Reg32 nzcv = nzcv_in_host_flags ? Xbyak::Reg32{} : ctx.reg_alloc.ScratchGpr(code, HostLoc::RAX).cvt32();
     const Xbyak::Reg then_ = ctx.reg_alloc.UseGpr(code, args[1]).changeBit(bitsize);
     const Xbyak::Reg else_ = ctx.reg_alloc.UseScratchGpr(code, args[2]).changeBit(bitsize);
+    ctx.reg_alloc.SetPreserveHostFlags(false);
 
-    code.mov(nzcv, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
-
-    code.LoadRequiredFlagsForCondFromRax(args[0].GetImmediateCond());
+    if (nzcv_in_host_flags) {
+        if (invert_carry) {
+            code.cmc();
+        }
+    } else {
+        code.mov(nzcv, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
+        code.LoadRequiredFlagsForCondFromRax(cond);
+    }
 
     switch (args[0].GetImmediateCond()) {
     case IR::Cond::EQ:
@@ -196,20 +208,23 @@ static void EmitConditionalSelect(BlockOfCode& code, EmitContext& ctx, IR::Inst*
     default:
         UNREACHABLE();
     }
+    if (invert_carry) {
+        code.cmc();  // the flags still hold the guest NZCV for what follows
+    }
 
     ctx.reg_alloc.DefineValue(code, inst, else_);
 }
 
 void EmitX64::EmitConditionalSelect32(EmitContext& ctx, IR::Inst* inst) {
-    EmitConditionalSelect(code, ctx, inst, 32);
+    EmitConditionalSelect(code, ctx, inst, 32, std::exchange(nzcv_in_host_flags, false));
 }
 
 void EmitX64::EmitConditionalSelect64(EmitContext& ctx, IR::Inst* inst) {
-    EmitConditionalSelect(code, ctx, inst, 64);
+    EmitConditionalSelect(code, ctx, inst, 64, std::exchange(nzcv_in_host_flags, false));
 }
 
 void EmitX64::EmitConditionalSelectNZCV(EmitContext& ctx, IR::Inst* inst) {
-    EmitConditionalSelect(code, ctx, inst, 32);
+    EmitConditionalSelect(code, ctx, inst, 32, std::exchange(nzcv_in_host_flags, false));
 }
 
 static void EmitExtractRegister(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bit_size) {
