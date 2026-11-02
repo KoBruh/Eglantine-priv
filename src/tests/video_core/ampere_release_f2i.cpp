@@ -108,10 +108,7 @@ TEST_CASE("Ampere unflushed truncating F2I rejects reserved fields and modes",
     invalid[0].words[0] |= 1U << 24;
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
     invalid = RegisterTruncation;
-    invalid[0].words[1] = 0x40000003;
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
-    invalid = RegisterTruncation;
-    invalid[0].words = {0x00027b05, 0x40400400, 0x0020f000, 0x000e3000};
+    invalid[0].words[1] = 0x00010003;
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
     invalid = RegisterTruncation;
     invalid[0].words = {0x00027d05, 5, 0x0020f000, 0x000e3000};

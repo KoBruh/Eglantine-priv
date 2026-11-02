@@ -307,7 +307,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                              op == 0x882 || op == 0x292 || op == 0x092 || op == 0x892 ||
                              op == 0x291 || op == 0x981 || op == 0xc13 || op == 0xc10 ||
                              op == 0xc23 || op == 0x526 || op == 0x2be || op == 0x8a4 ||
-                             op == 0xd05 || (op == 0x984 && instruction.Bits(91, 1)) ||
+                             op == 0xd05 || ((op == 0x984 || op == 0x988) && instruction.Bits(91, 1)) ||
                              op == 0x89c || op == 0x883 || op == 0x2a5 || op == 0xd06 ||
                              op == 0xd08 || op == 0x299 || op == 0xc09 ||
                              (op == 0x81c && instruction.Bits(67, 1)) || op == 0xf60 ||
@@ -1551,13 +1551,18 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             emit(0xf0a8000000000000ULL | predicate | (u64{1} << 43) |
                 (u64{1} << 44) | (u64{1} << 39) | (u64{7} << 39));
             break;
-        case 0x388: case 0x984: { // Shared memory load/store with scaled register offsets.
+        case 0x388: case 0x984: case 0x988: { // Shared memory load/store with scaled register offsets.
             const u32 width = insn.Bits(73, 3), stride = insn.Bits(78, 2);
-            // LDS [Ra.Xn + URb + offset]: bit 91 adds a uniform register (bits 32-39).
-            const bool uniform_base = opcode == 0x984 && insn.Bits(91, 1);
-            const u32 base_register = uniform_base ? uniform_register(insn.Bits(32, 8)) : 255U;
-            if (width > 6 || (insn.words[2] & ~(uniform_base ? 0x08000000U : 0U)) != ((width << 9) | (stride << 14)) ||
-                (opcode == 0x984 && !uniform_base && insn.Bits(32, 8)) || base_register == ~0U)
+            // LDS [Ra.Xn + URb + offset]: bit 91 adds a uniform register (bits 32-39). STS's form of
+            // it (0x988) keeps the data in bits 32-39 and takes the uniform register from bits 64-69.
+            const bool store = opcode != 0x984;
+            const bool uniform_base = opcode != 0x388 && insn.Bits(91, 1);
+            const u32 base_register =
+                uniform_base ? uniform_register(opcode == 0x988 ? insn.Bits(64, 6) : insn.Bits(32, 8)) : 255U;
+            const u32 mode_bits = (uniform_base ? 0x08000000U : 0U) | (opcode == 0x988 ? 0x3fU : 0U);
+            if (width > 6 || (insn.words[2] & ~mode_bits) != ((width << 9) | (stride << 14)) ||
+                (opcode == 0x984 && !uniform_base && insn.Bits(32, 8)) || (opcode == 0x988 && !uniform_base) ||
+                base_register == ~0U)
                 return fail(index, "native shared memory addressing mode");
             u32 address = insn.Bits(24, 8);
             if (stride && address != 255) {
@@ -1569,8 +1574,8 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 emit(0x5c10000000000000ULL | predicate | 250 | (u64{address} << 8) | (u64{base_register} << 20));
                 address = 250;
             }
-            const u32 data = opcode == 0x388 ? insn.Bits(32, 8) : static_cast<u32>(dest);
-            emit((opcode == 0x388 ? 0xef58000000000000ULL : 0xef48000000000000ULL) |
+            const u32 data = store ? insn.Bits(32, 8) : static_cast<u32>(dest);
+            emit((store ? 0xef58000000000000ULL : 0xef48000000000000ULL) |
                 predicate | data | (u64{address} << 8) | (u64{insn.Bits(40, 24)} << 20) |
                 (u64{width} << 48));
             break;
@@ -1904,18 +1909,19 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             const bool word = (mode & ~0x1c100U) == 0x00203000;
             const bool extended_word =
                 word && (insn.Bits(78, 2) == 2 || (insn.Bits(78, 2) == 3 && !insn.Bits(80, 1)));
-            if ((!half && !small && !byte && !word) ||
+            // Bits 62 and 63 are the source's abs and negate, applied before the conversion.
+            const bool absolute = insn.Bits(62, 1) != 0, negate = insn.Bits(63, 1) != 0;
+            if ((!half && !small && !byte && !word) || (half && (absolute || negate)) ||
                 ((byte || small || extended_word) &&
                  (insn.Bits(24, 8) || (insn.words[3] & 0xc00001ffU) ||
-                  (opcode == 0xb05 && insn.Bits(62, 2)) ||
                   insn.Bits(91, 1) != static_cast<u32>(opcode == 0xd05))) ||
-                (opcode != 0xb05 && (insn.words[1] & 0xffffff00U)) ||
+                (opcode != 0xb05 && (insn.words[1] & 0x3fffff00U)) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
                 return fail(index, "native float-to-integer conversion mode");
             }
             const bool is_signed = insn.Bits(72, 1);
-            u32 source = opcode == 0xb05 ? materialize(2, 0, 252, false, false)
-                       : opcode == 0xd05 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
+            u32 source = materialize(opcode == 0xb05 ? 2 : opcode == 0xd05 ? 3 : 0, insn.Bits(32, 8), 252,
+                                     absolute, negate);
             if (half) {
                 extract_half({source, 2, false, false}, 0, 252);
                 source = 252;
@@ -3315,8 +3321,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 emit(base(0x5c10000000000000ULL) | (u64{250} << 8) | (u64{253} << 20));
                 break;
             }
-            if (insn.Bits(72, 1) || insn.Bits(80, 1) ||
-                insn.Bits(81, 3) == 7 || insn.Bits(62, 2))
+            if (insn.Bits(72, 1) || insn.Bits(80, 1) || insn.Bits(62, 2))
                 return fail(index, "native constant LEA carry mode");
             const u32 b = operand(1, false);
             emit(base(0x5c18000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
