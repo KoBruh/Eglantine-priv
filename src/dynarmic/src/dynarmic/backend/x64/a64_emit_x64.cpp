@@ -90,6 +90,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
 
     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
     FindFoldedAddresses(ctx);
+    scalars_stay_in_xmm = true;
 
     // Start emitting.
     code.align();
@@ -230,6 +231,7 @@ finish_this_inst:
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     nzcv_in_host_flags = false;
     fpcr_is_block_fpcr = false;
+    scalars_stay_in_xmm = false;
     code.int3();
     for (auto& deferred_emit : ctx.deferred_emits)
         deferred_emit();

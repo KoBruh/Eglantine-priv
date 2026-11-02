@@ -1574,6 +1574,19 @@ void EmitX64::EmitZeroExtendWordToLong(EmitContext& ctx, IR::Inst* inst) {
         ctx.reg_alloc.DefineValue(code, inst, args[0]);
         return;
     }
+    if (scalars_stay_in_xmm && args[0].IsInXmm(ctx.reg_alloc) && code.HasHostFeature(HostFeature::SSE41)) {
+        // Lane 0 of a vector is in an XMM register with the other lanes cleared already
+        // (EmitVectorGetElement32).
+        if (!inst->GetArg(0).IsImmediate() && inst->GetArg(0).GetInst()->GetOpcode() == IR::Opcode::VectorGetElement32) {
+            ctx.reg_alloc.DefineValue(code, inst, args[0]);
+            return;
+        }
+        // A float result stays in its XMM register: lane 0 kept, the others cleared.
+        const Xbyak::Xmm result = ctx.reg_alloc.UseScratchXmm(code, args[0]);
+        code.insertps(result, result, 0b0000'1110);
+        ctx.reg_alloc.DefineValue(code, inst, result);
+        return;
+    }
     const Xbyak::Reg64 result = ctx.reg_alloc.UseScratchGpr(code, args[0]);
     code.mov(result.cvt32(), result.cvt32());  // x64 zeros upper 32 bits on a 32-bit move
     ctx.reg_alloc.DefineValue(code, inst, result);
@@ -1581,6 +1594,18 @@ void EmitX64::EmitZeroExtendWordToLong(EmitContext& ctx, IR::Inst* inst) {
 
 void EmitX64::EmitZeroExtendLongToQuad(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (scalars_stay_in_xmm && !inst->GetArg(0).IsImmediate() && args[0].IsInXmm(ctx.reg_alloc)) {
+        // Already in an XMM register with the upper quadword cleared (EmitZeroExtendWordToLong's
+        // insertps, EmitVectorGetElement64's movq): the same register.
+        switch (inst->GetArg(0).GetInst()->GetOpcode()) {
+        case IR::Opcode::ZeroExtendWordToLong:
+        case IR::Opcode::VectorGetElement64:
+            ctx.reg_alloc.DefineValue(code, inst, args[0]);
+            return;
+        default:
+            break;
+        }
+    }
     if (args[0].IsInGpr(ctx.reg_alloc)) {
         const Xbyak::Reg64 source = ctx.reg_alloc.UseGpr(code, args[0]);
         const Xbyak::Xmm result = ctx.reg_alloc.ScratchXmm(code);

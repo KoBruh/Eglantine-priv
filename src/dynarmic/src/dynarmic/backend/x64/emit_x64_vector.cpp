@@ -217,7 +217,14 @@ void EmitX64::EmitVectorGetElement32(EmitContext& ctx, IR::Inst* inst) {
     ASSERT(args[1].IsImmediate());
     const u8 index = args[1].GetImmediateU8();
 
-    // TODO: DefineValue directly on Argument for index == 0
+    if (index == 0 && scalars_stay_in_xmm && code.HasHostFeature(HostFeature::SSE41)) {
+        // Lane 0 with the others cleared: the value a move from a general register would give.
+        const Xbyak::Xmm source = ctx.reg_alloc.UseXmm(code, args[0]);
+        const Xbyak::Xmm dest = ctx.reg_alloc.ScratchXmm(code);
+        code.insertps(dest, source, 0b0000'1110);
+        ctx.reg_alloc.DefineValue(code, inst, dest);
+        return;
+    }
 
     const Xbyak::Reg32 dest = ctx.reg_alloc.ScratchGpr(code).cvt32();
 
@@ -238,8 +245,15 @@ void EmitX64::EmitVectorGetElement64(EmitContext& ctx, IR::Inst* inst) {
     ASSERT(args[1].IsImmediate());
     const u8 index = args[1].GetImmediateU8();
 
+    if (index == 0 && scalars_stay_in_xmm) {
+        // The low quadword with the upper one cleared (movq).
+        const Xbyak::Xmm source = ctx.reg_alloc.UseXmm(code, args[0]);
+        const Xbyak::Xmm dest = ctx.reg_alloc.ScratchXmm(code);
+        code.movq(dest, source);
+        ctx.reg_alloc.DefineValue(code, inst, dest);
+        return;
+    }
     if (index == 0) {
-        // TODO: DefineValue directly on Argument for index == 0
         const Xbyak::Reg64 dest = ctx.reg_alloc.ScratchGpr(code).cvt64();
         auto const source = ctx.reg_alloc.UseXmm(code, args[0]);
         code.movq(dest, source);

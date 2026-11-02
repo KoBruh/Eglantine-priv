@@ -154,6 +154,10 @@ public:
     // stored (an add or subtract materialized them and only register writes followed): EmitCond
     // then tests them directly instead of reloading cpsr_nzcv. EmitCond clears it.
     bool nzcv_in_host_flags = false;
+    // Element 0 of a vector and the zero-extension of a scalar held in an XMM register stay in
+    // XMM registers (their other lanes cleared), so that float operations do not take them through
+    // general registers. Set by the A64 emitter for its blocks.
+    bool scalars_stay_in_xmm = false;
     BlockDescriptor RegisterBlock(const IR::LocationDescriptor& location_descriptor, CodePtr entrypoint, size_t size);
     void PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, IR::LocationDescriptor target);
 
