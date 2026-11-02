@@ -262,3 +262,36 @@ TEST_CASE("A64: 64-bit add, subtract and compare with an immediate, and shifts",
         CHECK(jit.GetRegister(12) == ((x0 >> 4) & ((u64(1) << 59) - 1)));
     }
 }
+
+TEST_CASE("A64: calls, returns and indirect branches through the return stack buffer and fast dispatch", "[a64]") {
+    HaltingEnv env;
+    A64::Jit jit{NoCycleCountingConfig(env)};
+    env.jit = &jit;
+
+    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+    oaknut::Label add_one, double_it, done;
+    code.MOVZ(X0, 5);
+    code.BL(add_one);              // pushes the return onto the RSB
+    code.BL(double_it);
+    code.MOVZ(X3, 6 * 4);          // the address of done
+    code.BR(X3);                   // fast dispatch
+    code.MOVZ(X0, 0);              // skipped
+    code.l(done);
+    code.ADD(X1, X0, 100);
+    code.BRK(0);
+    code.l(add_one);
+    code.ADD(X0, X0, 1);
+    code.RET();
+    code.l(double_it);
+    code.ADD(X0, X0, X0);
+    code.RET();
+
+    for (int run = 0; run < 3; ++run) {  // the second run finds every block and RSB entry compiled
+        jit.SetPC(0);
+        jit.SetRegister(0, 0);
+        jit.SetRegister(1, 0);
+        CheckedRun([&]() { jit.Run(); });
+        CHECK(jit.GetRegister(0) == 12);
+        CHECK(jit.GetRegister(1) == 112);
+    }
+}
