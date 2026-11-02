@@ -534,6 +534,22 @@ void RegAlloc::Exchange(BlockOfCode& code, HostLoc a, HostLoc b) noexcept {
 void RegAlloc::MoveOutOfTheWay(BlockOfCode& code, HostLoc reg) noexcept {
     ASSERT(!LocInfo(reg).IsLocked());
     if (!LocInfo(reg).IsEmpty()) {
+        if (HostLocIsGPR(reg)) {
+            // An empty callee-saved register keeps the values without a store to the stack and a
+            // load at their next use (and a host call, which clears the caller-saved registers one
+            // after the other, does not have to move them again).
+            for (size_t i = 0; i < 16; ++i) {
+                const HostLoc candidate = HostLoc(i);
+                if (candidate == reg || !ABI_ALL_CALLEE_SAVE.test(i) || !gpr_order.test(i) ||
+                    candidate == HostLoc::RBP || candidate == HostLoc::RSP || (candidate >= HostLoc::R13 && candidate <= HostLoc::R15)) {
+                    continue;
+                }
+                if (LocInfo(candidate).IsEmpty()) {
+                    Move(code, candidate, reg);
+                    return;
+                }
+            }
+        }
         SpillRegister(code, reg);
     }
 }
