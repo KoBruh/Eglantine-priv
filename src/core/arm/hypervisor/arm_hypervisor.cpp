@@ -49,18 +49,6 @@ u32 ExceptionClass(u64 esr) {
     return static_cast<u32>((esr >> 26) & 0x3F);
 }
 
-// System registers (SCTLR_EL1 bits).
-constexpr u64 SctlrM = 1ULL << 0;
-constexpr u64 SctlrC = 1ULL << 2;
-constexpr u64 SctlrI = 1ULL << 12;
-constexpr u64 SctlrDze = 1ULL << 14;   // DC ZVA at EL0
-constexpr u64 SctlrUct = 1ULL << 15;   // CTR_EL0 at EL0
-constexpr u64 SctlrNTwi = 1ULL << 16;  // WFI not trapped
-constexpr u64 SctlrNTwe = 1ULL << 18;  // WFE not trapped
-constexpr u64 SctlrUci = 1ULL << 26;   // cache maintenance at EL0
-constexpr u64 SctlrRes1 = (1ULL << 11) | (1ULL << 20) | (1ULL << 22) | (1ULL << 23) |
-                          (1ULL << 28) | (1ULL << 29);
-
 u64 HostDczid() {
     static const u64 dczid = [] {
         u64 value;
@@ -91,22 +79,6 @@ s64 NowNs() {
 
 } // namespace
 
-struct ArmHypervisor::Vcpu {
-    hv_vcpu_t id{};
-    hv_vcpu_exit_t* exit{};
-    bool created{};
-    u64 ttbr0{~u64{0}};
-    u64 seen_tlb{};
-    u64 seen_code{};
-    bool force_flush{true};
-
-    ~Vcpu() {
-        if (created) {
-            hv_vcpu_destroy(id);
-        }
-    }
-};
-
 ArmHypervisor::ArmHypervisor(System& system, Kernel::KProcess* process, std::size_t core_index)
     : ArmInterface{true}, m_system{system}, m_process{process}, m_core_index{core_index} {
     const char* stats = std::getenv("EDEN_NX2_HYPERVISOR_STATS");
@@ -116,37 +88,6 @@ ArmHypervisor::ArmHypervisor(System& system, Kernel::KProcess* process, std::siz
 }
 
 ArmHypervisor::~ArmHypervisor() = default;
-
-ArmHypervisor::Vcpu& ArmHypervisor::CurrentVcpu() {
-    static thread_local Vcpu vcpu;
-    auto& vm = Hv::Vm::Get();
-    if (!vcpu.created) {
-        if (hv_vcpu_create(&vcpu.id, &vcpu.exit, nullptr) != HV_SUCCESS) {
-            LOG_CRITICAL(Core_ARM, "Hypervisor: hv_vcpu_create failed");
-            return vcpu;
-        }
-        vcpu.created = true;
-        hv_vcpu_set_trap_debug_exceptions(vcpu.id, false);
-        hv_vcpu_set_vtimer_mask(vcpu.id, true);
-    }
-    if (vcpu.ttbr0 != vm.Ttbr0()) {
-        // New address space (first run, or another application): configure the translation.
-        const u64 sctlr = SctlrRes1 | SctlrM | SctlrC | SctlrI | SctlrDze | SctlrUct | SctlrNTwi |
-                          SctlrNTwe | SctlrUci;
-        hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_MAIR_EL1, 0xFF);
-        hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_TCR_EL1, vm.Tcr());
-        hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_TTBR0_EL1, vm.Ttbr0());
-        hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_TTBR1_EL1, vm.Ttbr1());
-        hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_VBAR_EL1, Hv::Vm::StubVa);
-        hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_CPACR_EL1, 0b11ULL << 20); // FP/SIMD at EL0
-        hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_CNTKCTL_EL1, 0); // counter reads trap to EL1
-        hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_MDSCR_EL1, 0);
-        hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_SCTLR_EL1, sctlr);
-        vcpu.ttbr0 = vm.Ttbr0();
-        vcpu.force_flush = true;
-    }
-    return vcpu;
-}
 
 void ArmHypervisor::WriteState(Vcpu& vcpu) {
     const hv_vcpu_t id = vcpu.id;
@@ -213,6 +154,13 @@ void ArmHypervisor::EmulateSystemRegister(Vcpu& vcpu, u64 esr) {
     }
 }
 
+void ArmHypervisor::InvalidatePageOnEntry(Vcpu& vcpu, u64 page) {
+    if (vcpu.flush_page != ~u64{0} && vcpu.flush_page != page) {
+        vcpu.flush_all = true; // two pages: not worth an entry sequence of its own
+    }
+    vcpu.flush_page = page;
+}
+
 ArmHypervisor::Resolution ArmHypervisor::HandleDataAbort(Vcpu& vcpu, u64 esr, u64 far, u64 elr) {
     const bool is_write = ((esr >> 6) & 1) != 0;
     const u64 page = far & ~PageMask;
@@ -230,7 +178,7 @@ ArmHypervisor::Resolution ArmHypervisor::HandleDataAbort(Vcpu& vcpu, u64 esr, u6
         if (allowed) {
             // The tables already allow it: a stale TLB entry. Flush and retry, unless flushing
             // has not cleared it for this instruction (an alignment fault, say).
-            vcpu.force_flush = true;
+            InvalidatePageOnEntry(vcpu, page);
             if (elr == m_last_stale_pc) {
                 ++m_stale_repeats;
             } else {
@@ -245,7 +193,7 @@ ArmHypervisor::Resolution ArmHypervisor::HandleDataAbort(Vcpu& vcpu, u64 esr, u6
             // does. They unprotect the page; then the access is retried. A read must say so: with
             // reactive flushing the page is read-protected, and only a read copies the GPU's data back.
             m_process->GetMemory().InvalidateNCE(page, PageMask + 1, is_write);
-            vcpu.force_flush = true;
+            InvalidatePageOnEntry(vcpu, page);
             if (m_fault_repeats > 1000) {
                 LOG_ERROR(Core_ARM, "Hypervisor: page {:#x} stays protected, unprotecting it", page);
                 vm.MarkCached(page, PageMask + 1, false, false);
@@ -657,7 +605,7 @@ ArmHypervisor::Resolution ArmHypervisor::HandleLowerSync(Vcpu& vcpu, u64 esr, u6
     case EcInstructionAbortLower: {
         const auto state = Hv::Vm::Get().Query(far);
         if (state.mapped && state.executable) {
-            vcpu.force_flush = true;
+            InvalidatePageOnEntry(vcpu, far & ~PageMask);
             return Resolution::Continue;
         }
         LOG_CRITICAL(Core_ARM, "Hypervisor: instruction fetch fault at {:#x} (esr {:#x})", far,
@@ -705,6 +653,13 @@ void ArmHypervisor::CountAndReport(u64 run_ns) {
              per_s(m_stats.interrupt), per_s(m_stats.cancel), per_s(m_stats.vtimer),
              per_s(m_stats.other), per_s(m_stats.runs), per_s(m_stats.emulated),
              per_s(m_stats.skipped));
+    if (m_core_index == 0) {
+        const auto inv = Hv::Vm::Get().TakeInvalidationStats();
+        LOG_INFO(Core_ARM,
+                 "Hypervisor VM: {} TLB invalidations/s ({} pages/s one by one, {} whole TLB, {} "
+                 "through kicks)",
+                 per_s(inv.calls), per_s(inv.pages), per_s(inv.full), per_s(inv.fallback));
+    }
     m_stats = Stats{};
     m_stats.window_start_ns = now;
 }
@@ -718,18 +673,19 @@ HaltReason ArmHypervisor::RunThread(Kernel::KThread* thread) {
     }
 
     auto& vm = Hv::Vm::Get();
-    Vcpu& vcpu = CurrentVcpu();
-    if (!vcpu.created) {
+    Hv::Vcpu* const current = vm.CurrentVcpu();
+    if (current == nullptr || !vm.ClaimSlot(*current)) {
+        LOG_CRITICAL(Core_ARM, "Hypervisor: core {} has no vCPU", m_core_index);
         return HaltReason::PrefetchAbort;
     }
+    Vcpu& vcpu = *current;
     const hv_vcpu_t id = vcpu.id;
     WriteState(vcpu);
 
+    vm.SetCoreVcpu(m_core_index, id);
     m_running_vcpu.store(id, std::memory_order_relaxed);
     m_running.store(true, std::memory_order_seq_cst);
-    vm.SetRunning(m_core_index, id);
     SCOPE_EXIT {
-        vm.ClearRunning(m_core_index);
         m_running.store(false, std::memory_order_release);
     };
     if (m_break.exchange(false)) {
@@ -743,23 +699,39 @@ HaltReason ArmHypervisor::RunThread(Kernel::KThread* thread) {
                 ReadState(vcpu);
                 return HaltReason::BreakLoop;
             }
-            // Enter through the EL1 stub, flushing the TLB and I-cache if mappings lost
-            // permissions or code changed since this vCPU last did.
+            // Enter through the EL1 stub, which invalidates what this vCPU must not use any more:
+            // a page whose fault said its TLB entry was stale, or everything when a thread
+            // without a vCPU changed mappings (TlbGeneration) or code changed (CodeGeneration).
+            // In guest code from here on, for InvalidateTranslations' fallback: the generations
+            // are read after this is published.
+            vm.EnterGuest(m_core_index);
             const u64 tlb = vm.TlbGeneration();
             const u64 code = vm.CodeGeneration();
-            const bool flush = vcpu.force_flush || vcpu.seen_tlb != tlb || vcpu.seen_code != code;
+            u64 entry = Hv::Vm::EntryPlainVa;
+            if (vcpu.flush_all || vcpu.seen_code != code) {
+                entry = Hv::Vm::EntryFlushVa;
+            } else if (vcpu.seen_tlb != tlb) {
+                entry = Hv::Vm::EntryTlbVa;
+            } else if (vcpu.flush_page != ~u64{0}) {
+                entry = Hv::Vm::EntryPageVa;
+                hv_vcpu_set_sys_reg(id, HV_SYS_REG_TPIDR_EL1, vcpu.flush_page >> 12);
+            }
             vcpu.seen_tlb = tlb;
             vcpu.seen_code = code;
-            vcpu.force_flush = false;
+            vcpu.flush_all = false;
+            vcpu.flush_page = ~u64{0};
             hv_vcpu_set_sys_reg(id, HV_SYS_REG_ELR_EL1, m_ctx.pc);
             hv_vcpu_set_sys_reg(id, HV_SYS_REG_SPSR_EL1, (m_ctx.pstate & NzcvMask) | SpsrEl0Masked);
             hv_vcpu_set_reg(id, HV_REG_CPSR, CpsrEl1hMasked);
-            hv_vcpu_set_reg(id, HV_REG_PC, flush ? Hv::Vm::EntryFlushVa : Hv::Vm::EntryPlainVa);
+            hv_vcpu_set_reg(id, HV_REG_PC, entry);
+        } else {
+            vm.EnterGuest(m_core_index);
         }
         resume_as_is = false;
 
         const s64 run_start = m_stats_enabled ? NowNs() : 0;
         const hv_return_t run_result = hv_vcpu_run(id);
+        vm.LeaveGuest(m_core_index);
         if (m_stats_enabled) {
             CountAndReport(static_cast<u64>(NowNs() - run_start));
         }
@@ -783,8 +755,17 @@ HaltReason ArmHypervisor::RunThread(Kernel::KThread* thread) {
             } else if (pc < Hv::Vm::EntryFlushVa) {
                 // Stopped in a vector before its HVC: let it deliver the exception.
                 resume_as_is = true;
+            } else {
+                // Stopped in an entry sequence: enter again (m_ctx still holds the target), and
+                // invalidate everything, as the invalidation it was doing may not have happened.
+                // The page entry keeps x0 on the EL1 stack between its first and last load.
+                if (pc >= Hv::Vm::EntryPageVa + 4 && pc <= Hv::Vm::EntryPageVa + 12) {
+                    const u64* slot = vm.SlotHost(vcpu.slot);
+                    hv_vcpu_set_reg(id, HV_REG_X0, slot[Hv::Vm::SlotSize / 8 - 2]);
+                }
+                hv_vcpu_set_sys_reg(id, HV_SYS_REG_SP_EL1, Hv::Vm::SlotStackTop(vcpu.slot));
+                vcpu.flush_all = true;
             }
-            // Otherwise it stopped in the entry sequence: m_ctx still holds the target.
             continue;
         }
         case HV_EXIT_REASON_VTIMER_ACTIVATED:

@@ -7,6 +7,7 @@
 #include <atomic>
 
 #include "core/arm/arm_interface.h"
+#include "core/arm/hypervisor/hv_vm.h"
 
 namespace Kernel {
 class KProcess;
@@ -68,13 +69,13 @@ private:
         u64 tpidrro_el0{};
     };
 
-    struct Vcpu;
-    Vcpu& CurrentVcpu();
+    using Vcpu = Hv::Vcpu;
     void WriteState(Vcpu& vcpu);
     void ReadState(Vcpu& vcpu);
     enum class Resolution { Continue, Return };
     Resolution HandleLowerSync(Vcpu& vcpu, u64 esr, u64 far, u64 elr, u64 spsr, HaltReason& out);
     Resolution HandleDataAbort(Vcpu& vcpu, u64 esr, u64 far, u64 elr);
+    void InvalidatePageOnEntry(Vcpu& vcpu, u64 page);
     void PerformFaultingAccess(Vcpu& vcpu, u64 esr, u64 far, u64 elr, bool mapped);
     bool PerformExclusiveOrAtomic(u32 insn);
     bool PerformSimdStructure(u32 insn);
