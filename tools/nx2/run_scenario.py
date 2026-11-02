@@ -46,21 +46,27 @@ def default_config():
     portable = DEFAULT_EXE.parent / "user" / "config" / "sdl2-config.ini"
     if portable.exists():
         return portable
-    base = pathlib.Path(os.environ.get("APPDATA", pathlib.Path.home() / ".config"))
-    return base / "eden" / "config" / "sdl2-config.ini"
+    if os.name == "nt":
+        base = pathlib.Path(os.environ.get("APPDATA", pathlib.Path.home() / ".config"))
+        return base / "eden" / "config" / "sdl2-config.ini"
+    # Elsewhere the config is in XDG_CONFIG_HOME/eden, with no config subfolder.
+    base = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or pathlib.Path.home() / ".config")
+    return base / "eden" / "sdl2-config.ini"
 
 
 def key_map(config_path):
     """Switch button name -> SDL scancode, from player 0 of sdl2-config.ini."""
     keys = {}
     text = config_path.read_text(encoding="utf-8", errors="replace")
-    for name, code in re.findall(r'^player_0_button_(\w+)="engine:keyboard,code:(\d+)', text, re.M):
+    # Newer configs put other parameters (toggle:0) between the engine and the code.
+    for name, code in re.findall(r'^player_0_button_(\w+)="engine:keyboard,(?:\w+:[^,"]*,)*?code:(\d+)', text, re.M):
         if code != "0":
             keys[name.upper()] = int(code)
     for stick, prefix in (("lstick", "LS"), ("rstick", "RS")):
         match = re.search(rf'^player_0_{stick}="([^"]*)"', text, re.M)
         if match:
-            for direction, code in re.findall(r"(up|down|left|right):engine\$0keyboard\$1code\$0(\d+)", match.group(1)):
+            for direction, code in re.findall(r"(up|down|left|right):engine\$0keyboard(?:\$1\w+\$0[^$,]*)*?\$1code\$0(\d+)",
+                                              match.group(1)):
                 keys[f"{prefix}_{direction.upper()}"] = int(code)
     return keys
 
