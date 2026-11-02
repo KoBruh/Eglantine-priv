@@ -25,6 +25,7 @@
 #include "core/cpu_manager.h"
 #include "core/debugger/debugger.h"
 #include "core/device_memory.h"
+#include "core/hle/kernel/board/nintendo/nx/k_system_control.h"
 #include "core/file_sys/fs_filesystem.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/program_metadata.h"
@@ -153,7 +154,7 @@ struct System::Impl {
         device_memory.emplace();
 
         is_multicore = Settings::values.use_multi_core.GetValue();
-        extended_memory_layout = Settings::values.memory_layout_mode.GetValue() != Settings::MemoryLayout::Memory_4Gb;
+        memory_size = Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize();
 
         core_timing.SetMulticore(is_multicore);
         core_timing.Initialize([&system]() { system.RegisterHostThread(); });
@@ -177,21 +178,18 @@ struct System::Impl {
     }
 
     void ReinitializeIfNecessary(System& system) {
+        // Device memory is as large as the memory layout: any change of layout needs it again
+        // (Switch 2 titles switch to 12 GiB at load; from 8 GiB the kernel mapped past its end).
         const bool must_reinitialize =
             !device_memory.has_value() ||
             is_multicore != Settings::values.use_multi_core.GetValue() ||
-            extended_memory_layout != (Settings::values.memory_layout_mode.GetValue() !=
-                                       Settings::MemoryLayout::Memory_4Gb);
+            memory_size != Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize();
 
         if (!must_reinitialize) {
             return;
         }
 
         LOG_DEBUG(Kernel, "Re-initializing");
-
-        is_multicore = Settings::values.use_multi_core.GetValue();
-        extended_memory_layout =
-            Settings::values.memory_layout_mode.GetValue() != Settings::MemoryLayout::Memory_4Gb;
 
         Initialize(system);
     }
@@ -581,7 +579,7 @@ struct System::Impl {
     std::atomic_bool is_shutting_down{};
     std::atomic_bool is_powered_on{};
     bool is_multicore : 1 = false;
-    bool extended_memory_layout : 1 = false;
+    size_t memory_size{};
     bool exit_locked : 1 = false;
     bool exit_requested : 1 = false;
     bool nvdec_active : 1 = false;
