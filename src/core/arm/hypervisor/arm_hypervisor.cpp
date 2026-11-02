@@ -7,13 +7,16 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <numeric>
 #include <unordered_map>
 
 #include <Hypervisor/Hypervisor.h>
+#include <mach/mach_time.h>
 
 #include "common/cpu_features.h"
 #include "common/logging.h"
 #include "common/scope_exit.h"
+#include "common/settings.h"
 #include "core/arm/hypervisor/arm_hypervisor.h"
 #include "core/arm/hypervisor/hv_vm.h"
 #include "core/arm/nce/interpreter_visitor.h"
@@ -69,6 +72,59 @@ bool ReportFaultingAccess(u64 page) {
         return total % 65536 == 0;
     }
     return counts[page]++ < 4;
+}
+
+/// mach_continuous_time() - mach_absolute_time(): the time the host has slept since it booted.
+/// steady_clock (and so Core::Timing) counts it; mach_absolute_time, which the guest's CNTVCT
+/// follows, does not.
+u64 HostSleepTicks() {
+    while (true) {
+        const u64 before = mach_absolute_time();
+        const u64 continuous = mach_continuous_time();
+        if (mach_absolute_time() == before) {
+            return continuous - before; // both read the counter at the same tick
+        }
+    }
+}
+
+/// How host counter ticks become steady_clock nanoseconds, if the fast counter path can serve
+/// guest counter reads: steady_clock must be floor(mach_continuous_time * numer / denom), which
+/// is checked once against the clock itself.
+struct HostTimebase {
+    bool usable;
+    u64 numer;
+    u64 denom;
+};
+const HostTimebase& GetHostTimebase() {
+    static const HostTimebase timebase = [] {
+        mach_timebase_info_data_t info{};
+        if (mach_timebase_info(&info) != KERN_SUCCESS || info.numer == 0 || info.denom == 0) {
+            return HostTimebase{};
+        }
+        const auto to_ns = [&](u64 ticks) {
+            return (ticks / info.denom) * info.numer + ((ticks % info.denom) * info.numer) / info.denom;
+        };
+        int exact = 0;
+        for (int i = 0; i < 20000 && exact < 1000; ++i) {
+            const u64 before = mach_continuous_time();
+            const auto ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                 std::chrono::steady_clock::now().time_since_epoch())
+                                                 .count());
+            if (mach_continuous_time() != before) {
+                continue;
+            }
+            if (ns != to_ns(before)) {
+                LOG_WARNING(Core_ARM,
+                            "Hypervisor: steady_clock ({} ns) is not the host counter ({} ticks) "
+                            "times {}/{}; counter reads will exit to the host",
+                            ns, before, info.numer, info.denom);
+                return HostTimebase{};
+            }
+            ++exact;
+        }
+        return HostTimebase{exact > 0, info.numer, info.denom};
+    }();
+    return timebase;
 }
 
 s64 NowNs() {
@@ -152,6 +208,114 @@ void ArmHypervisor::EmulateSystemRegister(Vcpu& vcpu, u64 esr) {
     if (is_read && rt != 31) {
         hv_vcpu_set_reg(vcpu.id, static_cast<hv_reg_t>(HV_REG_X0 + rt), value);
     }
+}
+
+void ArmHypervisor::UpdateCounter(Vcpu& vcpu) {
+    // Counter reads are served inside the VM when the guest clock is the host clock scaled to
+    // the guest frequency, exactly as Core::Timing computes it (CoreTiming::GetClockTicks). The
+    // CPU clock setting (fast_cpu_time) and sync_core_speed scale it further: then they exit to
+    // the host, which applies those. Checked each time a core enters, so a change takes effect at
+    // the next SVC or interrupt.
+    const auto& timebase = GetHostTimebase();
+    const u64 frequency = Common::g_wall_clock.GetGuestCNTFRQ();
+    const bool enabled = timebase.usable && frequency != 0 &&
+                         Settings::values.cpu_clock.GetValue() == Settings::CpuClock::Normal &&
+                         !Settings::values.sync_core_speed.GetValue();
+    u64* slot = Hv::Vm::Get().SlotHost(vcpu.slot);
+    using Slot = Hv::Vm::CounterSlot;
+    if (frequency != m_counter_frequency) {
+        m_counter_checked = false;
+        const u64 divisor = std::gcd(frequency, u64{1'000'000'000});
+        slot[Slot::Frequency] = frequency;
+        slot[Slot::TicksToNsNum] = timebase.numer;
+        slot[Slot::TicksToNsDen] = timebase.denom == 0 ? 1 : timebase.denom;
+        slot[Slot::NsToGuestNum] = frequency / divisor;
+        slot[Slot::NsToGuestDen] = 1'000'000'000 / divisor;
+        m_counter_frequency = frequency;
+    }
+
+    // CNTVCT = mach_absolute_time() - offset; the guest's must be mach_continuous_time(), like
+    // steady_clock: the offset is minus the time the host has slept, kept up to date after a sleep.
+    // (The two reads are not taken at the same tick, so a difference within a millisecond is
+    // noise; a sleep moves it by much more.)
+    constexpr u64 Tolerance = 24'000; // ticks: 1 ms at 24 MHz
+    const u64 sleep = mach_continuous_time() - mach_absolute_time();
+    if (!m_vtimer_set || sleep - m_sleep_ticks + Tolerance > 2 * Tolerance) {
+        m_sleep_ticks = HostSleepTicks();
+        hv_vcpu_set_vtimer_offset(vcpu.id, u64{0} - m_sleep_ticks);
+        m_vtimer_set = true;
+        m_counter_checked = false;
+    }
+
+    // Check once (and after a sleep) that the guest's counter is Core::Timing's: read CNTVCT in the
+    // VM between two reads of the emulator's clock and scale it as the handler does.
+    if (enabled && !m_counter_checked) {
+        m_counter_checked = true;
+        auto& timing = m_system.CoreTiming();
+        const u64 before = timing.GetClockTicks();
+        hv_vcpu_set_reg(vcpu.id, HV_REG_CPSR, CpsrEl1hMasked);
+        hv_vcpu_set_reg(vcpu.id, HV_REG_PC, Hv::Vm::CounterProbeVa);
+        u64 cntvct = 0;
+        bool read = false;
+        for (int attempt = 0; attempt < 8 && !read; ++attempt) {
+            read = hv_vcpu_run(vcpu.id) == HV_SUCCESS &&
+                   vcpu.exit->reason == HV_EXIT_REASON_EXCEPTION &&
+                   (vcpu.exit->exception.syndrome & 0xFFFF) == Hv::Vm::CounterProbeHvc;
+            hv_vcpu_set_reg(vcpu.id, HV_REG_PC, Hv::Vm::CounterProbeVa);
+        }
+        hv_vcpu_get_reg(vcpu.id, HV_REG_X0, &cntvct);
+        const u64 after = timing.GetClockTicks();
+        const auto scale = [](u64 value, u64 num, u64 den) {
+            return (value / den) * num + ((value % den) * num) / den;
+        };
+        const u64 guest = scale(scale(cntvct, slot[Slot::TicksToNsNum], slot[Slot::TicksToNsDen]),
+                                slot[Slot::NsToGuestNum], slot[Slot::NsToGuestDen]);
+        if (!read || guest < before || guest > after) {
+            LOG_WARNING(Core_ARM,
+                        "Hypervisor: core {}: the guest counter would read {} between the "
+                        "emulator's {} and {}; counter reads will exit to the host",
+                        m_core_index, guest, before, after);
+            m_counter_broken = true;
+        } else if (m_core_index == 0) {
+            LOG_INFO(Core_ARM,
+                     "Hypervisor: counter reads served in the VM: CNTVCT * {}/{} ns * {}/{} "
+                     "({} Hz), host slept {} ticks",
+                     slot[Slot::TicksToNsNum], slot[Slot::TicksToNsDen],
+                     slot[Slot::NsToGuestNum], slot[Slot::NsToGuestDen], frequency,
+                     m_sleep_ticks);
+        }
+    }
+    slot[Slot::Enabled] = enabled && !m_counter_broken ? 1 : 0;
+}
+
+void ArmHypervisor::StoppedInCounterHandler(Vcpu& vcpu, u64 pc, bool& resume_as_is) {
+    // A kick stopped the vCPU in the EL1 handler of synchronous exceptions. If it is serving a
+    // counter read it would return to guest code without exiting and the kick would be lost, so
+    // roll the read back: the guest is at ELR_EL1 (the MRS, or past it once the handler moved
+    // ELR_EL1 on, by which point the register is written), with x0-x5 in the slot once saved.
+    // Anything else ends in HVC #8 shortly: let it run there.
+    using Slot = Hv::Vm::CounterSlot;
+    const u64* slot = Hv::Vm::Get().SlotHost(vcpu.slot);
+    u64 esr{};
+    hv_vcpu_get_sys_reg(vcpu.id, HV_SYS_REG_ESR_EL1, &esr);
+    const u32 iss = static_cast<u32>(esr & 0x1FF'FFFF);
+    const bool counter_read = ExceptionClass(esr) == EcSysReg && (iss & 0x1F1'FC1F) == 0x30'F801 &&
+                              ((iss >> 17) & 7) <= 2;
+    if (!counter_read || slot[Slot::Enabled] == 0) {
+        resume_as_is = true;
+        return;
+    }
+    u64 elr{}, spsr{};
+    hv_vcpu_get_sys_reg(vcpu.id, HV_SYS_REG_ELR_EL1, &elr);
+    hv_vcpu_get_sys_reg(vcpu.id, HV_SYS_REG_SPSR_EL1, &spsr);
+    m_ctx.pc = elr;
+    m_ctx.pstate = static_cast<u32>(spsr & NzcvMask);
+    if (pc >= Hv::Vm::CounterHandlerVa + Hv::Vm::CounterSavedOffset) {
+        for (u32 i = 0; i < 6; ++i) {
+            hv_vcpu_set_reg(vcpu.id, static_cast<hv_reg_t>(HV_REG_X0 + i), slot[Slot::SavedX0 + i]);
+        }
+    }
+    hv_vcpu_set_sys_reg(vcpu.id, HV_SYS_REG_SP_EL1, Hv::Vm::SlotStackTop(vcpu.slot));
 }
 
 void ArmHypervisor::InvalidatePageOnEntry(Vcpu& vcpu, u64 page) {
@@ -641,18 +805,24 @@ void ArmHypervisor::CountAndReport(u64 run_ns) {
         return;
     }
     const double seconds = static_cast<double>(window) / 1e9;
+    u64 served = 0;
+    if (Hv::Vcpu* vcpu = Hv::Vm::Get().CurrentVcpu(); vcpu != nullptr && vcpu->slot != ~0U) {
+        u64* slot = Hv::Vm::Get().SlotHost(vcpu->slot);
+        served = slot[Hv::Vm::CounterSlot::Served];
+        slot[Hv::Vm::CounterSlot::Served] = 0;
+    }
     const auto per_s = [seconds](u64 n) { return static_cast<u64>(static_cast<double>(n) / seconds); };
     const u64 exits = m_stats.svc + m_stats.counter + m_stats.data_abort + m_stats.interrupt +
                       m_stats.cancel + m_stats.vtimer + m_stats.other;
     LOG_INFO(Core_ARM,
              "Hypervisor core {}: native {:.0f}% of the time, {} exits/s (SVC {}, counter {}, "
              "data abort {}, interrupt {}, kick {}, vtimer {}, other {}), {} runs/s, "
-             "{} emulated accesses/s ({} skipped)",
+             "{} emulated accesses/s ({} skipped), {} counter reads/s served in the VM",
              m_core_index, 100.0 * static_cast<double>(m_stats.native_ns) / static_cast<double>(window),
              per_s(exits), per_s(m_stats.svc), per_s(m_stats.counter), per_s(m_stats.data_abort),
              per_s(m_stats.interrupt), per_s(m_stats.cancel), per_s(m_stats.vtimer),
              per_s(m_stats.other), per_s(m_stats.runs), per_s(m_stats.emulated),
-             per_s(m_stats.skipped));
+             per_s(m_stats.skipped), per_s(served));
     if (m_core_index == 0) {
         const auto inv = Hv::Vm::Get().TakeInvalidationStats();
         LOG_INFO(Core_ARM,
@@ -680,6 +850,7 @@ HaltReason ArmHypervisor::RunThread(Kernel::KThread* thread) {
     }
     Vcpu& vcpu = *current;
     const hv_vcpu_t id = vcpu.id;
+    UpdateCounter(vcpu); // before WriteState: it may run a probe on the vCPU
     WriteState(vcpu);
 
     vm.SetCoreVcpu(m_core_index, id);
@@ -752,6 +923,9 @@ HaltReason ArmHypervisor::RunThread(Kernel::KThread* thread) {
                 // Stopped in guest code.
                 m_ctx.pc = pc;
                 m_ctx.pstate = static_cast<u32>(cpsr & NzcvMask);
+            } else if (pc == Hv::Vm::LowerSyncVectorVa ||
+                       (pc >= Hv::Vm::CounterHandlerVa && pc < vm.CounterHandlerEndVa())) {
+                StoppedInCounterHandler(vcpu, pc, resume_as_is);
             } else if (pc < Hv::Vm::EntryFlushVa) {
                 // Stopped in a vector before its HVC: let it deliver the exception.
                 resume_as_is = true;

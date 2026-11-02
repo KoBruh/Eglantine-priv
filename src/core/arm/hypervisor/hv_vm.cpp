@@ -100,6 +100,8 @@ extern "C" char eden_hv_entry_plain[], eden_hv_entry_plain_end[];
 extern "C" char eden_hv_entry_page[], eden_hv_entry_page_end[];
 extern "C" char eden_hv_entry_tlb[], eden_hv_entry_tlb_end[];
 extern "C" char eden_hv_invalidate[], eden_hv_invalidate_end[];
+extern "C" char eden_hv_counter[], eden_hv_counter_saved[], eden_hv_counter_end[];
+extern "C" char eden_hv_counter_probe[], eden_hv_counter_probe_end[];
 asm(R"(
 .text
 .p2align 2
@@ -163,6 +165,96 @@ _eden_hv_invalidate:
 4:  isb
     hvc  #0x20
 _eden_hv_invalidate_end:
+
+; The counter as guest code sees it, for a check from the host (x0).
+.global _eden_hv_counter_probe
+.global _eden_hv_counter_probe_end
+_eden_hv_counter_probe:
+    isb
+    mrs  x0, cntvct_el0
+    hvc  #0x21
+_eden_hv_counter_probe_end:
+
+; Synchronous exceptions from guest code (the lower-EL vector branches here). Counter reads
+; (MRS of CNTFRQ_EL0, CNTPCT_EL0 or CNTVCT_EL0, which CNTKCTL_EL1 traps) are served here without
+; leaving the VM; anything else goes to the host as before (HVC #8). SP_EL1 is the top of the
+; vCPU's slot, which holds the parameters (see Vm::CounterSlot):
+;   value = floor(floor(CNTVCT * a / b) * c / d)
+; CNTVCT runs at the host frequency on mach_continuous_time's base (the vtimer offset sees to
+; that), a/b turns its ticks into nanoseconds as steady_clock does, c/d is the guest frequency over
+; 1e9: exactly what Core::Timing returns (GetClockTicks: MultiplyAndDivide64(ns, freq, 1e9)).
+; Each step is split (x = q*b + r) so nothing overflows. Only x0-x5 are used, saved on the slot's
+; stack; NZCV changes are undone by the ERET (SPSR_EL1).
+.global _eden_hv_counter
+.global _eden_hv_counter_saved
+.global _eden_hv_counter_end
+_eden_hv_counter:
+    stp  x0, x1, [sp, #-48]!
+    stp  x2, x3, [sp, #16]
+    stp  x4, x5, [sp, #32]
+_eden_hv_counter_saved:
+    mrs  x0, esr_el1
+    ubfx x1, x0, #26, #6
+    cmp  x1, #0x18                  ; MSR/MRS trap
+    b.ne 9f
+    mov  x1, #0xFC1F                ; ISS without Rt and Op2
+    movk x1, #0x1F1, lsl #16
+    and  x1, x0, x1
+    mov  x2, #0xF801                ; MRS S3_3_C14_C0_x
+    movk x2, #0x30, lsl #16
+    cmp  x1, x2
+    b.ne 9f
+    ldur x1, [sp, #-80]             ; enabled
+    cbz  x1, 9f
+    ubfx x4, x0, #5, #5             ; Rt
+    ubfx x3, x0, #17, #3            ; Op2: 0 CNTFRQ, 1 CNTPCT, 2 CNTVCT
+    cbz  x3, 2f
+    cmp  x3, #2
+    b.hi 9f
+    mrs  x0, cntvct_el0
+    ldp  x1, x2, [sp, #-64]         ; a, b
+    udiv x3, x0, x2
+    msub x0, x3, x2, x0
+    mul  x0, x0, x1
+    udiv x0, x0, x2
+    madd x0, x3, x1, x0             ; nanoseconds
+    ldp  x1, x2, [sp, #-48]         ; c, d
+    udiv x3, x0, x2
+    msub x0, x3, x2, x0
+    mul  x0, x0, x1
+    udiv x0, x0, x2
+    madd x0, x3, x1, x0             ; guest ticks
+    b    3f
+2:  ldur x0, [sp, #-72]             ; guest frequency
+3:  ldur x1, [sp, #-32]             ; reads served
+    add  x1, x1, #1
+    stur x1, [sp, #-32]
+    cmp  x4, #31                    ; XZR
+    b.eq 5f
+    cmp  x4, #5
+    b.hi 4f
+    str  x0, [sp, x4, lsl #3]       ; x0-x5: into the saved copy
+    b    5f
+4:  adr  x1, 6f
+    add  x1, x1, x4, lsl #3
+    br   x1
+5:  mrs  x1, elr_el1
+    add  x1, x1, #4
+    msr  elr_el1, x1
+    ldp  x4, x5, [sp, #32]
+    ldp  x2, x3, [sp, #16]
+    ldp  x0, x1, [sp], #48
+    eret
+6:
+    .irp n, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30
+    mov  x\n, x0
+    b    5b
+    .endr
+9:  ldp  x4, x5, [sp, #32]
+    ldp  x2, x3, [sp, #16]
+    ldp  x0, x1, [sp], #48
+    hvc  #8
+_eden_hv_counter_end:
 )");
 
 namespace {
@@ -339,6 +431,17 @@ bool Vm::Attach(Common::PageTable& table, size_t address_space_bits, u8* backing
     PlaceStubCode(stub_bytes, EntryPageVa, eden_hv_entry_page, eden_hv_entry_page_end, 0x20);
     PlaceStubCode(stub_bytes, EntryTlbVa, eden_hv_entry_tlb, eden_hv_entry_tlb_end, 0x20);
     PlaceStubCode(stub_bytes, InvalidateStubVa, eden_hv_invalidate, eden_hv_invalidate_end, 0x80);
+    PlaceStubCode(stub_bytes, CounterProbeVa, eden_hv_counter_probe, eden_hv_counter_probe_end,
+                  CounterHandlerVa - CounterProbeVa);
+    // Synchronous exceptions from guest code go through the counter handler.
+    PlaceStubCode(stub_bytes, CounterHandlerVa, eden_hv_counter, eden_hv_counter_end,
+                  StubVa + PageSize - CounterHandlerVa);
+    static_assert(CounterSavedOffset == 12);
+    ASSERT(eden_hv_counter_saved - eden_hv_counter == CounterSavedOffset);
+    counter_end_va = CounterHandlerVa + static_cast<u64>(eden_hv_counter_end - eden_hv_counter);
+    stub[LowerSyncVectorVa / 4 - StubVa / 4] =
+        0x14000000U | static_cast<u32>((CounterHandlerVa - LowerSyncVectorVa) / 4); // B
+
     sys_icache_invalidate(stub, PageSize);
 
     attached_table = &table;

@@ -76,6 +76,8 @@ private:
     Resolution HandleLowerSync(Vcpu& vcpu, u64 esr, u64 far, u64 elr, u64 spsr, HaltReason& out);
     Resolution HandleDataAbort(Vcpu& vcpu, u64 esr, u64 far, u64 elr);
     void InvalidatePageOnEntry(Vcpu& vcpu, u64 page);
+    void UpdateCounter(Vcpu& vcpu);
+    void StoppedInCounterHandler(Vcpu& vcpu, u64 pc, bool& resume_as_is);
     void PerformFaultingAccess(Vcpu& vcpu, u64 esr, u64 far, u64 elr, bool mapped);
     bool PerformExclusiveOrAtomic(u32 insn);
     bool PerformSimdStructure(u32 insn);
@@ -107,6 +109,13 @@ private:
 
     u64 m_last_fault_page{~u64{0}};
     u32 m_fault_repeats{};
+    // The counter reads served inside the VM (UpdateCounter).
+    u64 m_counter_frequency{};
+    u64 m_sleep_ticks{};
+    bool m_vtimer_set{};
+    bool m_counter_checked{};
+    bool m_counter_broken{};
+
     u64 m_last_stale_pc{~u64{0}};
     u32 m_stale_repeats{};
 };

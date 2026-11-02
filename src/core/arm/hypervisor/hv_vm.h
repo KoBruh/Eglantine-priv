@@ -150,6 +150,28 @@ public:
     /// x0 = first page (VA >> 12), x1 = pages (0: all), x2 = also the I-caches; ends in HVC.
     static constexpr u64 InvalidateStubVa = StubVa + 0x880;
     static constexpr u32 InvalidateStubHvc = 0x20;
+    /// Synchronous exceptions from guest code: counter reads are served at EL1, the rest exit.
+    static constexpr u64 LowerSyncVectorVa = StubVa + 0x400;
+    static constexpr u64 CounterHandlerVa = StubVa + 0x900;
+    static constexpr u64 CounterSavedOffset = 12; ///< x0-x5 are on the slot's stack from here.
+    /// Reads CNTVCT_EL0 into x0, then HVC #CounterProbeHvc.
+    static constexpr u64 CounterProbeVa = StubVa + 0x8E0;
+    static constexpr u32 CounterProbeHvc = 0x21;
+    u64 CounterHandlerEndVa() const {
+        return counter_end_va;
+    }
+
+    /// A slot as the counter handler reads it (u64 indices into SlotHost).
+    struct CounterSlot {
+        static constexpr u32 Enabled = 0;   ///< 0: counter reads exit to the host
+        static constexpr u32 Frequency = 1; ///< CNTFRQ_EL0 for the guest
+        static constexpr u32 TicksToNsNum = 2;
+        static constexpr u32 TicksToNsDen = 3;
+        static constexpr u32 NsToGuestNum = 4;
+        static constexpr u32 NsToGuestDen = 5;
+        static constexpr u32 Served = 6;    ///< reads served without an exit (statistics)
+        static constexpr u32 SavedX0 = 10;  ///< x0-x5 while the handler runs
+    };
     // Per-vCPU slots below the stub page: SP_EL1 starts at the top of a vCPU's slot.
     static constexpr u64 SlotSize = 128;
     static constexpr u32 SlotCount = 64;
@@ -207,6 +229,7 @@ private:
     u64 ttbr0_ipa{};
     u64 ttbr1_ipa{};
     u64 data_ipa{}; ///< SlotCount * SlotSize bytes of vCPU slots.
+    u64 counter_end_va{};
     std::atomic<u64> slots_used{};
 
     std::atomic<u64> tlb_generation{1};
