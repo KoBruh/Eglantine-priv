@@ -34,6 +34,7 @@ add_executable(tests
     core/ncz_decompressor.cpp
     core/romfs_build_memory.cpp
     core/vfs_real_cache.cpp
+    core/nup_writer.cpp
     core/internal_network/network.cpp
     shader_recompiler/compilation_memory.cpp
     video_core/memory_tracker.cpp

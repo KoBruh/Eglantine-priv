@@ -90,6 +90,7 @@ public:
 
 public slots:
     void SetEdenPackConversionRunning(bool running);
+    void SetNupConversionRunning(bool running);
     void RefreshGameDirectory();
     void RefreshExternalContent();
     void UpdateIconSizes();
@@ -109,6 +110,7 @@ signals:
     void DumpRomFSRequested(u64 program_id, const std::string& game_path, DumpRomFSTarget target);
     void VerifyIntegrityRequested(const std::string& game_path);
     void ConvertToEdenPackRequested(const std::string& game_path);
+    void ConvertToNupRequested(const std::string& game_path);
     void CopyTIDRequested(u64 program_id);
     void CreateShortcut(u64 program_id, const std::string& game_path,
                         const QtCommon::Game::ShortcutTarget target);
@@ -169,6 +171,7 @@ private:
 
     bool m_isTreeMode = true;
     bool edenpack_conversion_running{};
+    bool nup_conversion_running{};
     QAbstractItemView* m_currentView = nullptr;
 };
 

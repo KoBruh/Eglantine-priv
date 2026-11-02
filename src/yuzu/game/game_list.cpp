@@ -26,6 +26,7 @@
 #include "common/common_types.h"
 #include "core/core.h"
 #include "core/file_sys/edenpack_writer.h"
+#include "core/file_sys/nup_writer.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "qt_common/config/uisettings.h"
@@ -103,6 +104,10 @@ GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvid
 
 void GameList::SetEdenPackConversionRunning(bool running) {
     edenpack_conversion_running = running;
+}
+
+void GameList::SetNupConversionRunning(bool running) {
+    nup_conversion_running = running;
 }
 
 GameList::~GameList() {
@@ -495,6 +500,11 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
         convert_edenpack = context_menu.addAction(tr("Convert to EdenPack..."));
         convert_edenpack->setEnabled(!edenpack_conversion_running);
     }
+    QAction* convert_nup = nullptr;
+    if (FileSys::Nup::DumpRootFromMain(path)) {
+        convert_nup = context_menu.addAction(tr("Convert to NUP..."));
+        convert_nup->setEnabled(!nup_conversion_running);
+    }
 #if !defined(__APPLE__)
     QMenu* shortcut_menu = context_menu.addMenu(tr("Create Shortcut"));
     QAction* create_desktop_shortcut = shortcut_menu->addAction(tr("Add to Desktop"));
@@ -578,6 +588,10 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     if (convert_edenpack) {
         connect(convert_edenpack, &QAction::triggered, this,
                 [this, path]() { emit ConvertToEdenPackRequested(path); });
+    }
+    if (convert_nup) {
+        connect(convert_nup, &QAction::triggered, this,
+                [this, path]() { emit ConvertToNupRequested(path); });
     }
 #if !defined(__APPLE__)
     connect(create_desktop_shortcut, &QAction::triggered, this, [this, program_id, path]() {

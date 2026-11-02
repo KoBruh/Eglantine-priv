@@ -27,6 +27,7 @@
 #include "core/debugger/debugger.h"
 #include "core/device_memory.h"
 #include "core/file_sys/fs_filesystem.h"
+#include "core/file_sys/nup_container.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/program_metadata.h"
 #include "core/file_sys/registered_cache.h"
@@ -125,6 +126,26 @@ bool IsSwitch2Program(const FileSys::VirtualFile& file) {
         return false;
     }
 
+    FileSys::ProgramMetadata metadata;
+    if (FileSys::NupContainer::IsNupFile(file)) {
+        FileSys::NupContainer nup{file};
+        if (nup.GetStatus() != Loader::ResultStatus::Success) {
+            return false;
+        }
+        std::optional<std::size_t> program;
+        if (const auto base = nup.FindBasePackage();
+            base && nup.GetExeFSDir(*base) != nullptr) {
+            program = base;
+        } else if (const auto update = nup.FindBestUpdatePackage();
+                   update && nup.GetExeFSDir(*update) != nullptr) {
+            program = update;
+        }
+        const auto exefs = program ? nup.GetExeFSDir(*program) : nullptr;
+        const auto npdm = exefs != nullptr ? exefs->GetFile("main.npdm") : nullptr;
+        return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
+               metadata.IsSwitch2();
+    }
+
     FileSys::VirtualFile npdm;
     const auto extension =
         Common::ToLower(std::string(Common::FS::GetExtensionFromFilename(file->GetName())));
@@ -138,7 +159,6 @@ bool IsSwitch2Program(const FileSys::VirtualFile& file) {
         npdm = dir ? dir->GetFile("main.npdm") : nullptr;
     }
 
-    FileSys::ProgramMetadata metadata;
     return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
            metadata.IsSwitch2();
 }

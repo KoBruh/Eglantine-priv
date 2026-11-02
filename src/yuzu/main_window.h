@@ -22,6 +22,7 @@
 #include "common/common_types.h"
 #include "common/settings_enums.h"
 #include "core/file_sys/edenpack_writer.h"
+#include "core/file_sys/nup_writer.h"
 #include "frontend_common/content_manager.h"
 #include "input_common/drivers/tas_input.h"
 #include "qt_common/config/qt_config.h"
@@ -355,6 +356,7 @@ private slots:
     void OnGameListDumpRomFS(u64 program_id, const std::string& game_path, DumpRomFSTarget target);
     void OnGameListVerifyIntegrity(const std::string& game_path);
     void OnGameListConvertToEdenPack(const std::string& game_path);
+    void OnGameListConvertToNup(const std::string& game_path);
     void OnGameListCopyTID(u64 program_id);
     void OnGameListCreateShortcut(u64 program_id, const std::string& game_path,
                                   const QtCommon::Game::ShortcutTarget target);
@@ -579,6 +581,11 @@ private:
     std::shared_ptr<std::atomic_bool> edenpack_cancel;
     bool edenpack_running{};
     std::string edenpack_source_path;
+    QProgressDialog* nup_progress = nullptr;
+    QFutureWatcher<FileSys::Nup::PackResult> nup_watcher;
+    std::shared_ptr<std::atomic_bool> nup_cancel;
+    bool nup_running{};
+    std::string nup_source_path;
 
     // Last game booted, used for multi-process apps
     QString last_filename_booted;
