@@ -140,6 +140,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     const IR::Inst* previous_inst = nullptr;
     const IR::Inst* flags_from = nullptr;
     bool flags_hold_nzcv = false;
+    bool fpcr_may_change = false;
     // Nothing between the last instruction and a CheckBit terminal changes the host flags (cycle
     // counting would subtract).
     const IR::Inst* const check_bit_from_flags_at =
@@ -201,6 +202,13 @@ finish_this_inst:
                 flags_hold_nzcv = false;
             }
             break;  // cmov keeps the flags (and a cmc for HI or LS is undone)
+        case IR::Opcode::A64SetFPCR:
+        case IR::Opcode::A64CallSupervisor:
+        case IR::Opcode::A64ExceptionRaised:
+            fpcr_may_change = true;
+            flags_from = nullptr;
+            flags_hold_nzcv = false;
+            break;
         default:
             flags_from = nullptr;
             flags_hold_nzcv = false;
@@ -218,8 +226,10 @@ finish_this_inst:
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());
     nzcv_in_host_flags = flags_hold_nzcv && !conf.enable_cycle_counting;
+    fpcr_is_block_fpcr = !fpcr_may_change;
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     nzcv_in_host_flags = false;
+    fpcr_is_block_fpcr = false;
     code.int3();
     for (auto& deferred_emit : ctx.deferred_emits)
         deferred_emit();
@@ -246,6 +256,7 @@ void A64EmitX64::ClearCache() {
     EmitX64::ClearCache();
     block_ranges.ClearCache();
     ClearFastDispatchTable();
+    site_caches.clear();
     fastmem_patch_info.clear();
 }
 
@@ -279,12 +290,13 @@ void A64EmitX64::GenTerminalHandlers() {
 
     code.align();
     terminal_handler_pop_rsb_hint = code.getCurr<const void*>();
+    calculate_location_descriptor();
+    terminal_handler_pop_rsb_hint_rbx = code.getCurr<const void*>();
     // Forward branches skip the halt check (TranslatorVisitor's LinkTo), so returns check
     // instead: a halt is seen within one function body even when it has no loop. The return
     // already stored its target in pc, which the dispatcher continues from.
     code.cmp(dword[code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
     code.jne(code.GetReturnFromRunCodeAddress());
-    calculate_location_descriptor();
     code.mov(eax, dword[code.ABI_JIT_PTR + offsetof(A64JitState, rsb_ptr)]);
     code.sub(eax, 1);
     code.and_(eax, u32(A64JitState::RSB_PTR_MASK));
@@ -303,6 +315,7 @@ void A64EmitX64::GenTerminalHandlers() {
         code.align();
         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
         calculate_location_descriptor();
+        terminal_handler_fast_dispatch_hint_rbx = code.getCurr<const void*>();
         code.L(rsb_cache_miss);
         code.mov(r8, u64(fast_dispatch_table.data()));
         //code.mov(r12, qword[code.ABI_JIT_PTR + offsetof(A64JitState, pc)]);
@@ -321,6 +334,25 @@ void A64EmitX64::GenTerminalHandlers() {
         code.mov(ptr[r12 + offsetof(FastDispatchEntry, code_ptr)], rax);
         code.jmp(rax);
         PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a64_terminal_handler_fast_dispatch_hint");
+
+        // A site cache missed: look in the table and, when the block is there, fill the site's
+        // entry too (a table miss compiles the block and fills the site on a later pass).
+        code.align();
+        terminal_handler_fast_dispatch_site_miss = code.getCurr<const void*>();
+        code.mov(r8, u64(fast_dispatch_table.data()));
+        code.mov(r12, rbx);
+        if (code.HasHostFeature(HostFeature::SSE42)) {
+            code.crc32(r12, r8);
+        }
+        code.and_(r12d, fast_dispatch_table_mask);
+        code.lea(r12, ptr[r8 + r12]);
+        code.cmp(rbx, qword[r12 + offsetof(FastDispatchEntry, location_descriptor)]);
+        code.jne(fast_dispatch_cache_miss, code.T_NEAR);
+        code.mov(rax, qword[r12 + offsetof(FastDispatchEntry, code_ptr)]);
+        code.mov(qword[rsi + offsetof(FastDispatchEntry, location_descriptor)], rbx);
+        code.mov(qword[rsi + offsetof(FastDispatchEntry, code_ptr)], rax);
+        code.jmp(rax);
+        PerfMapRegister(terminal_handler_fast_dispatch_site_miss, code.getCurr(), "a64_terminal_handler_fast_dispatch_site_miss");
 
         code.align();
         fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64)>();
@@ -779,18 +811,58 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::LinkBlockFast terminal, IR::Locat
     return true;
 }
 
-bool EmitTerminalImpl(A64EmitX64& e, IR::Term::PopRSBHint, IR::LocationDescriptor, bool is_single_step) {
+// rbx = the location hash (A64::LocationDescriptor::UniqueHash) of the pc stored in A64JitState,
+// with the FPCR of the block's own location: what the handlers would compute when the block did
+// not change the FPCR, without loading it.
+void EmitLocationHashOfStoredPC(A64EmitX64& e, IR::LocationDescriptor block_location) {
+    constexpr int pc_shift = 64 - int(A64::LocationDescriptor::pc_bit_count);
+    const u64 upper_bits = A64::LocationDescriptor{block_location}.SetPC(0).UniqueHash();
+    e.code.mov(rbx, qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, pc)]);
+    e.code.shl(rbx, pc_shift);
+    e.code.shr(rbx, pc_shift);
+    if (upper_bits != 0) {
+        e.code.mov(rcx, upper_bits);
+        e.code.or_(rbx, rcx);
+    }
+}
+
+bool EmitTerminalImpl(A64EmitX64& e, IR::Term::PopRSBHint, IR::LocationDescriptor initial_location, bool is_single_step) {
     if (e.conf.HasOptimization(OptimizationFlag::ReturnStackBuffer) && !is_single_step) {
-        e.code.jmp(e.terminal_handler_pop_rsb_hint);
+        if (e.fpcr_is_block_fpcr && e.terminal_handler_fast_dispatch_hint_rbx) {
+            // The handler's work inline, so that each return has its own indirect jump.
+            EmitLocationHashOfStoredPC(e, initial_location);
+            e.code.cmp(dword[e.code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
+            e.code.jne(e.code.GetReturnFromRunCodeAddress());
+            e.code.mov(eax, dword[e.code.ABI_JIT_PTR + offsetof(A64JitState, rsb_ptr)]);
+            e.code.sub(eax, 1);
+            e.code.and_(eax, u32(A64JitState::RSB_PTR_MASK));
+            e.code.mov(dword[e.code.ABI_JIT_PTR + offsetof(A64JitState, rsb_ptr)], eax);
+            e.code.cmp(rbx, qword[e.code.ABI_JIT_PTR + offsetof(A64JitState, rsb_location_descriptors) + rax * sizeof(u64)]);
+            e.code.jne(e.terminal_handler_fast_dispatch_hint_rbx);
+            e.code.jmp(ptr[e.code.ABI_JIT_PTR + offsetof(A64JitState, rsb_codeptrs) + rax * sizeof(u64)]);
+        } else if (e.fpcr_is_block_fpcr) {
+            EmitLocationHashOfStoredPC(e, initial_location);
+            e.code.jmp(e.terminal_handler_pop_rsb_hint_rbx);
+        } else {
+            e.code.jmp(e.terminal_handler_pop_rsb_hint);
+        }
     } else {
         e.code.ReturnFromRunCode();
     }
     return true;
 }
 
-bool EmitTerminalImpl(A64EmitX64& e, IR::Term::FastDispatchHint, IR::LocationDescriptor, bool is_single_step) {
+bool EmitTerminalImpl(A64EmitX64& e, IR::Term::FastDispatchHint, IR::LocationDescriptor initial_location, bool is_single_step) {
     if (!e.conf.HasOptimization(OptimizationFlag::FastDispatch) || is_single_step) {
         e.code.ReturnFromRunCode();
+    } else if (e.fpcr_is_block_fpcr) {
+        // This branch's own entry: the block it went to last, else the table (which fills it).
+        const auto& entry = e.site_caches.emplace_back();
+        EmitLocationHashOfStoredPC(e, initial_location);
+        e.code.mov(rsi, reinterpret_cast<u64>(&entry));
+        e.code.cmp(rbx, qword[rsi + offsetof(A64EmitX64::FastDispatchEntry, location_descriptor)]);
+        e.code.jne(e.terminal_handler_fast_dispatch_site_miss);
+        e.code.jmp(ptr[rsi + offsetof(A64EmitX64::FastDispatchEntry, code_ptr)]);
     } else {
         e.code.jmp(e.terminal_handler_fast_dispatch_hint);
     }
@@ -922,6 +994,12 @@ void A64EmitX64::Unpatch(const IR::LocationDescriptor& location) {
         code.DisableWriting();
         (*fast_dispatch_table_lookup)(location.Value()) = {};
         code.EnableWriting();
+        // Any branch's own entry may hold the block that goes.
+        for (FastDispatchEntry& entry : site_caches) {
+            if (entry.location_descriptor == location.Value()) {
+                entry = {};
+            }
+        }
     }
 }
 

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -146,6 +147,20 @@ public:
     boost::container::stable_vector<Xbyak::Label> shared_labels;
     const void* terminal_handler_pop_rsb_hint = nullptr;
     const void* terminal_handler_fast_dispatch_hint = nullptr;
+    /// The same handlers entered with rbx already holding the location hash of the pc stored in
+    /// A64JitState: a block that cannot have changed the FPCR builds it from its own.
+    const void* terminal_handler_pop_rsb_hint_rbx = nullptr;
+    const void* terminal_handler_fast_dispatch_hint_rbx = nullptr;
+    /// An indirect branch's own one-entry cache missed: entered with rbx the location hash and rsi
+    /// the branch's entry in site_caches, which it fills from the fast dispatch table.
+    const void* terminal_handler_fast_dispatch_site_miss = nullptr;
+    /// One entry per indirect branch emitted (BR, BLR): the last target it went to, so that each
+    /// branch has its own indirect jump for the host's predictor and skips the table's hashing.
+    /// Cleared with the fast dispatch table's entries when blocks go.
+    std::deque<FastDispatchEntry> site_caches;
+    /// While emitting a terminal: the block has nothing that changes the FPCR (MSR FPCR, a
+    /// supervisor call or an exception), so the FPCR at its end is the one in its location.
+    bool fpcr_is_block_fpcr = false;
     FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
     A64::Jit* jit_interface = nullptr;
     void (*memory_read_128)() = nullptr;
