@@ -45,8 +45,12 @@ struct PageTable {
     /// Masks out bits reserved for attribute tagging.
     static constexpr u64 ATTRIBUTE_MASK = ((1ULL << 44) - 1) << 12;
 
-    /// Specifies sign bit for page table entries.
-    static constexpr u64 SIGN_BIT = 45 + 12; // 44 bits of data + page offset
+    /// Sign bit of the pointer in a page table entry: the top bit ATTRIBUTE_MASK keeps (44 bits of
+    /// data above the page offset), the bit ExtractPointer sign-extends from. The JIT masks an
+    /// entry with ATTRIBUTE_MASK and sign-extends from this bit when the memory backing lies below
+    /// the guest addresses (negative offsets); bit 57 lay outside the mask, so the JIT's page table
+    /// lookups all failed and went to the memory callbacks.
+    static constexpr u64 SIGN_BIT = 44 + 12 - 1;
 
     /**
      * Atomic tuple of host pointer, page type, and block id.

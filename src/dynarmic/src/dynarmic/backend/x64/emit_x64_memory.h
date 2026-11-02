@@ -182,10 +182,11 @@ template<>
         code.mov(tmp, ctx.conf.page_table_pointer_mask);
         code.and_(page, tmp);
     }
-    // check for sign bit, apply sign extension as needed
+    // check for sign bit, apply sign extension as needed (the option is the sign bit's index, as
+    // in the A32 lookup above and the arm64 backend)
     if (ctx.conf.page_table_sign_extension) {
-        code.shl(page, *ctx.conf.page_table_sign_extension);
-        code.sar(page, *ctx.conf.page_table_sign_extension);
+        code.shl(page, 63 - int(*ctx.conf.page_table_sign_extension));
+        code.sar(page, 63 - int(*ctx.conf.page_table_sign_extension));
     }
 
     code.jz(abort, code.T_NEAR);

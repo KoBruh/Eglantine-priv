@@ -12,6 +12,7 @@ add_executable(tests
     common/fibers.cpp
     common/host_memory.cpp
     common/host_memory_fallback.cpp
+    common/page_table.cpp
     common/param_package.cpp
     common/path_defaults.cpp
     common/range_map.cpp
