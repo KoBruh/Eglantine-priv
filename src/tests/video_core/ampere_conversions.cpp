@@ -56,6 +56,12 @@ TEST_CASE("Ampere USHF by an immediate shifts the register a uniform one lives i
     REQUIRE(Contains(lowered.instructions, 0x382800000027e8dcULL)); // SHR R220, R232, 2
 }
 
+TEST_CASE("Ampere USHF by an immediate under a uniform predicate guard", "[video_core][ampere]") {
+    // @UP0 USHF.R.U32.HI UR7, URZ, 0x2, UR6: the SHF of 0x819 with UP0 swapped into P6.
+    const std::array<Instruction, 2> code{{{{0x3f070899, 0x00000002, 0x08011606, 0x000fcc00}}, Exit}};
+    REQUIRE(static_cast<bool>(LowerToMaxwell(code)));
+}
+
 TEST_CASE("Ampere UPRMT permutes uniform registers", "[video_core][ampere]") {
     // UPRMT UR6, UR8, 0x9910, URZ: UR8's low half sign-extended, into UR6 (R222).
     const std::array<Instruction, 2> code{{{{0x08067896, 0x00009910, 0x0800003f, 0x000fc800}}, Exit}};

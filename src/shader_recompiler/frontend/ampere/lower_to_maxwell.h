@@ -4,6 +4,7 @@
 // Encoding reference: Mesa NAK sm70_encode.rs (MIT), Copyright 2022 Collabora, Ltd.
 #pragma once
 
+#include <cstdlib>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -395,8 +396,12 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
         bool uniform_guard = false;
         bool checked_guard = false;
         u32 uniform_output = 7; // ULOP3's UPn output: computed in P(6-n), then merged into R239
+        // A USHF by an immediate under a UPn guard (Pokopia's night compute shaders: @UP0) becomes
+        // the SHF of 0x819 on the mapped registers; unguarded ones keep their own case below.
+        const bool guarded_ushf = opcode == 0x899 && insn.Bits(12, 4) != 7;
         if (opcode == 0x2a4 || opcode == 0x8a4 || opcode == 0x891 || opcode == 0x890 || opcode == 0x290 ||
-            opcode == 0x292 || opcode == 0x092 || opcode == 0x892 || opcode == 0x291 || opcode == 0x896) {
+            opcode == 0x292 || opcode == 0x092 || opcode == 0x892 || opcode == 0x291 || opcode == 0x896 ||
+            guarded_ushf) {
             // A UPn guard is swapped into P(6-n) around the op; lowerings that would clobber the
             // saved predicate or write outside scratch unguarded are rejected after emission.
             // Any UPn/!UPn execution predicate, including the inverted ones (0xd = !UP5): the
@@ -424,7 +429,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                 insn.words[2] = (insn.words[2] & ~(7U << 17)) | ((6 - uniform_output) << 17);
             }
             // 0x896 UPRMT URd, URa, imm, URc becomes PRMT on the mapped registers (0x816).
-            opcode = opcode == 0x896 ? 0x816 : opcode == 0x2a4 ? 0x224 : opcode == 0x8a4 ? 0x824 : opcode == 0x891 ? 0x811 : opcode == 0x890 ? 0x810
+            opcode = opcode == 0x899 ? 0x819 : opcode == 0x896 ? 0x816 : opcode == 0x2a4 ? 0x224 : opcode == 0x8a4 ? 0x824 : opcode == 0x891 ? 0x811 : opcode == 0x890 ? 0x810
                    : opcode == 0x292 || opcode == 0x092 ? 0x212 : opcode == 0x892 ? 0x812 : opcode == 0x291 ? 0x211 : 0x210;
         }
         const bool uniform_predication = opcode == 0xabb || opcode == 0xab9 || opcode == 0xc82 || opcode == 0x882;
@@ -3121,25 +3126,6 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             emit(base(0x5800000000000000ULL) | (u64{a} << 8) | (u64{b} << 20) |
                  (u64{insn.Bits(87, 4)} << 39) | (u64{insn.Bits(74, 2)} << 45) |
                  (u64{insn.Bits(76, 4)} << 48) | (u64{1} << 52) | (u64{insn.Bits(80, 1)} << 55));
-            break;
-        }
-        case 0x234: { // HSETP2, packed register sources and independent predicate outputs.
-            const auto a = half_source(0), b = half_source(1);
-            const u32 combine = insn.Bits(69, 2);
-            if (insn.Bits(16, 8) || (insn.words[1] & 0x0fffff00U) ||
-                insn.Bits(64, 5) || combine > 2 || insn.Bits(91, 1) ||
-                a.swizzle == 1 || b.swizzle == 1) {
-                return fail(index, "native packed half predicate mode");
-            }
-            emit(0x5d20000000000000ULL | predicate |
-                 (u64{insn.Bits(81, 3)} << 3) | insn.Bits(84, 3) |
-                 (u64{a.reg} << 8) | (u64{b.reg} << 20) |
-                 (u64{b.swizzle} << 28) | (u64{b.absolute} << 30) |
-                 (u64{b.negate} << 31) | (u64{insn.Bits(76, 4)} << 35) |
-                 (u64{insn.Bits(87, 3)} << 39) | (u64{insn.Bits(90, 1)} << 42) |
-                 (u64{a.negate} << 43) | (u64{a.absolute} << 44) |
-                 (u64{combine} << 45) | (u64{a.swizzle} << 47) |
-                 (u64{insn.Bits(71, 1)} << 49) | (u64{insn.Bits(80, 1)} << 6));
             break;
         }
         case 0x434: { // HSETP2 with an immediate half pair: A swizzle 74-75 (neg 72, abs 73),

@@ -1127,13 +1127,14 @@ struct Memory::Impl {
         for (size_t i = 0; i < std::min<size_t>(top.size(), 3); ++i) {
             const u64 vaddr = top[i].first << YUZU_PAGEBITS;
             const auto* pointer = GetPointerImpl(vaddr, []() {}, []() {});
-            if (pointer == nullptr || gpu_device_memory == nullptr) {
+            if (pointer == nullptr) {
                 continue;
             }
+            auto& device_memory = system.Host1x().MemoryManager();
             Common::ScratchBuffer<u32> scratch;
-            gpu_device_memory->ApplyOpOnPointer(pointer, scratch, [&](DAddr address) {
+            device_memory.ApplyOpOnPointer(pointer, scratch, [&](DAddr address) {
                 holders += fmt::format(" [{:#x} device {:#x}: held by {}, {}]", vaddr, address,
-                                       gpu_device_memory->PageCachedCount(address),
+                                       device_memory.PageCachedCount(address),
                                        system.GPU().Renderer().ReadRasterizer()->DescribeTracking(
                                            address, YUZU_PAGESIZE));
             });
