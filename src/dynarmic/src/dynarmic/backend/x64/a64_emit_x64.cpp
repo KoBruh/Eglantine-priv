@@ -476,8 +476,16 @@ void A64EmitX64::EmitA64SetW(A64EmitContext& ctx, IR::Inst* inst) {
     const auto addr = qword[code.ABI_JIT_PTR + offsetof(A64JitState, reg) + sizeof(u64) * static_cast<size_t>(reg)];
     if (args[1].FitsInImmediateS32()) {
         code.mov(addr, args[1].GetImmediateS32());
+    } else if (IsZeroExtendedResult(inst->GetArg(1))) {
+        code.mov(addr, ctx.reg_alloc.UseGpr(code, args[1]));
+    } else if (args[1].IsInGpr(ctx.reg_alloc) && !ctx.reg_alloc.IsLastUseInGpr(args[1])) {
+        // Zero-extend into another register rather than copying the value first.
+        const Xbyak::Reg64 value = ctx.reg_alloc.UseGpr(code, args[1]);
+        const Xbyak::Reg64 to_store = ctx.reg_alloc.ScratchGpr(code);
+        code.mov(to_store.cvt32(), value.cvt32());
+        code.mov(addr, to_store);
     } else {
-        // TODO: zext tracking, xmm variant
+        // TODO: xmm variant
         const Xbyak::Reg64 to_store = ctx.reg_alloc.UseScratchGpr(code, args[1]);
         code.mov(to_store.cvt32(), to_store.cvt32());
         code.mov(addr, to_store);

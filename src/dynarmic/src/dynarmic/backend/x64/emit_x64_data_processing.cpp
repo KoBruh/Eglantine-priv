@@ -1515,8 +1515,18 @@ void EmitX64::EmitSignExtendWordToLong(EmitContext& ctx, IR::Inst* inst) {
     ctx.reg_alloc.DefineValue(code, inst, result);
 }
 
+// A source already zero-extended in its GPR is the result as it is. (Only in a GPR: a spilled
+// 32-bit value has no defined upper half in its stack slot.)
+static bool ZeroExtendIsNoOp(EmitContext& ctx, IR::Inst* inst, Argument& arg) {
+    return IsZeroExtendedResult(inst->GetArg(0)) && arg.IsInGpr(ctx.reg_alloc);
+}
+
 void EmitX64::EmitZeroExtendByteToWord(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (ZeroExtendIsNoOp(ctx, inst, args[0])) {
+        ctx.reg_alloc.DefineValue(code, inst, args[0]);
+        return;
+    }
     const Xbyak::Reg64 result = ctx.reg_alloc.UseScratchGpr(code, args[0]);
     code.movzx(result.cvt32(), result.cvt8());
     ctx.reg_alloc.DefineValue(code, inst, result);
@@ -1524,6 +1534,10 @@ void EmitX64::EmitZeroExtendByteToWord(EmitContext& ctx, IR::Inst* inst) {
 
 void EmitX64::EmitZeroExtendHalfToWord(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (ZeroExtendIsNoOp(ctx, inst, args[0])) {
+        ctx.reg_alloc.DefineValue(code, inst, args[0]);
+        return;
+    }
     const Xbyak::Reg64 result = ctx.reg_alloc.UseScratchGpr(code, args[0]);
     code.movzx(result.cvt32(), result.cvt16());
     ctx.reg_alloc.DefineValue(code, inst, result);
@@ -1541,6 +1555,10 @@ void EmitX64::EmitZeroExtendHalfToLong(EmitContext& ctx, IR::Inst* inst) {
 
 void EmitX64::EmitZeroExtendWordToLong(EmitContext& ctx, IR::Inst* inst) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    if (ZeroExtendIsNoOp(ctx, inst, args[0])) {
+        ctx.reg_alloc.DefineValue(code, inst, args[0]);
+        return;
+    }
     const Xbyak::Reg64 result = ctx.reg_alloc.UseScratchGpr(code, args[0]);
     code.mov(result.cvt32(), result.cvt32());  // x64 zeros upper 32 bits on a 32-bit move
     ctx.reg_alloc.DefineValue(code, inst, result);

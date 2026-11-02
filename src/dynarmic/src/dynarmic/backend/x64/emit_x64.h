@@ -55,6 +55,34 @@ template<typename T>
 using HalfVectorArray = std::array<T, A64FullVectorWidth::value / mcl::bitsizeof<T> / 2>;
 
 using SharedLabel = Xbyak::Label*;
+/// Whether the x64 code of the instruction that produces value always leaves the result
+/// zero-extended from its type's width to 64 bits in a GPR: the 32-bit and narrower operations
+/// below write a 32-bit register (movzx, mov r32, 32-bit arithmetic, cmov r32), and the register
+/// allocator moves such a value with 32-bit moves, which keep that. (A value aliased onto a 64-bit
+/// register, as LeastSignificantWord, does not qualify.)
+[[nodiscard]] inline bool IsZeroExtendedResult(const IR::Value& value) noexcept {
+    if (value.IsImmediate()) {
+        return false;
+    }
+    switch (value.GetInst()->GetOpcode()) {
+    case IR::Opcode::A64ReadMemory8:
+    case IR::Opcode::A64ReadMemory16:
+    case IR::Opcode::A64ReadMemory32:
+    case IR::Opcode::A64GetW:
+    case IR::Opcode::ZeroExtendByteToWord:
+    case IR::Opcode::ZeroExtendHalfToWord:
+    case IR::Opcode::Add32:
+    case IR::Opcode::Sub32:
+    case IR::Opcode::And32:
+    case IR::Opcode::Or32:
+    case IR::Opcode::Eor32:
+    case IR::Opcode::ConditionalSelect32:
+        return true;
+    default:
+        return false;
+    }
+}
+
 struct EmitContext {
     EmitContext(RegAlloc& reg_alloc, IR::Block& block, boost::container::stable_vector<Xbyak::Label>& shared_labels);
     virtual ~EmitContext();
