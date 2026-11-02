@@ -153,12 +153,18 @@ TEST_CASE("Software HMMA executes captured fragments as matrix products", "[ampe
     }
 }
 
-TEST_CASE("Software HMMA refuses stub and unknown modes", "[ampere-tensor]") {
+TEST_CASE("Software HMMA stub mode writes D = C and unknown modes are refused", "[ampere-tensor]") {
     RestoreMode restore;
     const std::array code{Shader::Ampere::Instruction{{0x0830723c, 12, 0x000008ff, 0x041ff000}},
                           Shader::Ampere::Instruction{{0x0000794d, 0, 0x03800000, 0}}};
-    for (const char* mode : {"stub", "unknown"}) {
-        set_mode(mode);
-        REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(code));
-    }
+    // EDEN_NX2_TENSOR=stub keeps the program and makes every HMMA D = C; C is RZ here, so the
+    // destination pair R48/R49 is zeroed.
+    set_mode("stub");
+    const auto stub = Shader::Ampere::LowerToMaxwell(code);
+    REQUIRE(stub);
+    REQUIRE(stub.instructions.size() == 3);
+    REQUIRE(stub.instructions[0] == (0x010000000007f000ULL | 48ULL));
+    REQUIRE(stub.instructions[1] == (0x010000000007f000ULL | 49ULL));
+    set_mode("unknown");
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(code));
 }

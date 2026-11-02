@@ -29,12 +29,40 @@ TEST_CASE("Ampere reciprocal accepts the captured uniform source form", "[video_
     const auto predicated = LowerToMaxwell(code);
     REQUIRE(static_cast<bool>(predicated));
     REQUIRE(((predicated.instructions.front() >> 16) & 15) == 1);
-    for (const u32 source : {28U, 62U, 64U, 0x80000008U}) {
+    for (const u32 source : {28U, 62U, 64U}) {
         auto invalid = code;
         invalid[0].words[1] = source;
         REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
     }
-    for (const u32 mode : {0x08000000U, 0x08001400U, 0x08001200U, 0x08011000U}) {
+    // Bit 63 negates the uniform source (MUFU.RCP R24, -UR8): it is copied to R251 and negated.
+    auto negated = code;
+    negated[0].words[1] = 0x80000008U;
+    const auto negated_lowered = LowerToMaxwell(negated);
+    REQUIRE(static_cast<bool>(negated_lowered));
+    REQUIRE(negated_lowered.instructions.size() == 4);
+    REQUIRE(negated_lowered.instructions[0] ==
+            (0x5c98000000010000ULL | 251ULL | (224ULL << 20) | (15ULL << 39)));
+    REQUIRE(negated_lowered.instructions[1] ==
+            (0x0400000000010000ULL | 251ULL | (251ULL << 8) | (0x80000000ULL << 20) |
+             (2ULL << 53)));
+    REQUIRE(negated_lowered.instructions[2] ==
+            (0x5080000000010000ULL | 24ULL | (251ULL << 8) | (4ULL << 20)));
+    // Other MUFU operations take the same uniform source: COS (turns scaled to radians) and RSQ.
+    auto cosine = code;
+    cosine[0].words[2] = 0x08000000U;
+    const auto cosine_lowered = LowerToMaxwell(cosine);
+    REQUIRE(static_cast<bool>(cosine_lowered));
+    REQUIRE(cosine_lowered.instructions.size() == 3);
+    REQUIRE(cosine_lowered.instructions[0] ==
+            (0x1e00000000010000ULL | 250ULL | (224ULL << 8) | (0x40c90fdbULL << 20)));
+    REQUIRE(cosine_lowered.instructions[1] == (0x5080000000010000ULL | 24ULL | (250ULL << 8)));
+    auto rsq = code;
+    rsq[0].words[2] = 0x08001400U;
+    const auto rsq_lowered = LowerToMaxwell(rsq);
+    REQUIRE(static_cast<bool>(rsq_lowered));
+    REQUIRE(rsq_lowered.instructions.front() ==
+            (0x5080000000010000ULL | 24ULL | (224ULL << 8) | (5ULL << 20)));
+    for (const u32 mode : {0x08001200U, 0x08011000U}) {
         auto invalid = code;
         invalid[0].words[2] = mode;
         REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
@@ -82,8 +110,21 @@ TEST_CASE("Ampere local loads preserve register addresses and predicates", "[vid
             }};
             const auto lowered = LowerToMaxwell(code);
             REQUIRE(static_cast<bool>(lowered));
-            REQUIRE(lowered.instructions.front() == (0xef40000000020000ULL | 16ULL | (18ULL << 8) |
-                                                     (0x20ULL << 20) | (u64{type} << 48)));
+            // 64- and 128-bit loads become one 32-bit load per word. The 128-bit destination
+            // R16-R19 covers the address R18, so its address is copied to R251 first.
+            const u32 words = 1U << (type - 4);
+            const bool aliased = type == 6;
+            const u32 address = aliased ? 251U : 18U;
+            REQUIRE(lowered.instructions.size() == words + (aliased ? 2U : 1U));
+            if (aliased) {
+                REQUIRE(lowered.instructions.front() ==
+                        (0x5c98000000020000ULL | 251ULL | (15ULL << 39) | (18ULL << 20)));
+            }
+            for (u32 word = 0; word < words; ++word) {
+                REQUIRE(lowered.instructions[(aliased ? 1 : 0) + word] ==
+                        (0xef40000000020000ULL | (16ULL + word) | (u64{address} << 8) |
+                         (u64{0x20 + word * 4} << 20) | (4ULL << 48)));
+            }
         }
     }
 }
@@ -99,15 +140,13 @@ TEST_CASE("Ampere local spills preserve vector widths and zero-register stores",
             }};
             const auto lowered = LowerToMaxwell(code);
             REQUIRE(static_cast<bool>(lowered));
+            // One 32-bit store per word; an RZ source stores RZ directly (Maxwell reads it as zero).
             const u32 components = 1U << (type - 4);
-            REQUIRE(lowered.instructions.size() == (zero ? components + 2 : 2));
-            const u64 store = 0xef50000000070000ULL | (zero ? 248ULL : 4ULL) | (255ULL << 8) |
-                              (0x20ULL << 20) | (u64{type} << 48);
-            REQUIRE(lowered.instructions[lowered.instructions.size() - 2] == store);
-            if (zero) {
-                for (u32 word = 0; word < components; ++word)
-                    REQUIRE(lowered.instructions[word] ==
-                            (0x0100000000070000ULL | (248ULL + word) | (15ULL << 12)));
+            REQUIRE(lowered.instructions.size() == components + 1);
+            for (u32 word = 0; word < components; ++word) {
+                REQUIRE(lowered.instructions[word] ==
+                        (0xef50000000070000ULL | (zero ? 255ULL : 4ULL + word) | (255ULL << 8) |
+                         (u64{0x20 + word * 4} << 20) | (4ULL << 48)));
             }
         }
     }

@@ -89,13 +89,23 @@ TEST_CASE("Ampere effective addresses accept a uniform addend", "[video_core][am
                      (u64{reg} << 20) | (u64{shift} << 39)));
         }
     }
-    for (const u32 source : {28U, 255U, 0x104U}) {
+    for (const u32 source : {28U, 255U}) {
         const std::array<Instruction, 2> code{{
             {{0x04067c11, source, 0x0f8e30ff, 0x020fc800}},
             {{0x0000794d, 0, 0x03800000, 0}},
         }};
         REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(code)));
     }
+    // The generic uniform-operand path reads URb from bits 32-39 only, so bits above it in the
+    // same word do not change the result: 0x104 lowers as UR4.
+    const std::array<Instruction, 2> wide_source{{
+        {{0x04067c11, 0x104, 0x0f8e30ff, 0x020fc800}},
+        {{0x0000794d, 0, 0x03800000, 0}},
+    }};
+    const auto wide = LowerToMaxwell(wide_source);
+    REQUIRE(static_cast<bool>(wide));
+    REQUIRE(wide.instructions.front() ==
+            (0x5c18000000070000ULL | 6ULL | (4ULL << 8) | (220ULL << 20) | (6ULL << 39)));
     const std::array<Instruction, 2> carry{{
         {{0x04067c11, 4, 0x0f8030ff, 0x020fc800}},
         {{0x0000794d, 0, 0x03800000, 0}},
