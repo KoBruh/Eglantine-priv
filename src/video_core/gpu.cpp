@@ -244,19 +244,21 @@ struct GPU::Impl {
             raster_area.completed_generation = 0;
             return raster_area;
         }
-        static const bool unsafe_preemptive_reads = [] {
-            const char* value = std::getenv("EDEN_NX2_UNSAFE_PREEMPTIVE_READS");
+        // A guest core reading an area the GPU already copies back at every fence (a preemptive
+        // area) gets what was copied, without waiting. The ordered read instead waits until the GPU
+        // thread has run every command list submitted before it and flushes the area again: exact
+        // even with immediate fences, whose copy can trail the GPU by a frame or two, but it puts
+        // the GPU on the game's critical path. Pokemon Pokopia reads its sky and exposure this way
+        // every frame: ordered, its world took 10.4-12.3 ms a frame instead of 8.4-8.6 ms (120 Hz).
+        // EDEN_NX2_ORDERED_READS=1 makes every read ordered.
+        static const bool ordered_reads = [] {
+            const char* value = std::getenv("EDEN_NX2_ORDERED_READS");
             return value != nullptr && std::strcmp(value, "1") == 0;
         }();
-        if (unsafe_preemptive_reads && g_nx2_ampere.load(std::memory_order_relaxed) &&
+        if (!ordered_reads && g_nx2_ampere.load(std::memory_order_relaxed) &&
             system.GetCurrentHostThreadID() < Core::Hardware::NUM_CPU_CORES) {
             auto area = renderer->ReadRasterizer()->GetFlushArea(addr, size);
             if (area.preemtive) {
-                [[maybe_unused]] static const bool reported = [] {
-                    LOG_WARNING(HW_GPU,
-                                "Unsafe NX2 preemptive CPU read bypass active: skipping ordered completion");
-                    return true;
-                }();
                 area.completed_generation = 0;
                 return area;
             }
