@@ -9,8 +9,13 @@
 #include <memory>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 
 #include "common/common_types.h"
+
+namespace VideoCommon::Nx2Profile {
+enum class Zone : u32;
+}
 
 namespace Core {
 class System;
@@ -35,6 +40,10 @@ class GpuSplit {
 public:
     static GpuSplit& Get() {
         return instance;
+    }
+
+    static bool IsBackThread() {
+        return back_thread_context;
     }
 
     /// Whether the front sends work to the back (front thread only).
@@ -95,10 +104,19 @@ public:
     static inline bool check_owner{};
     static void CheckOwner(const char* where);
 
+    /// A semaphore release sent to the back at `address` (front thread only).
+    void NoteRelease(GPUVAddr address) {
+        sent_releases.insert_or_assign(address, write_position);
+    }
+    /// Waits for releases sent to the requested range to finish (front thread only).
+    void AwaitReleases(GPUVAddr address, u64 size);
+
     /// Makes what was sent visible to the back.
     void Publish();
     /// Waits until the back executed everything sent so far.
     void Drain();
+    /// Drain, timed under the given profiler zone.
+    void Drain(Nx2Profile::Zone zone);
 
 private:
     enum class Kind : u64 {
@@ -161,16 +179,21 @@ private:
     /// Words between publishes: small right after a drain, while the back has nothing to do.
     size_t publish_every{PublishEvery};
     Tegra::Engines::EngineInterface* front_engine{};
+    /// Semaphore releases sent to the back: address, write position after them.
+    std::unordered_map<GPUVAddr, u64> sent_releases;
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};
 
     static GpuSplit instance;
+    static inline thread_local bool back_thread_context{};
 
-    alignas(64) std::atomic<u64> published{};
-    alignas(64) std::atomic<u64> consumed{};
-    alignas(64) std::atomic<bool> back_waiting{};
-    std::atomic<u32> wake{};
+    // Aligned to 128 bytes to prevent both false sharing and spatial prefetcher interference
+    // between front and back threads on modern x86-64 multi-core architectures.
+    alignas(128) std::atomic<u64> published{};
+    alignas(128) std::atomic<u64> consumed{};
+    alignas(128) std::atomic<bool> back_waiting{};
+    alignas(128) std::atomic<u32> wake{};
     std::jthread back_thread;
 };
 

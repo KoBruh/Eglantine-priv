@@ -353,38 +353,31 @@ public:
         Kernel::KProcess* process = context->GetProcess();
         R_UNLESS(process != nullptr, RO::ResultInvalidProcess);
 
-        // Read NRR.
-        NrrHeader header{};
-        process->GetMemory().ReadBlock(nrr_address, std::addressof(header), sizeof(header));
+        const auto register_nrr = [&]<typename Header>() -> Result {
+            Header header{};
+            R_UNLESS(nrr_size >= sizeof(header), RO::ResultInvalidNrr);
+            R_UNLESS(process->GetMemory().ReadBlock(nrr_address, std::addressof(header),
+                                                    sizeof(header)), RO::ResultInvalidNrr);
+            R_UNLESS(header.IsValid(nrr_size), RO::ResultInvalidNrr);
 
-        // Switch 2 NRRs (header byte 6 is 1, for example Welcome Tour's /.nrr/tcn_Release.nrr) carry
-        // a longer signature area, so the hash list offset (+0x10) and hash count (+0x14) of the body
-        // start at 0x4b0 instead of 0x330 (real ro module 0x3d68-0x3e24).
-        u64 hashes_offset = header.GetHashesOffset();
-        u64 num_hashes = header.GetNumHashes();
-        u8 layout[8]{};
-        process->GetMemory().ReadBlock(nrr_address, layout, sizeof(layout));
-        if (layout[6] == 1) {
-            constexpr u64 LongBodyOffset = 0x4b0;
-            R_UNLESS(nrr_size >= LongBodyOffset + 0x20, RO::ResultInvalidNrr);
-            hashes_offset = process->GetMemory().Read32(nrr_address + LongBodyOffset + 0x10);
-            num_hashes = process->GetMemory().Read32(nrr_address + LongBodyOffset + 0x14);
+            std::vector<Sha256Hash> hashes(header.GetNumHashes());
+            if (!hashes.empty()) {
+                R_UNLESS(process->GetMemory().ReadBlock(nrr_address + header.GetHashesOffset(),
+                                                        hashes.data(), hashes.size() * sizeof(Sha256Hash)),
+                         RO::ResultInvalidNrr);
+            }
+
+            nrr_info->nrr_heap_address = nrr_address;
+            nrr_info->nrr_heap_size = nrr_size;
+            nrr_info->hashes = std::move(hashes);
+            context->SetNrrInfoInUse(nrr_info, true);
+            R_SUCCEED();
+        };
+
+        if (process->IsSwitch2()) {
+            R_RETURN(register_nrr.operator()<NrrHeaderNx2>());
         }
-        R_UNLESS(hashes_offset <= nrr_size &&
-                     num_hashes <= (nrr_size - hashes_offset) / sizeof(Sha256Hash),
-                 RO::ResultInvalidNrr);
-
-        // Set NRR info.
-        context->SetNrrInfoInUse(nrr_info, true);
-        nrr_info->nrr_heap_address = nrr_address;
-        nrr_info->nrr_heap_size = nrr_size;
-
-        // Read NRR hash list.
-        nrr_info->hashes.resize(num_hashes);
-        process->GetMemory().ReadBlock(nrr_address + hashes_offset, nrr_info->hashes.data(),
-                                       sizeof(Sha256Hash) * num_hashes);
-
-        R_SUCCEED();
+        R_RETURN(register_nrr.operator()<NrrHeader>());
     }
 
     Result UnregisterModuleInfo(size_t context_id, u64 nrr_address) {

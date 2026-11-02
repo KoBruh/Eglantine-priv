@@ -69,4 +69,14 @@ const MemoryInfo& GetMemInfo() {
     return mem_info;
 }
 
+u64 GetAvailableCommitMemory() {
+#ifdef _WIN32
+    MEMORYSTATUSEX status{};
+    status.dwLength = sizeof(status);
+    return GlobalMemoryStatusEx(&status) ? status.ullAvailPageFile : 0;
+#else
+    return 0;
+#endif
+}
+
 } // namespace Common

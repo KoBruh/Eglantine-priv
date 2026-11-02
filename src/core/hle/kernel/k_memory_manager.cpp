@@ -5,9 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <utility>
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/div_ceil.h"
 #include "common/scope_exit.h"
 #include "core/core.h"
 #include "core/device_memory.h"
@@ -171,6 +173,13 @@ void KMemoryManager::Initialize(KVirtualAddress management_region, size_t manage
     for (size_t i = 0; i < m_num_managers; ++i) {
         m_managers[i].SetInitialUsedHeapSize(reserved_sizes[i]);
     }
+
+    // The host backing outlives emulation sessions: after an earlier one, no page is known zero.
+    if (std::exchange(m_system.DeviceMemory().used_by_kernel, true)) {
+        for (size_t i = 0; i < m_num_managers; ++i) {
+            m_managers[i].MarkAllFreed();
+        }
+    }
 }
 
 Result KMemoryManager::InitializeOptimizedMemory(u64 process_id, Pool pool) {
@@ -318,7 +327,7 @@ Result KMemoryManager::AllocatePageGroupImpl(KPageGroup* out, size_t num_pages, 
     R_SUCCEED();
 }
 
-Result KMemoryManager::AllocateAndOpen(KPageGroup* out, size_t num_pages, u32 option) {
+Result KMemoryManager::AllocateAndOpen(KPageGroup* out, size_t num_pages, u32 option, bool random) {
     ASSERT(out != nullptr);
     ASSERT(out->GetNumPages() == 0);
 
@@ -331,7 +340,7 @@ Result KMemoryManager::AllocateAndOpen(KPageGroup* out, size_t num_pages, u32 op
 
     // Allocate the page group.
     R_TRY(this->AllocatePageGroupImpl(out, num_pages, pool, dir,
-                                      m_has_optimized_process[static_cast<size_t>(pool)], true));
+                                      m_has_optimized_process[static_cast<size_t>(pool)], random));
 
     // Open the first reference to the pages.
     for (const auto& block : *out) {
@@ -441,13 +450,33 @@ Result KMemoryManager::AllocateForProcess(KPageGroup* out, size_t num_pages, u32
     } else {
         // Set all the allocated memory.
         for (const auto& block : *out) {
-            m_system.DeviceMemory().buffer.ClearBackingRegion(GetInteger(block.GetAddress()) -
-                                                                  Core::DramMemoryMap::Base,
-                                                              block.GetSize(), fill_pattern);
+            this->FillAllocatedPages(block.GetAddress(), block.GetNumPages(), fill_pattern);
         }
     }
 
     R_SUCCEED();
+}
+
+void KMemoryManager::FillAllocatedPages(KPhysicalAddress address, size_t num_pages,
+                                        u8 fill_pattern) {
+    auto& backing = m_system.DeviceMemory().buffer;
+    while (num_pages > 0) {
+        auto& manager = this->GetManager(address);
+        const size_t cur_pages = (std::min)(num_pages, manager.GetPageOffsetToEnd(address));
+        if (fill_pattern != 0) {
+            backing.ClearBackingRegion(GetInteger(address) - Core::DramMemoryMap::Base,
+                                       cur_pages * PageSize, fill_pattern);
+        } else {
+            const size_t first = manager.GetPageOffset(address);
+            manager.TakeFreedRuns(first, cur_pages, [&](size_t index, size_t count) {
+                const KPhysicalAddress run = address + (index - first) * PageSize;
+                backing.ClearBackingRegion(GetInteger(run) - Core::DramMemoryMap::Base,
+                                           count * PageSize, 0);
+            });
+        }
+        address += cur_pages * PageSize;
+        num_pages -= cur_pages;
+    }
 }
 
 size_t KMemoryManager::Impl::Initialize(KPhysicalAddress address, size_t size,
@@ -466,8 +495,10 @@ size_t KMemoryManager::Impl::Initialize(KPhysicalAddress address, size_t size,
     // Setup region.
     m_pool = p;
     m_management_region = management;
-    m_page_reference_counts.resize(
-        Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize() / PageSize);
+    // Indexed by page offset into this manager's region, so its own size is enough (sized for
+    // all of DRAM, each of the managers held ~10 MiB with the 20 GiB Switch 2 layout).
+    m_page_reference_counts.resize(size / PageSize);
+    m_freed_pages = std::make_unique<std::atomic<u64>[]>(Common::DivCeil(size / PageSize, size_t{64}));
     ASSERT(Common::IsAligned(GetInteger(m_management_region), PageSize));
 
     // Initialize the manager's KPageHeap.
@@ -478,6 +509,9 @@ size_t KMemoryManager::Impl::Initialize(KPhysicalAddress address, size_t size,
 
 void KMemoryManager::Impl::InitializeOptimizedMemory(KernelCore& kernel) {
     auto optimize_pa = KPageTable::GetHeapPhysicalAddress(kernel, m_management_region);
+    kernel.System().DeviceMemory().buffer.MarkUsed(
+        GetInteger(optimize_pa) - Core::DramMemoryMap::Base,
+        CalculateOptimizedProcessOverheadSize(m_heap.GetSize()));
     auto* optimize_map = kernel.System().DeviceMemory().GetPointer<u64>(optimize_pa);
 
     std::memset(optimize_map, 0, CalculateOptimizedProcessOverheadSize(m_heap.GetSize()));
@@ -542,10 +576,13 @@ bool KMemoryManager::Impl::ProcessOptimizedAllocation(KernelCore& kernel, KPhysi
             // If not, it's new.
             any_new = true;
 
-            // Fill the page (a zero fill skips pages that are still zero).
-            device_memory.buffer.ClearBackingRegion(
-                GetInteger(m_heap.GetAddress()) + offset * PageSize - Core::DramMemoryMap::Base,
-                PageSize, fill_pattern);
+            // Fill the page (never-freed pages are still zero; a zero fill also skips pages
+            // that are still zero).
+            if (this->TakeFreed(offset) || fill_pattern != 0) {
+                device_memory.buffer.ClearBackingRegion(
+                    GetInteger(m_heap.GetAddress()) + offset * PageSize - Core::DramMemoryMap::Base,
+                    PageSize, fill_pattern);
+            }
         }
 
         offset++;

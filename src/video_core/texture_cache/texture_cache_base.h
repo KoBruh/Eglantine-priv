@@ -141,10 +141,14 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     std::vector<u8> astc_scan_buffer;
     u64 images_deleted{};
     std::map<u64, std::pair<u32, GPUVAddr>> created_shapes;
+    bool debug_stats{true}; ///< Collect what only the debug statistics lines use
 
     static constexpr s64 DEFAULT_EXPECTED_MEMORY = 1_GiB + 125_MiB;
     static constexpr s64 DEFAULT_CRITICAL_MEMORY = 1_GiB + 625_MiB;
     static constexpr size_t GC_EMERGENCY_COUNTS = 2;
+    /// Switch 2 titles: images unused this long (frames) are dropped before memory gets tight.
+    static constexpr u64 STALE_IMAGE_FRAMES = 3 * 60 * 60;
+    static constexpr size_t STALE_DELETES_PER_FRAME = 8;
 
     using Runtime = typename P::Runtime;
     using Image = typename P::Image;
@@ -163,6 +167,18 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
 
     /// Records the layers a write of [cpu_addr, +size) touches.
     void MarkLayersWritten(Image& image, DAddr cpu_addr, size_t size);
+
+    /// SparseTiles images: notes a written range, uploaded with the next refresh.
+    void MarkRangeWritten(Image& image, DAddr cpu_addr, size_t size);
+
+    /// SparseTiles images: binds and uploads the parts written since the last upload.
+    void RefreshSparseTiles(Image& image);
+
+    /// Image::BindTiles, counting what it binds in total_used_memory.
+    bool BindSparseTiles(Image& image, std::span<const LevelRect> rects);
+
+    /// Image::BackTilesWhole, counting what it binds in total_used_memory.
+    bool BackSparseTilesWhole(Image& image);
 
     /// Uploads the image's dirty layers. False when it needs a full upload instead.
     bool UploadWrittenLayers(Image& image);
@@ -286,7 +302,9 @@ public:
     /// Pop asynchronous downloads
     void PopAsyncFlushes();
 
-    [[nodiscard]] ImageId DmaImageId(const Tegra::DMA::ImageOperand& operand, bool is_upload);
+    [[nodiscard]] ImageId DmaImageId(const Tegra::DMA::ImageOperand& operand, bool is_upload,
+                                     const Tegra::DMA::ImageCopy& copy_info,
+                                     const Tegra::DMA::BufferOperand& buffer_operand);
 
     [[nodiscard]] std::pair<Image*, BufferImageCopy> DmaBufferImageCopy(
         const Tegra::DMA::ImageCopy& copy_info, const Tegra::DMA::BufferOperand& buffer_operand,
@@ -439,7 +457,8 @@ private:
 
     /// Records a GPU remap of a small part of a large 2D image for a partial re-upload instead of
     /// marking the whole image remapped (which replaces it). False if the image does not qualify.
-    bool MarkPartialRemap(ImageBase& image, GPUVAddr gpu_addr, size_t size);
+    bool MarkPartialRemap(ImageBase& image, Tegra::MemoryManager& memory, GPUVAddr gpu_addr,
+                          size_t size);
 
     /// Tracks the pages of a partial write again and forgets them.
     void RestorePartialPages(ImageBase& image);
@@ -447,11 +466,19 @@ private:
     /// Uploads the block rows the recorded pages cover. Returns false if the layout is not handled.
     bool RefreshPartialContents(Image& image);
 
+    bool ReplaceUnwrittenSparse(ImageId image_id);
+
     /// Delete image from the cache
     void DeleteImage(ImageId image, bool immediate_delete = false);
 
     /// Remove image views references from the cache
     void RemoveImageViewReferences(std::span<const ImageViewId> removed_views);
+
+    /// Per image view, the (channel, descriptor) entries of the channels' image_views maps that
+    /// point to it. Deleting an image erased them by scanning every map (title 1: ~5,000 entries,
+    /// 50-130 us for each deleted image, dozens a frame while the collector runs).
+    std::unordered_map<ImageViewId, boost::container::small_vector<std::pair<size_t, TICEntry>, 2>>
+        image_view_descriptors;
 
     /// Remove framebuffers using the given image views from the cache
     void RemoveFramebuffers(std::span<const ImageViewId> removed_views);
@@ -485,7 +512,7 @@ private:
     void InvalidateScale(Image& image);
     bool ScaleUp(Image& image);
     bool ScaleDown(Image& image);
-    u64 GetScaledImageSizeBytes(const ImageBase& image);
+    u64 GetScaledImageSizeBytes(const Image& image);
 
     /// The device memory an image counts for in total_used_memory between two driver readings:
     /// none for an unbacked image (too large to back, or over unwritten sparse blocks), what is
@@ -508,10 +535,6 @@ private:
     u32 rt_active_mask = 0;
     std::array<ImageId, 8> rt_image_id{};
     ImageId rt_depth_image_id{};
-    u64 texture_bindings_serial = 0;
-    u64 last_feedback_loop_serial = 0;
-    u64 last_feedback_texture_serial = 0;
-    bool last_feedback_loop_result = false;
     FramebufferId last_framebuffer_id{};
     u64 last_framebuffer_serial = 0;
 

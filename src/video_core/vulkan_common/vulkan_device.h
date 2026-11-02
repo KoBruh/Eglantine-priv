@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <optional>
 #include <set>
 #include <span>
@@ -62,6 +64,7 @@ VK_DEFINE_HANDLE(VmaAllocator)
     FEATURE(EXT, ExtendedDynamicState, EXTENDED_DYNAMIC_STATE, extended_dynamic_state)             \
     FEATURE(EXT, ExtendedDynamicState2, EXTENDED_DYNAMIC_STATE_2, extended_dynamic_state2)         \
     FEATURE(EXT, ExtendedDynamicState3, EXTENDED_DYNAMIC_STATE_3, extended_dynamic_state3)         \
+    FEATURE(EXT, GraphicsPipelineLibrary, GRAPHICS_PIPELINE_LIBRARY, graphics_pipeline_library)    \
     FEATURE(EXT, 4444Formats, 4444_FORMATS, format_a4b4g4r4)                                       \
     FEATURE(EXT, IndexTypeUint8, INDEX_TYPE_UINT8, index_type_uint8)                               \
     FEATURE(EXT, LineRasterization, LINE_RASTERIZATION, line_rasterization)                        \
@@ -109,11 +112,13 @@ VK_DEFINE_HANDLE(VmaAllocator)
     EXTENSION(KHR, MAINTENANCE_3, maintenance3)                                                    \
     EXTENSION(KHR, MAINTENANCE_7, maintenance7)                                                    \
     EXTENSION(KHR, MAINTENANCE_8, maintenance8)                                                    \
+    EXTENSION(KHR, PIPELINE_LIBRARY, pipeline_library)                                             \
     EXTENSION(NV, DEVICE_DIAGNOSTICS_CONFIG, device_diagnostics_config)                            \
     EXTENSION(NV, GEOMETRY_SHADER_PASSTHROUGH, geometry_shader_passthrough)                        \
     EXTENSION(NV, VIEWPORT_ARRAY2, viewport_array2)                                                \
     EXTENSION(NV, VIEWPORT_SWIZZLE, viewport_swizzle)                                              \
-    EXTENSION(EXT, FILTER_CUBIC, filter_cubic)                                                     \
+    EXTENSION(NV, COOPERATIVE_MATRIX, cooperative_matrix)                                             \
+    EXTENSION(EXT, FILTER_CUBIC, filter_cubic)                                                         \
     EXTENSION(IMG, FILTER_CUBIC, filter_cubic_img)                                                 \
     EXTENSION(QCOM, FILTER_CUBIC_WEIGHTS, filter_cubic_weights)
 
@@ -321,9 +326,41 @@ public:
         return features.features.sparseBinding && graphics_family_sparse_binding;
     }
 
-    /// 2D images whose memory can be bound in parts, on the graphics queue.
-    bool IsSparseResidencyImage2DSupported() const {
-        return IsSparseBindingSupported() && features.features.sparseResidencyImage2D;
+    /// Images whose memory can be bound in parts, on the graphics queue.
+    bool IsSparseResidencyImageSupported(VkImageType type) const {
+        if (!IsSparseBindingSupported()) {
+            return false;
+        }
+        switch (type) {
+        case VK_IMAGE_TYPE_2D:
+            return features.features.sparseResidencyImage2D;
+        case VK_IMAGE_TYPE_3D:
+            return features.features.sparseResidencyImage3D;
+        default:
+            return false;
+        }
+    }
+
+    /// Whether a sparse image may bind the same memory to several of its blocks.
+    bool IsSparseResidencyAliasedSupported() const {
+        return IsSparseResidencyImageSupported(VK_IMAGE_TYPE_2D) && features.features.sparseResidencyAliased;
+    }
+
+    /// Whether images with no memory bound may be sampled and used as attachments. AMD's drivers
+    /// fault on it (the GPU hangs shortly after the first such draw), so large images there are
+    /// backed normally. RADV is counted in until someone shows it doesn't need it.
+    /// EDEN_NX2_SPARSE_UNBACKED=1 allows unbound images on any driver, =0 on none.
+    bool CanUseUnbackedSparseImages() const {
+        static const char forced = [] {
+            const char* value = std::getenv("EDEN_NX2_SPARSE_UNBACKED");
+            return value == nullptr ? '\0' : value[0];
+        }();
+        if (forced == '0' || forced == '1') {
+            return forced == '1';
+        }
+        const VkDriverIdKHR id = GetDriverID();
+        return id != VK_DRIVER_ID_AMD_PROPRIETARY && id != VK_DRIVER_ID_AMD_OPEN_SOURCE &&
+               id != VK_DRIVER_ID_MESA_RADV;
     }
 
     /// Returns true for tile-based deferred renderers.
@@ -369,6 +406,7 @@ public:
 #define FN_MAX_LIMIT_LIST \
     FN_MAX_LIMIT_ELEM(ComputeSharedMemorySize) \
     FN_MAX_LIMIT_ELEM(PerStageDescriptorSampledImages) \
+    FN_MAX_LIMIT_ELEM(PerStageDescriptorStorageBuffers) \
     FN_MAX_LIMIT_ELEM(PerStageResources) \
     FN_MAX_LIMIT_ELEM(DescriptorSetSamplers) \
     FN_MAX_LIMIT_ELEM(DescriptorSetUniformBuffers) \
@@ -573,6 +611,13 @@ FN_MAX_LIMIT_LIST
         return extensions.push_descriptor;
     }
 
+    /// Returns true if graphics pipelines can be fast-linked from VK_EXT_graphics_pipeline_library
+    /// libraries: the extension, fast linking and independent interpolation decorations are all
+    /// supported, and EDEN_NX2_GPL is not 0.
+    bool IsExtGraphicsPipelineLibrarySupported() const {
+        return extensions.graphics_pipeline_library;
+    }
+
     /// Returns true if VK_KHR_pipeline_executable_properties is enabled.
     bool IsKhrPipelineExecutablePropertiesEnabled() const {
         return extensions.pipeline_executable_properties;
@@ -701,6 +746,28 @@ FN_MAX_LIMIT_LIST
     /// Returns true if vkResetQueryPool (host-side query reset) is supported.
     bool IsHostQueryResetSupported() const {
         return features.host_query_reset.hostQueryReset != VK_FALSE;
+    }
+
+    /// Returns true if the device supports VK_NV_cooperative_matrix (used for tensor ops).
+    bool IsExtCooperativeMatrixSupported() const {
+        return extensions.cooperative_matrix &&
+               features.cooperative_matrix_features.cooperativeMatrix &&
+               IsFloat16Supported() && SupportedSpirvVersion() >= 0x00010400 &&
+               cooperative_matrix_shape_supported &&
+               extensions.subgroup_size_control &&
+               features.subgroup_size_control.subgroupSizeControl &&
+               features.subgroup_size_control.computeFullSubgroups &&
+               IsGuestWarpSizeSupported(VK_SHADER_STAGE_COMPUTE_BIT) &&
+               properties.subgroup_size_control.minSubgroupSize <= 32 &&
+               properties.subgroup_size_control.maxSubgroupSize >= 32 &&
+               (GetSubgroupSupportedStages() & VK_SHADER_STAGE_COMPUTE_BIT) &&
+               IsSubgroupFeatureSupported(VK_SUBGROUP_FEATURE_BASIC_BIT);
+    }
+
+    u32 GetMaxTensorWorkgroupSize() const {
+        return (std::min)({properties.properties.limits.maxComputeWorkGroupSize[0],
+                          properties.properties.limits.maxComputeWorkGroupInvocations,
+                          properties.subgroup_size_control.maxComputeWorkgroupSubgroups * 32U});
     }
 
     /// Returns true if the device supports VK_EXT_transform_feedback.
@@ -968,6 +1035,11 @@ FN_MAX_LIMIT_LIST
 
     u64 GetDeviceMemoryUsage() const;
 
+    [[nodiscard]] bool TracksMemoryHeap(size_t heap) const noexcept {
+        return std::find(valid_heap_memory.begin(), valid_heap_memory.end(), heap) !=
+               valid_heap_memory.end();
+    }
+
     /// The driver's current memory budget for this process (VK_EXT_memory_budget), in
     /// GetDeviceMemoryUsage() terms: the usage at which the main device-local heap reaches its
     /// budget. 0 without the extension.
@@ -1198,18 +1270,22 @@ private:
 #undef FEATURE_CORE
 #undef FEATURE_EXT
 
+        VkPhysicalDeviceCooperativeMatrixFeaturesNV cooperative_matrix_features{};
+
         VkPhysicalDeviceFeatures features{};
     };
 
     struct Properties {
         VkPhysicalDeviceDriverProperties driver{};
         VkPhysicalDeviceSubgroupProperties subgroup_properties{};
+        VkPhysicalDeviceCooperativeMatrixPropertiesNV cooperative_matrix{};
         VkPhysicalDeviceFloatControlsProperties float_controls{};
         VkPhysicalDevicePushDescriptorPropertiesKHR push_descriptor{};
         VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_buffer{};
         VkPhysicalDeviceSubgroupSizeControlProperties subgroup_size_control{};
         VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback{};
         VkPhysicalDeviceMaintenance5PropertiesKHR maintenance5{};
+        VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT graphics_pipeline_library{};
         VkPhysicalDeviceDepthStencilResolveProperties depth_stencil_resolve{};
         VkPhysicalDeviceCustomBorderColorPropertiesEXT custom_border_color{};
 
@@ -1219,6 +1295,7 @@ private:
     Extensions extensions{};
     Features features{};
     Properties properties{};
+    bool cooperative_matrix_shape_supported{};
 
     VkPhysicalDeviceFeatures2 features2{};
     VkPhysicalDeviceProperties2 properties2{};

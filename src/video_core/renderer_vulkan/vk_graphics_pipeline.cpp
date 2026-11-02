@@ -9,6 +9,7 @@
 #include <iostream>
 #include <optional>
 #include <span>
+#include <set>
 
 #include <boost/container/small_vector.hpp>
 #include <boost/container/static_vector.hpp>
@@ -22,6 +23,7 @@
 #include "video_core/renderer_vulkan/pipeline_stats.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/renderer_vulkan/vk_pipeline_library.h"
 #include "video_core/renderer_vulkan/vk_render_pass_cache.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
@@ -259,12 +261,14 @@ GraphicsPipeline::GraphicsPipeline(
     GuestDescriptorQueue& guest_descriptor_queue_, DescriptorBufferRing& descriptor_buffer_ring_,
     Common::ThreadWorker* worker_thread,
     PipelineStatistics* pipeline_statistics, RenderPassCache& render_pass_cache,
+    GraphicsPipelineLibraryCache* library_cache_, Common::ThreadWorker* optimize_worker_,
     const GraphicsPipelineCacheKey& key_, std::shared_ptr<const GraphicsShaderModules> modules,
     const std::array<const Shader::Info*, NUM_STAGES>& infos)
     : key{key_}, device{device_}, texture_cache{texture_cache_}, buffer_cache{buffer_cache_},
       pipeline_cache(pipeline_cache_), scheduler{scheduler_},
       guest_descriptor_queue{guest_descriptor_queue_},
-      descriptor_buffer_ring{descriptor_buffer_ring_}, spv_modules{std::move(modules)} {
+      descriptor_buffer_ring{descriptor_buffer_ring_}, spv_modules{std::move(modules)},
+      library_cache{library_cache_}, optimize_worker{optimize_worker_} {
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
@@ -314,6 +318,9 @@ GraphicsPipeline::GraphicsPipeline(
         }
     }
 
+    // Before the build may run: it releases the modules.
+    configure_func = ConfigureFunc(*spv_modules, stage_infos);
+
     const bool on_parallel_worker{worker_thread != nullptr};
     auto func{[this, shader_notify, &render_pass_cache, pipeline_statistics, on_parallel_worker] {
         std::optional<PipelineStats::ScopedRole> stats_role;
@@ -322,12 +329,17 @@ GraphicsPipeline::GraphicsPipeline(
         }
         const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
         Validate();
+        bool fast_linked = false;
         try {
             const PipelineStats::ScopedTimer stats_timer{PipelineStats::Kind::Graphics,
                                                          PipelineStats::Stage::Driver};
-            MakePipeline(render_pass);
+            DriverPipeline built{MakePipeline(
+                render_pass, library_cache != nullptr ? LinkMode::Link : LinkMode::None)};
+            pipeline = std::move(built.pipeline);
+            fast_linked = built.fast_linked;
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Graphics pipeline build failed: {}", exception.what());
+            spv_modules = {};
             std::scoped_lock lock{build_mutex};
             is_built = true;
             build_condvar.notify_one();
@@ -336,23 +348,60 @@ GraphicsPipeline::GraphicsPipeline(
             }
             return;
         }
+        // The modules are only needed to create the pipeline. Kept, the driver holds every
+        // pipeline's SPIR-V for the whole session (thousands of pipelines from the disk cache).
+        // A fast-linked pipeline still needs them for its optimized compile, which drops them.
+        if (!fast_linked) {
+            spv_modules = {};
+        }
         if (pipeline_statistics) {
             pipeline_statistics->Collect(device, *pipeline);
         }
 
-        std::scoped_lock lock{build_mutex};
-        is_built = true;
-        build_condvar.notify_one();
-        if (shader_notify) {
-            shader_notify->MarkShaderComplete();
+        {
+            std::scoped_lock lock{build_mutex};
+            is_built = true;
+            build_condvar.notify_one();
+            if (shader_notify) {
+                shader_notify->MarkShaderComplete();
+            }
+        }
+        if (fast_linked) {
+            QueueOptimizedPipeline(render_pass);
         }
     }};
-    if (worker_thread) {
-        worker_thread->QueueWork(std::move(func));
-    } else {
+    if (!worker_thread) {
         func();
+    } else if (!LinkFromCachedParts(render_pass_cache, shader_notify)) {
+        worker_thread->QueueWork(std::move(func));
     }
-    configure_func = ConfigureFunc(*spv_modules, stage_infos);
+}
+
+bool GraphicsPipeline::LinkFromCachedParts(RenderPassCache& render_pass_cache,
+                                           VideoCore::ShaderNotify* shader_notify) {
+    // When every part is compiled already, linking takes well under a millisecond: cheaper than
+    // queueing the build on a worker and skipping the draws until it is done.
+    if (library_cache == nullptr) {
+        return false;
+    }
+    const VkRenderPass render_pass{render_pass_cache.Get(MakeRenderPassKey(key.state, device))};
+    Validate();
+    try {
+        pipeline = MakePipeline(render_pass, LinkMode::CachedPartsOnly).pipeline;
+    } catch (const vk::Exception& exception) {
+        LOG_WARNING(Render_Vulkan, "Linking graphics pipeline {:016X} failed ({})", key.Hash(),
+                    exception.what());
+    }
+    if (!pipeline) {
+        return false;
+    }
+    // Nothing can wait for this pipeline yet: it is still being constructed.
+    is_built = true;
+    if (shader_notify) {
+        shader_notify->MarkShaderComplete();
+    }
+    QueueOptimizedPipeline(render_pass);
+    return true;
 }
 
 void GraphicsPipeline::AddTransition(GraphicsPipeline* transition) {
@@ -472,6 +521,35 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
         Profile::Scope scope{Profile::Zone::FillImageViews};
         texture_cache.FillImageViews(std::span(views.data(), views.size()), false,
                                      Spec::has_images);
+    }
+    static const bool scanout_diagnostics = std::getenv("EDEN_NX2_SCANOUT_DIAG") != nullptr;
+    if (scanout_diagnostics && maxwell3d->GetNativeMacroEngine().native_turing) {
+        static std::set<std::pair<u64, u64>> reported;
+        const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) |
+                       regs.pipelines[5].reserved[1];
+        if (reported.size() < 64 && reported.emplace(ps, regs.rt[0].Address()).second) {
+            LOG_INFO(HW_GPU, "Native draw inputs: ps={:#x} rt={:#x} {}x{} textures={}",
+                     ps, regs.rt[0].Address(), regs.rt[0].width, regs.rt[0].height, views.size());
+            for (const auto& entry : views) {
+                const auto& view = texture_cache.GetImageView(entry.id);
+                LOG_INFO(HW_GPU, "  texture index={} address={:#x} {}x{} format={}",
+                         entry.index, view.GpuAddr(), view.size.width, view.size.height, view.format);
+            }
+            const auto describe_buffer = [&](u32 stage, u32 bank, u32 offset, u32 words) {
+                const auto& buffer = maxwell3d->state.shader_stages[stage].const_buffers[bank];
+                std::array<u32, 16> values{};
+                if (buffer.enabled && buffer.size >= offset + words * sizeof(u32) &&
+                    gpu_memory->IsFullyMappedRange(buffer.address + offset, words * sizeof(u32))) {
+                    gpu_memory->ReadBlockUnsafe(buffer.address + offset, values.data(), words * sizeof(u32));
+                }
+                LOG_INFO(HW_GPU, "  stage={} c[{}] address={:#x} enabled={} size={:#x} offset={:#x}: {:08x}",
+                         stage, bank, buffer.address, buffer.enabled, buffer.size, offset,
+                         fmt::join(std::span(values.data(), words), " "));
+            };
+            describe_buffer(0, 6, 0x70, 16);
+            describe_buffer(4, 11, 0x320, 4);
+            describe_buffer(4, 7, 0x20c, 1);
+        }
     }
 
     VideoCommon::ImageViewInOut* texture_buffer_it{views.data()};
@@ -684,10 +762,11 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
             cmdbuf.BindDescriptorBuffersEXT(binding_info);
         }
         if (bind_pipeline) {
-            if (!pipeline) {
+            const VkPipeline bound{BoundPipeline()};
+            if (bound == VK_NULL_HANDLE) {
                 return;
             }
-            cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline);
+            cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, bound);
         }
         cmdbuf.PushConstants(*pipeline_layout, VK_SHADER_STAGE_ALL_GRAPHICS,
                              RESCALING_LAYOUT_WORDS_OFFSET, sizeof(rescaling_data),
@@ -725,7 +804,8 @@ bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
     return true;
 }
 
-void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
+GraphicsPipeline::DriverPipeline GraphicsPipeline::MakePipeline(VkRenderPass render_pass,
+                                                                LinkMode link_mode) {
     FixedPipelineState::DynamicState dynamic{};
     if (!key.state.extended_dynamic_state) {
         dynamic = key.state.dynamic_state;
@@ -1118,7 +1198,7 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
     }
 
-    pipeline = device.GetLogical().CreateGraphicsPipeline({
+    const VkGraphicsPipelineCreateInfo pipeline_ci{
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .pNext = nullptr,
         .flags = flags,
@@ -1138,7 +1218,28 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         .subpass = 0,
         .basePipelineHandle = nullptr,
         .basePipelineIndex = 0,
-    }, *pipeline_cache);
+    };
+    DriverPipeline result;
+    if (link_mode == LinkMode::CachedPartsOnly) {
+        result.pipeline = library_cache->Link(pipeline_ci, *pipeline_cache, spv_modules, true);
+        result.fast_linked = static_cast<bool>(result.pipeline);
+        return result;
+    }
+    if (link_mode == LinkMode::Link) {
+        try {
+            result.pipeline = library_cache->Link(pipeline_ci, *pipeline_cache, spv_modules, false);
+            result.fast_linked = static_cast<bool>(result.pipeline);
+        } catch (const vk::Exception& exception) {
+            LOG_WARNING(Render_Vulkan, "Linking graphics pipeline {:016X} failed ({}), compiling it",
+                        key.Hash(), exception.what());
+        }
+        if (!result.fast_linked) {
+            PipelineStats::NoteLibrary(PipelineStats::Registry::LibraryEvent::LinkFallback);
+        }
+    }
+    if (!result.fast_linked) {
+        result.pipeline = device.GetLogical().CreateGraphicsPipeline(pipeline_ci, *pipeline_cache);
+    }
 
     // Log graphics pipeline creation
     if (GPU::Logging::IsActive()) {
@@ -1149,6 +1250,37 @@ void GraphicsPipeline::MakePipeline(VkRenderPass render_pass) {
         );
         GPU::Logging::GPULogger::GetInstance().LogPipelineStateChange(pipeline_info);
     }
+    return result;
+}
+
+void GraphicsPipeline::QueueOptimizedPipeline(VkRenderPass render_pass) {
+    if (optimize_worker == nullptr) {
+        spv_modules = {};
+        return;
+    }
+    // A fast-linked pipeline may run slower on the GPU than one compiled whole, where the driver
+    // optimizes across stages. The monolithic compile also stores in the VkPipelineCache what the
+    // disk cache replay at the next boot asks for.
+    // Everything MakePipeline reads is immutable once the pipeline is built, and the pool is
+    // destroyed before the pipelines (PipelineCache member order).
+    optimize_worker->QueueWork([this, render_pass] {
+        const PipelineStats::ScopedRole stats_role{PipelineStats::Role::Opt};
+        try {
+            const PipelineStats::ScopedTimer stats_timer{PipelineStats::Kind::Graphics,
+                                                         PipelineStats::Stage::Optimize};
+            optimized_pipeline = MakePipeline(render_pass, LinkMode::None).pipeline;
+        } catch (const vk::Exception& exception) {
+            LOG_WARNING(Render_Vulkan,
+                        "Optimized graphics pipeline {:016X} failed ({}), keeping the linked one",
+                        key.Hash(), exception.what());
+            spv_modules = {};
+            return;
+        }
+        spv_modules = {};
+        // Draws recorded from now on bind it (BoundPipeline, read on the command thread).
+        optimized_ready.store(true, std::memory_order_release);
+        PipelineStats::NoteLibrary(PipelineStats::Registry::LibraryEvent::Optimized);
+    });
 }
 
 void GraphicsPipeline::Validate() {

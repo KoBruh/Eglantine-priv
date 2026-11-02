@@ -25,14 +25,14 @@ constexpr std::size_t MAX_GUIDE_TEXT_LENGTH = 256;
 constexpr std::size_t STRING_BUFFER_SIZE = 0x7D4;
 
 enum class SwkbdAppletVersion : u32_le {
-    Version5 = 0x5,          // 1.0.0
-    Version65542 = 0x10006,  // 2.0.0 - 2.3.0
-    Version196615 = 0x30007, // 3.0.0 - 3.0.2
-    Version262152 = 0x40008, // 4.0.0 - 4.1.0
-    Version327689 = 0x50009, // 5.0.0 - 5.1.0
-    Version393227 = 0x6000B, // 6.0.0 - 7.0.1
-    Version524301 = 0x8000D, // 8.0.0+
-    Version1310736 = 0x140010, // Switch 2 (Pokemon Pokopia): 0x530-byte config, UTF-8 text
+    Version5 = 0x5,            // 1.0.0
+    Version65542 = 0x10006,    // 2.0.0 - 2.3.0
+    Version196615 = 0x30007,   // 3.0.0 - 3.0.2
+    Version262152 = 0x40008,   // 4.0.0 - 4.1.0
+    Version327689 = 0x50009,   // 5.0.0 - 5.1.0
+    Version393227 = 0x6000B,   // 6.0.0 - 7.0.1
+    Version524301 = 0x8000D,   // 8.0.0+
+    Version1310736 = 0x140010, // 20.0.0 native
 };
 
 enum class SwkbdType : u32 {

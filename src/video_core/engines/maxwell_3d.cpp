@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -315,7 +316,13 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     // Sunk methods are state writes only (not in execution_mask): skip unchanged values, as
     // CallMethod does.
     const bool skip_same = SkipSameValueWrites();
-    const auto process = [&](u32 method, u32 value) {
+    const auto process = [&](u32 method, u32 raw, u32 value) {
+#ifdef ARCHITECTURE_x86_64
+        if (TuringMacroJit::RtDump::RecordingConfigured()) {
+            TuringMacroJit::RtDump::Record(this, method, raw, value, static_cast<u32>(control),
+                                         regs.reg_array[method], std::span{regs.reg_array}.subspan(0x200, 0x80));
+        }
+#endif
         if (!skip_same || regs.reg_array[method] != value) {
             ProcessDirtyRegisters(method, value);
         }
@@ -323,23 +330,24 @@ void Maxwell3D::ConsumeSinkImpl(Core::System& system) {
     if (control == Regs::ShadowRamControl::Track || control == Regs::ShadowRamControl::TrackWithFilter) {
         for (auto [method, value] : method_sink) {
             shadow_state.reg_array[method] = value;
-            process(method, value);
+            process(method, value, value);
         }
     } else if (control == Regs::ShadowRamControl::Replay) {
         for (auto [method, value] : method_sink)
-            process(method, shadow_state.reg_array[method]);
+            process(method, value, shadow_state.reg_array[method]);
     } else {
         for (auto [method, value] : method_sink)
-            process(method, value);
+            process(method, value, value);
     }
     method_sink.clear();
 }
 
 void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
     // The instances after the first are drawn together once their loop ends, and they must see
-    // the state they were begun with: NVN's draw macros reset the base instance (and its copy in
-    // c[0][0x644]) right after the loop, before the macro returns.
-    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
+    // the state they were begun with: NVN/NVN2's draw macros reset the base instance (and its
+    // copy in c[0][0x644]) right after the loop, before the macro returns.
+    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method) &&
+        GetNativeMacroEngine().native_turing) [[unlikely]] {
         draw_manager.DrawDeferred(*this);
     }
     regs.reg_array[method] = argument;
@@ -482,6 +490,13 @@ void Maxwell3D::CallMethod(Core::System& system, u32 method, u32 method_argument
             method_argument, static_cast<u32>(shadow_state.shadow_ram_control), is_last_call ? 1U : 0U};
     }
     const u32 argument = ProcessShadowRam(method, method_argument);
+#ifdef ARCHITECTURE_x86_64
+    if (TuringMacroJit::RtDump::RecordingConfigured()) {
+        TuringMacroJit::RtDump::Record(this, method, method_argument, argument,
+                                     static_cast<u32>(shadow_state.shadow_ram_control), regs.reg_array[method],
+                                     std::span{regs.reg_array}.subspan(0x200, 0x80));
+    }
+#endif
     // A state register written with the value it holds changes nothing: no dirty flags (they
     // would make the next draw re-check that state), no method processing. Title 1 makes ~6
     // million 3D register writes a second, ~60% of them same-value, most from macro replays.
@@ -523,7 +538,8 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
         return;
     }
     // As in ProcessDirtyRegisters: the paths below write without it.
-    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method)) [[unlikely]] {
+    if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method) &&
+        GetNativeMacroEngine().native_turing) [[unlikely]] {
         draw_manager.DrawDeferred(*this);
     }
     switch (method) {
@@ -571,7 +587,18 @@ void Maxwell3D::ProcessMacroUpload(u32 data) {
 }
 
 void Maxwell3D::ProcessMacroBind(u32 data) {
-    GetNativeMacroPositions()[regs.load_mme.start_address_ptr++] = data;
+    const auto positions = GetNativeMacroPositions();
+    const u32 index = regs.load_mme.start_address_ptr++;
+    if (index >= positions.size()) {
+        static std::atomic<u32> rejected{};
+        if (rejected.fetch_add(1) < 8) {
+            LOG_ERROR(HW_GPU,
+                      "Rejecting out-of-range macro bind: index={:#x}, entries={}, data={:#x}",
+                      index, positions.size(), data);
+        }
+        return;
+    }
+    positions[index] = data;
 }
 
 void Maxwell3D::ProcessFirmwareCall4() {
@@ -805,7 +832,6 @@ struct Maxwell3D::FrontState {
     Regs::ShadowRamControl control{};
     u32 executing_macro{};
     std::vector<u32> parameters;
-    std::vector<u32> fifo;
     u64 calls{};
     /// A method the draw manager handles was sent since the back last ran DrawDeferred: only
     /// then can it have a deferred instanced draw to issue at the end of a macro.
@@ -856,12 +882,13 @@ bool FrontHandledOutsideDrawManager(u32 method) {
 }
 
 // EDEN_NX2_SPLIT_SKIP=0: send state writes that keep the register's value too.
+const bool g_front_skip_same = [] {
+    const char* value = std::getenv("EDEN_NX2_SPLIT_SKIP");
+    return value == nullptr || value[0] != '0';
+}();
+
 bool FrontSkipSame() {
-    static const bool skip = [] {
-        const char* value = std::getenv("EDEN_NX2_SPLIT_SKIP");
-        return value == nullptr || value[0] != '0';
-    }();
-    return skip;
+    return g_front_skip_same;
 }
 
 } // Anonymous namespace
@@ -1080,9 +1107,9 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             engine.native_jit = std::make_shared<TuringMacroJit>();
         }
         engine.native_jit->Prepare(engine.native_code, engine.native_code_generation);
-        fs.fifo.assign(fs.parameters.begin(), fs.parameters.end());
+        const auto parameter_count = fs.parameters.size();
         const auto result = engine.native_jit->Execute(
-            start, fs.fifo, std::span<u32>{native_data_ram},
+            start, fs.parameters, std::span<u32>{native_data_ram},
             [&fs](u32 address) { return address < Regs::NUM_REGS ? fs.regs[address] : 0U; },
             [&](u32 address, u32 value) {
                 if (address >= MacroRegistersStart) {
@@ -1098,7 +1125,7 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
         if (!result.success) {
             engine.native_execution_failed = true;
             LOG_ERROR(HW_GPU, "Native MME (JIT, split front) failed: start={:#x}, consumed={}/{}, error={}",
-                      start, result.consumed, fs.parameters.size(), result.error);
+                      start, result.consumed, parameter_count, result.error);
         }
     }
     fs.parameters.clear();
@@ -1119,7 +1146,7 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
                              u32 count) {
     // The words may be written by methods still queued for the back (indirect draw arguments
     // from a culling dispatch), and the caches that may hold newer ones belong to it.
-    split.Drain();
+    split.Drain(VideoCommon::Nx2Profile::Zone::DrainDmaRead);
     const GPUVAddr source = (GPUVAddr{fs.regs[0x154] & 0x1ffffff} << 32) | fs.regs[0x155];
     const u32 ram = fs.regs[0x156];
     const u32 words = std::min<u32>(count, 0x1000);
@@ -1127,13 +1154,16 @@ void Maxwell3D::FrontDmaRead(VideoCommon::GpuSplit& split, FrontState& fs, u32 m
     if (VideoCommon::Nx2Profile::Enabled()) {
         VideoCommon::Nx2Profile::Add(VideoCommon::Nx2Profile::Counter::DmaReadBytes, read_bytes);
     }
-    if (memory_manager.IsMemoryDirty(source, read_bytes, VideoCommon::CacheType::BufferCache)) {
-        memory_manager.FlushRegion(source, read_bytes, VideoCommon::CacheType::BufferCache);
+    // Query reports too (occlusion-based conditional rendering, see MacroEngine::ReadNativeMemory);
+    // the back is drained, so its caches are safe to flush from here.
+    constexpr auto flush_caches = VideoCommon::CacheType::BufferCache | VideoCommon::CacheType::QueryCache;
+    if (memory_manager.IsMemoryDirty(source, read_bytes, flush_caches)) {
+        memory_manager.FlushRegion(source, read_bytes, flush_caches);
     }
     for (u32 i = 0; i < words; ++i) {
         const u32 word = memory_manager.Read<u32>(source + u64{i} * sizeof(u32));
         if (method == 0x158) {
-            fs.fifo.push_back(word);
+            fs.parameters.push_back(word);
         } else if (ram + i < native_data_ram.size()) {
             native_data_ram[ram + i] = word;
         }

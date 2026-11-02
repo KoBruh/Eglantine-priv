@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <array>
 #include <limits>
+#include <memory>
 
 #include <boost/container/small_vector.hpp>
 
@@ -122,6 +124,8 @@ public:
 
     u64 GetDeviceMemoryUsage() const;
 
+    u64 GetDeviceMemoryBudget() const;
+
     bool CanReportMemoryUsage() const;
 
     u32 GetUniformBufferAlignment() const;
@@ -158,6 +162,10 @@ public:
     void BindTransformFeedbackBuffer(u32 index, VkBuffer buffer, u32 offset, u32 size);
 
     void BindTransformFeedbackBuffers(VideoCommon::HostBindings<Buffer>& bindings);
+
+    void BindUniformBufferFromGpu(const Buffer& buffer, u32 offset, u32 size);
+    bool BindSmallUniformReusing(Tegra::MaxwellDeviceMemoryManager& device_memory,
+                                size_t stage, u32 index, DAddr device_addr, u32 size);
 
     std::span<u8> BindMappedUniformBuffer([[maybe_unused]] size_t stage,
                                           [[maybe_unused]] u32 binding_index,
@@ -224,6 +232,7 @@ public:
             const VkFormat vk_format = address == 0 ? VK_FORMAT_UNDEFINED : TexelBufferFormat(format);
             guest_descriptor_queue.AddTexelBuffer(VK_NULL_HANDLE, address, offset, size, vk_format);
         } else {
+            if (format == VideoCore::Surface::PixelFormat::Invalid) format = VideoCore::Surface::PixelFormat::R8_UNORM;
             guest_descriptor_queue.AddTexelBuffer(buffer.View(offset, size, format));
         }
     }
@@ -268,6 +277,19 @@ private:
     MultiRangeBufferCache multi_range_buffers;
     boost::container::small_vector<MultiRangeSource, 16> multi_range_sources;
     VkDeviceSize multi_range_total{};
+
+    struct UniformStreamReuse {
+        static constexpr u32 MaxBytes = 4096;
+        struct Slot {
+            StagingBufferRef ref{};
+            u64 tick{};
+            u32 size{};
+            std::array<u8, MaxBytes> bytes{};
+        };
+        std::array<std::array<Slot, 18>, 5> slots{};
+        std::array<u8, MaxBytes> scratch{};
+    };
+    std::unique_ptr<UniformStreamReuse> uniform_stream_reuse;
 
     bool limit_dynamic_storage_buffers = false;
     u32 max_dynamic_storage_buffers = (std::numeric_limits<u32>::max)();

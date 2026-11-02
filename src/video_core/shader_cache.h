@@ -40,6 +40,7 @@ struct ShaderInfo {
     size_t size_bytes{};
     /// Lowered code of a native program, reused when its pipelines are built.
     std::shared_ptr<const LoweredNativeCode> lowered_native;
+    bool requires_rasterizer_clip{};
 };
 
 class ShaderCache : public VideoCommon::ChannelSetupCaches<VideoCommon::ChannelInfo> {
@@ -69,6 +70,7 @@ public:
 
     /// Shader programs registered on the page holding addr (EDEN_NX2_WRITE_STATS).
     size_t EntriesOnPage(VAddr addr);
+    void InvalidateRegions(std::span<const std::pair<DAddr, size_t>> sequences);
 
     /// @brief Unmarks a memory region as cached and marks it for removal
     /// @param addr Start address of the CPU write operation
@@ -88,8 +90,7 @@ protected:
         }
     };
 
-    explicit ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory,
-                         bool native_tensor_full_by_default_ = false);
+    explicit ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory);
 
     /// @brief Update the hashes and information of shader stages
     /// @param unique_hashes Shader hashes to store into when a stage is enabled
@@ -108,9 +109,15 @@ protected:
     bool last_shaders_valid = false;
 
     Tegra::MaxwellDeviceMemoryManager& device_memory;
-    bool native_tensor_full_by_default = false;
+    bool support_cooperative_matrix = false;
+
+    void SetCooperativeMatrixSupported(bool value) {
+        support_cooperative_matrix = value;
+    }
 
 private:
+    friend struct ShaderCacheTestAccess;
+
     /// @brief Tries to obtain a cached shader starting in a given address
     /// @note Doesn't check for ranges, the given address has to be the start of the shader
     /// @param addr Start address of the shader, this doesn't cache for region
@@ -132,7 +139,7 @@ private:
     void RemovePendingShaders();
 
     /// @brief Invalidates entries in a given range for the passed page
-    /// @param entries         Vector of entries in the page, it will be modified on overlaps
+    /// @param entries         Entries in the page; overlapping shaders are marked for removal
     /// @param addr            Start address of the invalidation
     /// @param addr_end        Non-inclusive end address of the invalidation
     /// @pre invalidation_mutex is locked

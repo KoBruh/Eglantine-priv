@@ -1,0 +1,25 @@
+From: Jonas <sunjaroa@gmail.com>
+Subject: [PATCH] [cmake] no ARM runtime CPU detection with MinGW
+
+armcpu.c only implements the Windows ARM CPU check for MSVC (__try/__emit), so
+MinGW builds stopped at its #error. Without the runtime check the NEON code is
+still used when OPUS_PRESUME_NEON is set, which it is on AArch64.
+---
+ cmake/OpusFunctions.cmake | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/cmake/OpusFunctions.cmake b/cmake/OpusFunctions.cmake
+--- a/cmake/OpusFunctions.cmake
++++ b/cmake/OpusFunctions.cmake
+@@ -167,7 +167,10 @@ function(opus_supports_cpu_detection RUNTIME_CPU_CAPABILITY_DETECTION)
+   elseif(OPUS_CPU_ARM)
+     # ARM cpu detection is implemented for Windows, Linux, Android, FreeBSD
+     # and OpenBSD.
+-    if (CMAKE_SYSTEM_NAME MATCHES "(Windows|Linux|Android|FreeBSD|OpenBSD)")
++    # On Windows only for MSVC: armcpu.c has no MinGW implementation.
++    if (CMAKE_SYSTEM_NAME STREQUAL "Windows" AND NOT MSVC)
++      set(RUNTIME_CPU_CAPABILITY_DETECTION 0 PARENT_SCOPE)
++    elseif (CMAKE_SYSTEM_NAME MATCHES "(Windows|Linux|Android|FreeBSD|OpenBSD)")
+       set(RUNTIME_CPU_CAPABILITY_DETECTION 1 PARENT_SCOPE)
+     endif ()
+   else()

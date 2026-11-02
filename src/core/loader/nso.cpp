@@ -5,8 +5,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -23,6 +26,7 @@
 #include "core/hle/kernel/k_page_table.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/svc.h"
 #include "core/loader/nso.h"
 #include "core/memory.h"
 
@@ -94,48 +98,59 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         return 0;
     }();
 
-    auto const last_segment_it = &nso_header.segments[nso_header.segments.size() - 1];
+    const auto& last_segment = nso_header.segments.back();
+    const u64 segment_end = u64{last_segment.location} + last_segment.size;
+    if (segment_end + last_segment.bss_size + module_start >
+        std::numeric_limits<u32>::max() - Core::Memory::YUZU_PAGEMASK) {
+        LOG_ERROR(Loader, "NSO {} has an invalid image size", nso_file.GetName());
+        return std::nullopt;
+    }
+
+    size_t compressed_buffer_size = 0;
+    for (size_t i = 0; i < nso_header.segments.size(); ++i) {
+        const auto& segment = nso_header.segments[i];
+        const bool compressed = nso_header.IsSegmentCompressed(i);
+        const u64 stored_size = compressed ? nso_header.segments_compressed_size[i] : segment.size;
+        if (u64{segment.location} + segment.size > segment_end ||
+            u64{segment.offset} + stored_size > nso_file.GetSize() ||
+            (compressed && (stored_size > static_cast<u64>(std::numeric_limits<int>::max()) ||
+                            segment.size > static_cast<u32>(std::numeric_limits<int>::max())))) {
+            LOG_ERROR(Loader, "NSO {} segment {} has an invalid range", nso_file.GetName(), i);
+            return std::nullopt;
+        }
+        if (compressed) {
+            compressed_buffer_size = std::max(compressed_buffer_size, static_cast<size_t>(stored_size));
+        }
+    }
+
     // Build program image directly in codeset memory :)
     Kernel::CodeSet codeset;
-    codeset.memory.resize(module_start + last_segment_it->location + last_segment_it->size);
+    codeset.memory.resize(module_start + segment_end);
     {
-        std::vector<u8> compressed_data(*std::ranges::max_element(nso_header.segments_compressed_size));
-        std::vector<u8> decompressed_size(std::ranges::max_element(nso_header.segments, [](auto const& a, auto const& b) {
-            return a.size < b.size;
-        })->size);
+        std::vector<u8> compressed_data(compressed_buffer_size);
         for (std::size_t i = 0; i < nso_header.segments.size(); ++i) {
-            nso_file.Read(compressed_data.data(), nso_header.segments_compressed_size[i], nso_header.segments[i].offset);
+            const auto& segment = nso_header.segments[i];
+            auto destination = std::span{codeset.memory}.subspan(module_start + segment.location,
+                                                              segment.size);
             if (nso_header.IsSegmentCompressed(i)) {
-                if (nso_header.IsZBICCompressed()) {
-                    // ZBIC compression
-                    const int r = Common::Compression::DecompressDataZBIC(
-                        std::span<u8>{decompressed_size}.first(nso_header.segments[i].size),
-                        std::span<const u8>{compressed_data}.first(nso_header.segments_compressed_size[i])
-                    );
-                    ASSERT(r > 0);
-                } else {
-                    // LZ4 compression
-                    int r = Common::Compression::DecompressDataLZ4(
-                        decompressed_size.data(),
-                        nso_header.segments[i].size,
-                        compressed_data.data(),
-                        nso_header.segments_compressed_size[i]
-                    );
-                    ASSERT(r == int(nso_header.segments[i].size));
+                const auto source = std::span{compressed_data}.first(nso_header.segments_compressed_size[i]);
+                if (nso_file.Read(source.data(), source.size(), segment.offset) != source.size()) {
+                    LOG_ERROR(Loader, "NSO {} segment {} could not be read", nso_file.GetName(), i);
+                    return std::nullopt;
                 }
-
-                std::memcpy(
-                    codeset.memory.data() + module_start + nso_header.segments[i].location,
-                    decompressed_size.data(),
-                    nso_header.segments[i].size
-                );
-            } else {
-                // Not compressed
-                std::memcpy(
-                    codeset.memory.data() + module_start + nso_header.segments[i].location,
-                    compressed_data.data(),
-                    nso_header.segments[i].size
-                );
+                const int result = nso_header.IsZBICCompressed()
+                    ? Common::Compression::DecompressDataZBIC(destination, source)
+                    : Common::Compression::DecompressDataLZ4(destination.data(), destination.size(),
+                                                             source.data(), source.size());
+                if (result < 0 || static_cast<size_t>(result) != destination.size()) {
+                    LOG_ERROR(Loader, "NSO {} segment {} decompression failed: expected {} bytes, got {}",
+                              nso_file.GetName(), i, destination.size(), result);
+                    return std::nullopt;
+                }
+            } else if (!destination.empty() &&
+                       nso_file.Read(destination.data(), destination.size(), segment.offset) != destination.size()) {
+                LOG_ERROR(Loader, "NSO {} segment {} could not be read", nso_file.GetName(), i);
+                return std::nullopt;
             }
             codeset.segments[i].addr = module_start + nso_header.segments[i].location;
             codeset.segments[i].offset = module_start + nso_header.segments[i].location;
@@ -174,6 +189,73 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         pi_header = pm->PatchNSO(pi_header, name);
 
         std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
+    }
+
+    // Mario Kart World picks how many vblanks each frame lasts (its present interval) from a mode
+    // in its frame loop: 0 = from the frame time, 1 = 60 fps, 2 = 30 fps, and advances its clock by
+    // that many vblanks a frame. Forcing 2 gives a steady 30 fps at normal game speed. The mode's
+    // load is found by its code (same in 1.0.0 at 0x3A9EC8 and 1.8.0 at 0x69CC54):
+    //   cmp w9, w1; b.ne; ldr w8, [x19, #0x210]; cbnz w8; ... mov w8, #0x42700000 (60.0f)
+    //
+    // Dynamic mode (mkw_dynamic_fps) forces mode 0. The game then sets each frame's interval (1 or
+    // 2 vblanks) from how late its frames run, but it times only its own CPU work ([fw+0x128],
+    // calc), which is fast under emulation where the GPU thread is the slow part: it stayed at 1
+    // and the game ran in slow motion. The same loop also stores the whole frame's time
+    // ([fw+0xe8], calc + draw + present), so the interval code is pointed at that one.
+    const bool mkw_dynamic = Settings::values.mkw_dynamic_fps.GetValue();
+    if ((mkw_dynamic || Settings::values.mkw_30fps.GetValue()) && name == "main" &&
+        process.GetProgramId() == 0x0400C3F00006E000ULL) {
+        constexpr u32 ModeLoadInsn = 0xB9421268; // ldr w8, [x19, #0x210]
+        const u32 Force30Insn = mkw_dynamic ? 0x52800008U  // mov w8, #0
+                                            : 0x52800048U; // mov w8, #2
+        const auto& text = nso_header.segments[0];
+        u8* const code = codeset.memory.data() + module_start + text.location;
+        const size_t count = text.size / sizeof(u32);
+        const auto word = [code](size_t index) {
+            u32 value;
+            std::memcpy(&value, code + index * sizeof(u32), sizeof(value));
+            return value;
+        };
+        size_t found = 0;
+        size_t matches = 0;
+        for (size_t i = 2; i + 8 < count; ++i) {
+            if (word(i) != ModeLoadInsn || word(i - 2) != 0x6B01013F || // cmp w9, w1
+                (word(i - 1) & 0xFF00001F) != 0x54000001 ||             // b.ne
+                (word(i + 1) & 0xFF00001F) != 0x35000008) {             // cbnz w8
+                continue;
+            }
+            for (size_t j = i + 2; j < i + 8; ++j) {
+                if (word(j) == 0x52A84E08) { // mov w8, #0x42700000
+                    found = i;
+                    ++matches;
+                    break;
+                }
+            }
+        }
+        // Dynamic: the frame time load after it, ldr xN, [x19, #0x128] -> [x19, #0xe8].
+        size_t frame_time = 0;
+        if (matches == 1 && mkw_dynamic) {
+            for (size_t j = found + 1; j < found + 32 && j < count; ++j) {
+                if ((word(j) & 0xFFFFFFE0) == 0xF9409660) {
+                    frame_time = j;
+                    break;
+                }
+            }
+        }
+        if (matches == 1 && mkw_dynamic && frame_time == 0) {
+            LOG_WARNING(Loader, "Mario Kart World: dynamic FPS not applied (frame time not found)");
+        } else if (matches == 1) {
+            std::memcpy(code + found * sizeof(u32), &Force30Insn, sizeof(Force30Insn));
+            if (mkw_dynamic) {
+                const u32 whole_frame = 0xF9407660 | (word(frame_time) & 0x1F);
+                std::memcpy(code + frame_time * sizeof(u32), &whole_frame, sizeof(whole_frame));
+            }
+            LOG_INFO(Loader, "Mario Kart World: {} on (main+{:#x})",
+                     mkw_dynamic ? "dynamic FPS" : "30 FPS mode",
+                     text.location + found * sizeof(u32));
+        } else {
+            LOG_WARNING(Loader, "Mario Kart World: 30 FPS mode not applied ({} matches)", matches);
+        }
     }
 
 #ifdef HAS_NCE
@@ -243,6 +325,42 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Kernel::KProcess& process, Core::
         const auto cheats = pm->CreateCheatList(nso_header.build_id);
         if (!cheats.empty()) {
             system.RegisterCheatList(cheats, nso_header.build_id, load_base, image_size);
+        }
+    }
+
+    // EDEN_GUEST_LOG_HOOK=<hex offset>[,...] (diagnostic): replace the first instruction of the
+    // main module's compiled-out printf-style log functions at those offsets with svc 0x7e; ret.
+    // The kernel formats and logs the call (see svc.cpp).
+    if (nso_file.GetName() == "main") {
+        for (const char* v = std::getenv("EDEN_GUEST_LOG_HOOK"); v && *v;) {
+            const size_t offset = module_start + std::strtoull(v, nullptr, 16);
+            if (offset + 8 <= codeset.memory.size()) {
+                constexpr std::array<u32, 2> Hook{0xD4000001 | (0x7e << 5), 0xD65F03C0}; // svc, ret
+                std::memcpy(codeset.memory.data() + offset, Hook.data(), sizeof(Hook));
+                LOG_INFO(Loader, "Hooked guest log function at main+{:#x}", offset - module_start);
+            }
+            v = std::strchr(v, ',');
+            if (v) ++v;
+        }
+    }
+
+    // EDEN_GUEST_PROBE=<hex offset>[,...] (diagnostic): replace main-module instructions with
+    // svc 0x7d, which logs the registers and emulates the replaced instruction (svc.cpp; only
+    // register moves and 64-bit immediate-offset loads are supported).
+    if (nso_file.GetName() == "main") {
+        for (const char* v = std::getenv("EDEN_GUEST_PROBE"); v && *v;) {
+            const size_t offset = module_start + std::strtoull(v, nullptr, 16);
+            if (offset + 4 <= codeset.memory.size()) {
+                u32 original;
+                std::memcpy(&original, codeset.memory.data() + offset, sizeof(original));
+                Kernel::Svc::g_guest_probes[load_base + offset - module_start] = original;
+                constexpr u32 SvcProbe = 0xD4000001 | (0x7d << 5);
+                std::memcpy(codeset.memory.data() + offset, &SvcProbe, sizeof(SvcProbe));
+                LOG_INFO(Loader, "Probe at main+{:#x} (instruction {:08x})", offset - module_start,
+                         original);
+            }
+            v = std::strchr(v, ',');
+            if (v) ++v;
         }
     }
 

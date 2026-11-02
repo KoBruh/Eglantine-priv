@@ -28,6 +28,7 @@ class System;
 class GameListDir;
 class GameListModel;
 class QStandardItem;
+enum class GameListItemType;
 
 namespace FileSys {
 class NCA;
@@ -73,7 +74,7 @@ private:
     void RecordEvent(F&& func);
 
 private:
-    void AddTitlesToGameList(GameListDir* parent_dir);
+    void AddTitlesToGameList(GameListDir* parent_dir, GameListItemType parent_type);
 
     enum class ScanTarget {
         FillManualContentProvider,

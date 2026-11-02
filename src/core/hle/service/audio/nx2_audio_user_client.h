@@ -19,8 +19,13 @@ namespace Service::Audio {
 // keeps unknown commands auto-stubbed and logged.
 class INx2AudioUserClient final : public ServiceFramework<INx2AudioUserClient> {
 public:
-    explicit INx2AudioUserClient(Core::System& system_)
-        : ServiceFramework{system_, "nx2:aud:u"} {
+    // The managers are the audout:u and audren:u instances: their sessions point into the manager
+    // that opened them, so it has to outlive them like those named services do.
+    explicit INx2AudioUserClient(Core::System& system_,
+                                 std::shared_ptr<IAudioOutManager> audio_out_manager_,
+                                 std::shared_ptr<IAudioRendererManager> audio_renderer_manager_)
+        : ServiceFramework{system_, "nx2:aud:u"}, audio_out_manager{std::move(audio_out_manager_)},
+          audio_renderer_manager{std::move(audio_renderer_manager_)} {
         // clang-format off
         static const FunctionInfo functions[] = {
             {1, &INx2AudioUserClient::GetAudioOutManager, "GetAudioOutManager (guessed)"},
@@ -31,6 +36,8 @@ public:
     }
 
 private:
+    // nn::audio::OpenAudioOut keeps the command 1 object as a singleton and calls its method 3
+    // (OpenAudioOutAuto: 48 kHz stereo parameters, device name in/out buffers).
     void GetAudioOutManager(HLERequestContext& ctx) {
         IPC::RequestParser rp{ctx};
         const u32 arg = rp.Pop<u32>();
@@ -38,18 +45,18 @@ private:
                     arg);
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
-        rb.PushIpcInterface<IAudioOutManager>(ctx, system);
+        rb.PushIpcInterface(ctx, audio_out_manager);
     }
 
     void GetAudioRendererManager(HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
-        const u32 arg = rp.Pop<u32>();
-        LOG_WARNING(Service_Audio, "(STUBBED) Switch 2 aud:u 2 arg={}, returning IAudioRendererManager",
-                    arg);
+        LOG_WARNING(Service_Audio, "Switch 2 aud:u 2, returning IAudioRendererManager");
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
-        rb.PushIpcInterface<IAudioRendererManager>(ctx, system);
+        rb.PushIpcInterface(ctx, audio_renderer_manager);
     }
+
+    std::shared_ptr<IAudioOutManager> audio_out_manager;
+    std::shared_ptr<IAudioRendererManager> audio_renderer_manager;
 };
 
 } // namespace Service::Audio

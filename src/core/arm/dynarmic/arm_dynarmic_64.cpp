@@ -152,6 +152,7 @@ void DynarmicCallbacks64::ExceptionRaised(u64 pc, Dynarmic::A64::Exception excep
         } else {
             m_parent.LogBacktrace(m_process);
             LOG_CRITICAL(Core_ARM, "ExceptionRaised(exception = {}, pc = {:08X}, code = {:08X})", static_cast<std::size_t>(exception), pc, m_memory.Read32(pc));
+            ReturnException(pc, InstructionBreakpoint);
         }
     }
 }
@@ -521,6 +522,7 @@ void ArmDynarmic64::ClearInstructionCache() {
 }
 
 void ArmDynarmic64::InvalidateCacheRange(u64 addr, std::size_t size) {
+    m_cb->last_code_addr = u64(-1);
     m_jit->InvalidateCacheRange(addr, size);
 }
 

@@ -6,14 +6,22 @@
 
 package org.yuzu.yuzu_emu.utils
 
+import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
+import android.provider.Settings
+import android.widget.Toast
 import androidx.preference.PreferenceManager
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import org.yuzu.yuzu_emu.NativeLibrary
+import org.yuzu.yuzu_emu.R
 import org.yuzu.yuzu_emu.YuzuApplication
 import org.yuzu.yuzu_emu.model.Game
 import org.yuzu.yuzu_emu.model.GameDir
@@ -149,6 +157,14 @@ object GameHelper {
 
         files.forEach {
             if (it.isDirectory) {
+                val dump = getDumpGame(it)
+                if (dump != null) {
+                    games.add(dump)
+                    if (dump.programId != "0") {
+                        gamesByProgramId[dump.programId] = dump
+                    }
+                    return@forEach
+                }
                 addGamesRecursive(
                     games,
                     gamesByProgramId,
@@ -253,6 +269,117 @@ object GameHelper {
         } catch (_: Exception) {
             null
         }
+    }
+
+    // Loose dumps, the layout games are extracted to: <game>/exefs/main, or <game>/base/exefs and
+    // <game>/updates/<version>/exefs with the newest version winning. The native loader reads
+    // them by file path, as document URIs can't be walked as directories, so they need All files
+    // access; with it the folders are also checked with plain file listing, which is much faster
+    // than going through the document provider.
+    private fun getDumpGame(dir: MinimalDocumentFile): Game? {
+        val dirPath = documentUriToPath(dir.uri)
+        if (dirPath == null) {
+            if (looksLikeDump(dir)) {
+                requestAllFilesAccess()
+            }
+            return null
+        }
+        val main = findDumpMain(File(dirPath)) ?: return null
+        val path = main.path
+        if (!GameMetadata.getIsValid(path)) {
+            return null
+        }
+
+        val title = GameMetadata.getTitle(path).ifEmpty { dir.filename }
+        val game = Game(
+            title,
+            path,
+            GameMetadata.getProgramId(path).ifEmpty { dir.filename },
+            GameMetadata.getDeveloper(path),
+            GameMetadata.getVersion(path, false),
+            false
+        )
+        if (preferences.getLong(game.keyAddedToLibraryTime, 0L) == 0L) {
+            preferences.edit { putLong(game.keyAddedToLibraryTime, System.currentTimeMillis()) }
+        }
+        return game
+    }
+
+    private fun findDumpMain(dir: File): File? {
+        fun subdirectory(parent: File, name: String) =
+            parent.listFiles()?.firstOrNull { it.isDirectory && it.name.equals(name, ignoreCase = true) }
+
+        fun exefsMain(parent: File?): File? {
+            val exefs = parent?.let { subdirectory(it, "exefs") } ?: return null
+            val main = File(exefs, "main")
+            return if (main.isFile && File(exefs, "main.npdm").isFile) main else null
+        }
+
+        exefsMain(dir)?.let { return it }
+        val updates = subdirectory(dir, "updates") ?: subdirectory(dir, "update")
+        updates?.listFiles()
+            ?.filter { it.isDirectory && it.name.toLongOrNull() != null }
+            ?.sortedByDescending { it.name.toLong() }
+            ?.firstNotNullOfOrNull { exefsMain(it) }
+            ?.let { return it }
+        return exefsMain(subdirectory(dir, "base"))
+    }
+
+    // Without All files access: a folder holding exefs/, base/ or updates/ is likely a dump.
+    private fun looksLikeDump(dir: MinimalDocumentFile): Boolean =
+        FileUtil.listFiles(dir.uri).any {
+            it.isDirectory && (it.filename.equals("exefs", ignoreCase = true) ||
+                it.filename.equals("base", ignoreCase = true) ||
+                it.filename.equals("updates", ignoreCase = true))
+        }
+
+    private var askedForAllFilesAccess = false
+
+    // From hesanaltdoesgithub's Eglantine fork: point the user at the permission once per run.
+    private fun requestAllFilesAccess() {
+        if (askedForAllFilesAccess || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return
+        }
+        askedForAllFilesAccess = true
+        Log.warning("[GameHelper] Loose dumps need All files access")
+        Handler(Looper.getMainLooper()).post {
+            val context = YuzuApplication.appContext
+            Toast.makeText(context, R.string.loose_dump_all_files_access, Toast.LENGTH_LONG).show()
+            try {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        "package:${context.packageName}".toUri()
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            } catch (e: Exception) {
+                Log.warning("[GameHelper] Could not open the All files access settings: ${e.message}")
+            }
+        }
+    }
+
+    // The file path behind an ExternalStorageProvider document ("primary:Games/x" or
+    // "XXXX-XXXX:Games/x"), when the app may read it directly.
+    private fun documentUriToPath(uri: Uri): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R || !Environment.isExternalStorageManager()) {
+            return null
+        }
+        val documentId = try {
+            DocumentsContract.getDocumentId(uri)
+        } catch (_: Exception) {
+            return null
+        }
+        val volume = documentId.substringBefore(':', "")
+        if (volume.isEmpty()) {
+            return null
+        }
+        val root = if (volume.equals("primary", ignoreCase = true)) {
+            Environment.getExternalStorageDirectory().path
+        } else {
+            "/storage/$volume"
+        }
+        val file = File(root, documentId.substringAfter(':'))
+        return if (file.exists()) file.path else null
     }
 
     fun getGame(

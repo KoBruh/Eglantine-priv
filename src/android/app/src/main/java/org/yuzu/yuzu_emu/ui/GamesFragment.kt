@@ -83,6 +83,21 @@ class GamesFragment : Fragment() {
             }
         }
 
+    // Boots a single game file directly, e.g. a dump that is not in a game folder.
+    private val getGameFile =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri == null) return@registerForActivityResult
+            try {
+                requireContext().contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: SecurityException) {
+            }
+            val name = uri.lastPathSegment?.substringAfterLast('/') ?: uri.toString()
+            val game = Game(title = name, path = uri.toString())
+            findNavController().navigate(HomeNavigationDirections.actionGlobalEmulationActivity(game))
+        }
+
     private fun getCurrentViewType(): Int {
         val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val key = if (isLandscape) CarouselRecyclerView.CAROUSEL_VIEW_TYPE_LANDSCAPE else CarouselRecyclerView.CAROUSEL_VIEW_TYPE_PORTRAIT
@@ -184,6 +199,10 @@ class GamesFragment : Fragment() {
 
         binding.addDirectory.setOnClickListener {
             getGamesDirectory.launch(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).data)
+        }
+
+        binding.launchFile.setOnClickListener {
+            getGameFile.launch(arrayOf("*/*"))
         }
 
         binding.launchQlaunch?.setOnClickListener {
@@ -521,6 +540,7 @@ class GamesFragment : Fragment() {
         binding.launchQlaunch.visibility = if (shouldShowQLaunch) View.VISIBLE else View.GONE
 
         binding.addDirectory.visibility = if (showFolder) View.VISIBLE else View.GONE
+        binding.launchFile.visibility = if (showFolder) View.VISIBLE else View.GONE
     }
 
     private fun setInsets() =

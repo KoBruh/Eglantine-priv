@@ -3104,6 +3104,7 @@ public:
         void ProcessDraw(Maxwell3D& maxwell3d, bool draw_indexed, u32 instance_count);
         void ProcessDrawIndirect(Maxwell3D& maxwell3d);
         State draw_state{};
+        u32 instance_index{};
         DrawTextureState draw_texture_state{};
         IndirectParams indirect_state{};
     };
@@ -3270,12 +3271,13 @@ private:
     void CallMacroMethod(Core::System& system, u32 method, std::span<const u32> parameters);
 
     /// Whether state register writes that keep the register's value are dropped (CallMethod).
+    /// Read at startup: this runs for every register write (no function-local static guard).
+    static inline const bool skip_same_value_writes = [] {
+        const char* value = std::getenv("EDEN_NX2_SKIP_SAME");
+        return value == nullptr || value[0] != '0';
+    }();
     static bool SkipSameValueWrites() {
-        static const bool skip = [] {
-            const char* value = std::getenv("EDEN_NX2_SKIP_SAME");
-            return value == nullptr || value[0] != '0';
-        }();
-        return skip;
+        return skip_same_value_writes;
     }
 
     /// Handles writes to the macro uploading register.

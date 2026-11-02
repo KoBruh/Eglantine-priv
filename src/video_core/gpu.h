@@ -248,6 +248,11 @@ public:
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
     [[nodiscard]] VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size);
 
+    u64 ReadbackGeneration() const;
+    void InvalidateReadbackCache();
+    void BeginAsyncGuestWrite();
+    void EndAsyncGuestWrite();
+
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
     void FlushRegion(DAddr addr, u64 size);
 

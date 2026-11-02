@@ -10,10 +10,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <exception>
 #include <filesystem>
 #include <future>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <type_traits>
 #include "common/container/unordered_map.h"
@@ -34,6 +34,7 @@
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/renderer_vulkan/vk_pipeline_library.h"
 #include "video_core/renderer_vulkan/vk_shader_reuse.h"
 #include "video_core/renderer_vulkan/vk_texture_cache.h"
 #include "video_core/shader_cache.h"
@@ -133,10 +134,9 @@ private:
     /// Whether the current draw may be skipped while its pipeline is being built.
     [[nodiscard]] bool CanSkipDraw() const noexcept;
 
-    /// Builds the pipeline of graphics_key, which is not in graphics_cache. Returns false when it
-    /// was left translating on a worker thread (the draw is skipped), true when graphics_cache
-    /// now holds it (null if the build failed).
-    bool BuildNewGraphicsPipeline();
+    /// Builds the pipeline of graphics_key, which is not in graphics_cache. Null if the build
+    /// failed.
+    std::unique_ptr<GraphicsPipeline> BuildNewGraphicsPipeline();
 
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline();
 
@@ -147,7 +147,7 @@ private:
     // Asynchronous translation of native graphics pipelines (NX2_SHADER_STUTTER.md).
     using GraphicsEnvironmentArray = std::array<GraphicsEnvironment, Maxwell::MaxShaderProgram>;
 
-    /// A graphics pipeline translated on a worker thread, waiting for the GPU thread.
+    /// A graphics pipeline translated on a worker thread, handed to the GPU thread.
     struct TranslatedGraphicsPipeline {
         GraphicsPipelineCacheKey key;
         std::unique_ptr<GraphicsPipeline> pipeline; ///< Null when the build failed.
@@ -157,29 +157,31 @@ private:
 
     [[nodiscard]] bool CanTranslateAsynchronously() const;
 
-    /// Queues the translation of graphics_key's pipeline on a worker thread. Returns a future
-    /// that becomes ready when the result is waiting to be adopted, or nothing when the
+    /// Queues the translation of graphics_key's pipeline on a worker thread. Nothing when the
     /// environments could not be detached from the engine.
-    std::optional<std::future<void>> QueueGraphicsTranslation();
-
-    /// Waits up to the wait budget for a queued translation. True if it was adopted in time.
-    bool WaitForGraphicsTranslation(std::future<void>& done);
+    std::optional<std::future<TranslatedGraphicsPipeline>> QueueGraphicsTranslation();
 
     /// Runs on a translation worker thread.
-    void TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
-                                   GraphicsEnvironmentArray envs, std::promise<void> done);
+    TranslatedGraphicsPipeline TranslateGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                                         GraphicsEnvironmentArray envs);
 
-    /// Moves the pipelines finished by the workers into graphics_cache (GPU thread).
-    void AdoptTranslatedGraphicsPipelines();
+    /// Waits for a queued translation and serializes its pipeline like CreateGraphicsPipeline()
+    /// (GPU thread).
+    std::unique_ptr<GraphicsPipeline> AdoptTranslatedGraphicsPipeline(
+        std::future<TranslatedGraphicsPipeline>& translated);
 
     void SerializeGraphicsPipeline(const GraphicsPipelineCacheKey& key,
                                    GraphicsEnvironmentArray envs);
 
     /// With `allow_translation` false, only builds pipelines from reused shaders (else null).
+    /// With `link_from_libraries`, the driver pipeline is linked from VK_EXT_graphics_pipeline_library
+    /// parts when the device allows it. Pipelines built for draws are; the disk cache replay at
+    /// boot compiles them whole: nothing waits for them, and the VkPipelineCache then holds what
+    /// the next replay asks for.
     std::unique_ptr<GraphicsPipeline> CreateGraphicsPipeline(
         ShaderPools& pools, const GraphicsPipelineCacheKey& key,
         std::span<Shader::Environment* const> envs, PipelineStatistics* statistics,
-        bool build_in_parallel, bool allow_translation = true);
+        bool build_in_parallel, bool link_from_libraries, bool allow_translation = true);
 
     // Reuse of translated shaders between graphics pipelines (vk_shader_reuse.h).
 
@@ -226,13 +228,18 @@ private:
     bool use_vulkan_pipeline_cache{};
     bool use_async_translation{};
     bool use_shader_reuse{};
-    std::chrono::microseconds translation_wait_budget{};
+    bool use_pipeline_libraries{};
+    bool use_optimized_pipelines{};
     size_t num_translation_threads{};
 
     GraphicsPipelineCacheKey graphics_key{};
     GraphicsPipeline* current_pipeline{};
 
+    /// Declared before the pipelines, which may have been linked from its libraries.
+    GraphicsPipelineLibraryCache pipeline_libraries;
+
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>> compute_cache;
+    ::Common::unordered_map<ComputePipelineCacheKey, std::exception_ptr> rejected_tensor_pipelines;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>> graphics_cache;
 
     ShaderPools main_pools;
@@ -252,16 +259,14 @@ private:
     std::atomic<size_t> last_cache_size{};
     std::atomic_bool flush_in_flight{};
 
+    /// Optimized builds of fast-linked pipelines. Destroyed after `workers` and
+    /// translation_workers, which queue them, and before graphics_cache, whose pipelines they
+    /// complete.
+    Common::ThreadWorker optimize_workers;
     Common::ThreadWorker workers;
     Common::ThreadWorker serialization_thread;
     DynamicFeatures dynamic_features;
 
-    /// Keys whose pipeline is being translated on a worker (GPU thread only).
-    ::Common::unordered_set<GraphicsPipelineCacheKey> translating_graphics;
-    /// Finished translations, handed from the workers to the GPU thread.
-    std::mutex translated_mutex;
-    std::vector<TranslatedGraphicsPipeline> translated_graphics;
-    std::atomic<size_t> num_translated{};
     /// Declared last so it is destroyed first: its threads finish the translation they are
     /// running (and drop the queued ones) while everything they use is still alive.
     Common::ThreadWorker translation_workers;

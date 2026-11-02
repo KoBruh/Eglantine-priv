@@ -18,4 +18,7 @@ struct MemoryInfo {
  */
 [[nodiscard]] const MemoryInfo& GetMemInfo();
 
+/// Memory the process can still commit before the system commit limit, in bytes (0: unknown).
+[[nodiscard]] u64 GetAvailableCommitMemory();
+
 } // namespace Common

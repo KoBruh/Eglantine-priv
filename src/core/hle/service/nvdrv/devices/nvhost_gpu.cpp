@@ -5,7 +5,11 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
+#include <mutex>
 #include <cstring>
 #include <vector>
 #include "common/assert.h"
@@ -24,6 +28,7 @@
 #include "video_core/engines/puller.h"
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
+#include "video_core/memory_manager.h"
 
 namespace Service::Nvidia::Devices {
 namespace {
@@ -76,7 +81,8 @@ NvResult nvhost_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> inpu
         case 0x3:
             return WrapFixed(this, &nvhost_gpu::ChannelSetTimeout, input, output);
         case 0x8:
-            return WrapFixedVariable(this, &nvhost_gpu::SubmitGPFIFOBase1, input, output, fd, false);
+            return WrapFixedVariable(this, &nvhost_gpu::SubmitGPFIFOBase1, input, output, fd, false,
+                                     CaptureSubmission(fd, command, 1, input));
         case 0x9:
             return WrapFixed(this, &nvhost_gpu::AllocateObjectContext, input, output);
         case 0xb:
@@ -90,7 +96,8 @@ NvResult nvhost_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> inpu
         case 0x1a:
             return WrapFixed(this, &nvhost_gpu::AllocGPFIFOEx2, input, output, fd);
         case 0x1b:
-            return WrapFixedVariable(this, &nvhost_gpu::SubmitGPFIFOBase1, input, output, fd, true);
+            return WrapFixedVariable(this, &nvhost_gpu::SubmitGPFIFOBase1, input, output, fd, true,
+                                     CaptureSubmission(fd, command, 1, input));
         case 0x1d:
             return WrapFixed(this, &nvhost_gpu::ChannelSetTimeslice, input, output);
         default:
@@ -122,7 +129,8 @@ NvResult nvhost_gpu::Ioctl2(DeviceFD fd, Ioctl command, std::span<const u8> inpu
         switch (command.cmd) {
         case 0x1b:
             return WrapFixedInlIn(this, &nvhost_gpu::SubmitGPFIFOBase2, input, inline_input,
-                                  output);
+                                  output,
+                                  CaptureSubmission(fd, command, 2, input, inline_input.size()));
         }
         break;
     }
@@ -184,7 +192,7 @@ NvResult nvhost_gpu::SetErrorNotifier(IoctlSetErrorNotifier& params) {
     // treats a non-zero value (whatever the buffer held before) as a channel error.
     if (const auto handle = nvmap.GetHandle(params.mem);
         handle && handle->address && params.size && params.size <= 0x10000 &&
-        params.offset + params.size <= handle->size) {
+        params.offset <= handle->size && params.size <= handle->size - params.offset) {
         const std::vector<u8> zeros(params.size);
         system.ApplicationMemory().WriteBlock(handle->address + params.offset, zeros.data(), zeros.size());
     }
@@ -219,6 +227,7 @@ NvResult nvhost_gpu::AllocGPFIFOEx(IoctlAllocGpfifoEx& params, DeviceFD fd) {
     u64 program_id{};
     if (auto* const session = core.GetSession(sessions[fd]); session != nullptr) {
         program_id = session->process->GetProgramId();
+        channel_state->switch2 = session->process->IsSwitch2();
     }
 
     // Store program id for later lazy initialization
@@ -252,6 +261,7 @@ NvResult nvhost_gpu::AllocGPFIFOEx2(IoctlAllocGpfifoEx& params, DeviceFD fd) {
     u64 program_id{};
     if (auto* const session = core.GetSession(sessions[fd]); session != nullptr) {
         program_id = session->process->GetProgramId();
+        channel_state->switch2 = session->process->IsSwitch2();
     }
 
     // Store program id for later lazy initialization
@@ -413,13 +423,23 @@ static boost::container::small_vector<Tegra::CommandHeader, 512> BuildIncrementW
     return result;
 }
 
-NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandList&& entries) {
+u64 nvhost_gpu::CaptureSubmission(DeviceFD fd, Ioctl command, u32 variant,
+                                 std::span<const u8> input, std::size_t inline_size) const noexcept {
+    if (!Tegra::GpfifoCapture::Enabled()) return 0;
+    const auto session = sessions.find(fd);
+    return Tegra::GpfifoCapture::BeginSubmission(fd, command.raw, variant,
+                                                session != sessions.end() ? session->second.id : u64(-1),
+                                                input, inline_size);
+}
+
+NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandList&& entries,
+                                     u64 capture_id) {
     LOG_TRACE(Service_NVDRV, "called, gpfifo={:X}, num_entries={:X}, flags={:X}", params.address,
               params.num_entries, params.flags.raw);
 
     auto& gpu = system.GPU();
 
-    std::scoped_lock lock(channel_mutex);
+    std::unique_lock lock(channel_mutex);
 
     // Lazily initialize channel when address space is available
     if (!channel_state->initialized && channel_state->memory_manager) {
@@ -427,6 +447,10 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
     }
 
     const auto bind_id = channel_state->bind_id;
+    const auto enqueue = [&](Tegra::CommandList&& list, const char* origin) {
+        Tegra::GpfifoCapture::RecordEnqueue(capture_id, bind_id, origin, list);
+        gpu.PushGPUEntries(bind_id, std::move(list));
+    };
 
     if (g_nx2_driver) {
         for (const auto& entry : entries.command_lists) {
@@ -443,6 +467,30 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
                 entries.submit_hashes.push_back(Tegra::HashPushbufferWords(words));
             }
         }
+        // The present returns before the GPU thread reaches this frame's work (nx2_gsv.h,
+        // frames ahead), and Mario Kart World then refills command memory it already
+        // submitted: the end of a frame ran with the next frame's present image as its render
+        // target, leaving an image three frames old to be shown. Keep the words as submitted.
+        // EDEN_NX2_PB_SNAPSHOT=0: execute from memory.
+        static const bool snapshot = [] {
+            const char* value = std::getenv("EDEN_NX2_PB_SNAPSHOT");
+            return value == nullptr || value[0] != '0';
+        }();
+        if (snapshot && channel_state->memory_manager) {
+            size_t words = 0;
+            for (const auto& entry : entries.command_lists) {
+                words += entry.size;
+            }
+            entries.submitted_words.resize(words);
+            entries.submitted_offsets.reserve(entries.command_lists.size());
+            size_t offset = 0;
+            for (const auto& entry : entries.command_lists) {
+                entries.submitted_offsets.push_back(static_cast<u32>(offset));
+                channel_state->memory_manager->ReadBlockUnsafe(
+                    entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
+                offset += entry.size;
+            }
+        }
     }
 
     auto& flags = params.flags;
@@ -453,7 +501,7 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
         }
 
         if (!syncpoint_manager.IsFenceSignalled(params.fence)) {
-            gpu.PushGPUEntries(bind_id, Tegra::CommandList{BuildWaitCommandList(params.fence)});
+            enqueue(Tegra::CommandList{BuildWaitCommandList(params.fence)}, "wait");
         }
     }
 
@@ -462,20 +510,18 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
     u32 increment{(flags.fence_increment.Value() != 0 ? 2 : 0) +
                   (flags.increment_value.Value() != 0 ? params.fence.value : 0)};
     params.fence.value = syncpoint_manager.IncrementSyncpointMaxExt(channel_syncpoint, increment);
-    gpu.PushGPUEntries(bind_id, std::move(entries));
+    enqueue(std::move(entries), "guest");
 
     if (g_nx2_driver && !flags.fence_increment.Value() && increment > 0) {
-        gpu.PushGPUEntries(bind_id,
-                           Tegra::CommandList{BuildIncrementCountCommandList(params.fence, increment)});
+        enqueue(Tegra::CommandList{BuildIncrementCountCommandList(params.fence, increment)},
+                "increment-count");
     }
 
     if (flags.fence_increment.Value()) {
         if (flags.suppress_wfi.Value()) {
-            gpu.PushGPUEntries(bind_id,
-                               Tegra::CommandList{BuildIncrementCommandList(params.fence)});
+            enqueue(Tegra::CommandList{BuildIncrementCommandList(params.fence)}, "increment");
         } else {
-            gpu.PushGPUEntries(bind_id,
-                               Tegra::CommandList{BuildIncrementWithWfiCommandList(params.fence)});
+            enqueue(Tegra::CommandList{BuildIncrementWithWfiCommandList(params.fence)}, "wfi-increment");
         }
     }
 
@@ -486,6 +532,54 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
                  system.Host1x().GetSyncpointManager().GetGuestSyncpointValue(params.fence.id));
     }
     flags.raw = 0;
+
+    if (g_nx2_driver) {
+        // Wait until the GPU has run this submission. The Yoshi demo rewrites command memory it
+        // submitted once it believes the GPU is past it; with the GPU thread behind, the pushbuffer
+        // was read half-rewritten and the command stream derailed. EDEN_NX2_SYNC_SUBMIT enables
+        // this for any title.
+        static const bool sync_submit = std::getenv("EDEN_NX2_SYNC_SUBMIT") != nullptr ||
+                                        system.GetApplicationProcessProgramID() == 0x04007C6028AA8000ULL;
+        if (sync_submit && increment > 0) {
+            lock.unlock();
+            auto& syncpoints = system.Host1x().GetSyncpointManager();
+            if (!syncpoints.IsReadyGuest(params.fence.id, params.fence.value)) {
+                struct Wake {
+                    std::mutex mutex;
+                    std::condition_variable cv;
+                    bool done{};
+                };
+                auto wake = std::make_shared<Wake>();
+                syncpoints.RegisterGuestAction(params.fence.id, params.fence.value, [wake] {
+                    {
+                        std::scoped_lock lk{wake->mutex};
+                        wake->done = true;
+                    }
+                    wake->cv.notify_all();
+                });
+                const auto deadline =
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds{2000};
+                std::unique_lock lk{wake->mutex};
+                while (!wake->done && system.IsPoweredOn()) {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= deadline) {
+                        break;
+                    }
+                    wake->cv.wait_for(
+                        lk, std::min(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now),
+                                     std::chrono::milliseconds{50}));
+                }
+            }
+            static std::atomic<u32> timeouts{};
+            if (!syncpoints.IsReadyGuest(params.fence.id, params.fence.value) &&
+                (timeouts.fetch_add(1, std::memory_order_relaxed) % 64) == 0) {
+                LOG_WARNING(Service_NVDRV,
+                            "nx2 sync submit timed out waiting for fence ({}, {}), current value={}",
+                            params.fence.id, params.fence.value,
+                            syncpoints.GetGuestSyncpointValue(params.fence.id));
+            }
+        }
+    }
 
     return NvResult::Success;
 }
@@ -502,7 +596,7 @@ Core::Memory::Memory& nvhost_gpu::GetSessionMemory(DeviceFD fd) {
 
 NvResult nvhost_gpu::SubmitGPFIFOBase1(IoctlSubmitGpfifo& params,
                                        std::span<Tegra::CommandListHeader> commands, DeviceFD fd,
-                                       bool kickoff) {
+                                       bool kickoff, u64 capture_id) {
     if (params.num_entries > commands.size()) {
         UNIMPLEMENTED();
         return NvResult::InvalidSize;
@@ -517,11 +611,12 @@ NvResult nvhost_gpu::SubmitGPFIFOBase1(IoctlSubmitGpfifo& params,
                     params.num_entries * sizeof(Tegra::CommandListHeader));
     }
 
-    return SubmitGPFIFOImpl(params, std::move(entries));
+    return SubmitGPFIFOImpl(params, std::move(entries), capture_id);
 }
 
 NvResult nvhost_gpu::SubmitGPFIFOBase2(IoctlSubmitGpfifo& params,
-                                       std::span<const Tegra::CommandListHeader> commands) {
+                                       std::span<const Tegra::CommandListHeader> commands,
+                                       u64 capture_id) {
     if (params.num_entries > commands.size()) {
         UNIMPLEMENTED();
         return NvResult::InvalidSize;
@@ -530,7 +625,7 @@ NvResult nvhost_gpu::SubmitGPFIFOBase2(IoctlSubmitGpfifo& params,
     Tegra::CommandList entries(params.num_entries);
     std::memcpy(entries.command_lists.data(), commands.data(),
                 params.num_entries * sizeof(Tegra::CommandListHeader));
-    return SubmitGPFIFOImpl(params, std::move(entries));
+    return SubmitGPFIFOImpl(params, std::move(entries), capture_id);
 }
 
 NvResult nvhost_gpu::GetWaitbase(IoctlGetWaitbase& params) {

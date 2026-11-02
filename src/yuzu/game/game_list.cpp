@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
+#include <QSet>
 #include <QListView>
 #include <QMenu>
 #include <QScrollBar>
@@ -24,6 +25,7 @@
 
 #include "common/common_types.h"
 #include "core/core.h"
+#include "core/file_sys/edenpack_writer.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/registered_cache.h"
 #include "qt_common/config/uisettings.h"
@@ -99,6 +101,10 @@ GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvid
     ResetViewMode();
 }
 
+void GameList::SetEdenPackConversionRunning(bool running) {
+    edenpack_conversion_running = running;
+}
+
 GameList::~GameList() {
     UnloadController();
 }
@@ -153,6 +159,10 @@ void GameList::OnPopulate() {
 
 void GameList::PopulateAsync(QVector<UISettings::GameDir>& game_dirs) {
     item_model->PopulateAsync(game_dirs);
+}
+
+void GameList::SetScanEnabled(bool enabled) {
+    item_model->SetScanEnabled(enabled);
 }
 
 void GameList::SaveInterfaceLayout() {
@@ -298,9 +308,12 @@ void GameList::OnPopulatingCompleted(const QStringList& watch_list) {
         }
     };
 
+    const QSet<QString> new_set(watch_list.cbegin(), watch_list.cend());
+    const QSet<QString> current_set(current_watch_list.cbegin(), current_watch_list.cend());
+
     // remove any paths not in the new watch list
     for (const auto& path : std::as_const(current_watch_list)) {
-        if (!watch_list.contains(path)) {
+        if (!new_set.contains(path)) {
             to_remove.emplaceBack(path);
         }
     }
@@ -309,7 +322,7 @@ void GameList::OnPopulatingCompleted(const QStringList& watch_list) {
 
     // add any paths not in the old watch list
     for (const auto& path : std::as_const(watch_list)) {
-        if (!current_watch_list.contains(path)) {
+        if (!current_set.contains(path)) {
             to_add.emplaceBack(path);
         }
     }
@@ -477,6 +490,11 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* dump_romfs_sdmc = dump_romfs_menu->addAction(tr("Dump RomFS to SDMC"));
     QAction* verify_integrity = context_menu.addAction(tr("Verify Integrity"));
     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
+    QAction* convert_edenpack = nullptr;
+    if (FileSys::EdenPack::DumpRootFromMain(path)) {
+        convert_edenpack = context_menu.addAction(tr("Convert to EdenPack..."));
+        convert_edenpack->setEnabled(!edenpack_conversion_running);
+    }
 #if !defined(__APPLE__)
     QMenu* shortcut_menu = context_menu.addMenu(tr("Create Shortcut"));
     QAction* create_desktop_shortcut = shortcut_menu->addAction(tr("Add to Desktop"));
@@ -557,6 +575,10 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
             [this, path]() { emit VerifyIntegrityRequested(path); });
     connect(copy_tid, &QAction::triggered, this,
             [this, program_id]() { emit CopyTIDRequested(program_id); });
+    if (convert_edenpack) {
+        connect(convert_edenpack, &QAction::triggered, this,
+                [this, path]() { emit ConvertToEdenPackRequested(path); });
+    }
 #if !defined(__APPLE__)
     connect(create_desktop_shortcut, &QAction::triggered, this, [this, program_id, path]() {
         emit CreateShortcut(program_id, path, QtCommon::Game::ShortcutTarget::Desktop);

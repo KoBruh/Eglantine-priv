@@ -296,8 +296,8 @@ struct FileBackend final : public Backend {
     }
 private:
     std::optional<FS::IOFile> file;
-    std::size_t bytes_written = 0;
-    bool enabled = true;
+    std::atomic_size_t bytes_written = 0;
+    std::atomic_bool enabled = true;
 };
 #endif
 #ifdef _WIN32
@@ -409,6 +409,10 @@ void Start() {
 }
 
 void Stop() {
+    Flush();
+}
+
+void Flush() {
     if (logging_instance)
         logging_instance->ForEachBackend([](Backend& backend) { backend.Flush(); });
 }
@@ -421,6 +425,10 @@ void SetGlobalFilter(const Filter& filter) {
 void SetColorConsoleBackendEnabled(bool enabled) {
     if (logging_instance)
         logging_instance->color_console_backend.enabled = enabled;
+}
+
+bool IsLevelEnabled(Class log_class, Level log_level) {
+    return logging_instance && logging_instance->filter.CheckMessage(log_class, log_level);
 }
 
 void FmtLogMessageImpl(Class log_class, Level log_level, const char* filename, unsigned int line_num, const char* function, fmt::string_view format, const fmt::format_args& args) {

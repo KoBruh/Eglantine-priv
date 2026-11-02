@@ -61,6 +61,24 @@ namespace {
 constexpr size_t CONSTANT_POOL_SIZE = 2 * 1024 * 1024;
 constexpr size_t PRELUDE_COMMIT_SIZE = 16 * 1024 * 1024;
 
+#ifdef _WIN32
+// Reserves the code cache so EnsureMemoryCommitted commits only what is written. Xbyak's default
+// allocator took it from the heap, committing all of it: six 512 MiB caches (Switch 2 titles run
+// six cores) were 3 GiB of commit, ~80% of it never written. Protection is set on commit.
+struct ReservingAllocator final : Xbyak::Allocator {
+    uint8_t* alloc(size_t size) override {
+        return static_cast<uint8_t*>(VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_NOACCESS));
+    }
+    void free(uint8_t* p) override {
+        VirtualFree(p, 0, MEM_RELEASE);
+    }
+    bool useProtect() const override {
+        return false;
+    }
+};
+ReservingAllocator reserving_allocator;
+#endif
+
 #ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
 void ProtectMemory(const void* base, size_t size, bool is_executable) {
 #    ifdef _WIN32
@@ -149,7 +167,11 @@ BlockOfCode::BlockOfCode(RunCodeCallbacks cb, JitStateInfo jsi, size_t total_cod
 #else
         , nullptr //Allow RWE
 #endif
+#ifdef _WIN32
+        , &reserving_allocator)
+#else
         , nullptr)
+#endif
     , constant_pool(*this, CONSTANT_POOL_SIZE)
     , jsi(jsi)
     , cb(std::move(cb))
@@ -205,14 +227,32 @@ size_t BlockOfCode::SpaceRemaining() const {
 
 void BlockOfCode::EnsureMemoryCommitted([[maybe_unused]] size_t codesize) {
 #ifdef _WIN32
-    if (committed_size < size_ + codesize) {
-        committed_size = std::min<size_t>(maxSize_, committed_size + codesize);
-#    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
-        VirtualAlloc(top_, committed_size, MEM_COMMIT, PAGE_READWRITE);
-#    else
-        VirtualAlloc(top_, committed_size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-#    endif
+    // From the write position too: with a reserved cache, a commit that falls short faults.
+    const size_t required = std::min<size_t>(maxSize_, std::max(committed_size, size_) + codesize);
+    if (required <= committed_size) {
+        return;
     }
+    // Commit in 64 KiB steps instead of exactly what is needed, so frequent small codegen does
+    // not turn into frequent small VirtualAlloc calls.
+    constexpr size_t CommitStep = 64 * 1024;
+    const size_t new_committed_size =
+        std::min<size_t>(maxSize_, (required + CommitStep - 1) & ~(CommitStep - 1));
+    if (new_committed_size <= committed_size) {
+        committed_size = new_committed_size;
+        return;
+    }
+#    ifdef DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT
+    constexpr DWORD protection = PAGE_READWRITE;
+#    else
+    constexpr DWORD protection = PAGE_EXECUTE_READWRITE;
+#    endif
+    void* const memory = VirtualAlloc(top_ + committed_size, new_committed_size - committed_size,
+                                      MEM_COMMIT, protection);
+    if (!memory) {
+        using Xbyak::Error;
+        XBYAK_THROW(Xbyak::ERR_CANT_ALLOC);
+    }
+    committed_size = new_committed_size;
 #endif
 }
 

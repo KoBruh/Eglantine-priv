@@ -615,6 +615,27 @@ object NativeLibrary {
         callback: (max: Long, progress: Long) -> Boolean
     ): Array<String>
 
+    /** Folder of the loose dump whose exefs/main is [mainPath], or null if it is not one. */
+    external fun edenPackDumpRoot(mainPath: String): String?
+
+    external fun edenPackTargetPath(root: String): String
+
+    /** True when an interrupted low-storage conversion to [target] can be resumed. */
+    external fun edenPackHasJournal(target: String): Boolean
+
+    external fun edenPackLastError(): String
+
+    /**
+     * Packs the loose dump at [root] into [target]. Blocking; [callback] returns true to cancel.
+     * @return Ordinal of [EdenPackResult]
+     */
+    external fun convertToEdenPack(
+        root: String,
+        target: String,
+        deleteSources: Boolean,
+        callback: (bytesTotal: Long, bytesDone: Long, filesTotal: Long, filesDone: Long) -> Boolean
+    ): Int
+
     /**
      * Verifies the contents of a game
      * @param path String path to a game

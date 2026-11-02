@@ -49,13 +49,6 @@ NPad::NPad(Core::HID::HIDCore& hid_core_, KernelHelpers::ServiceContext& service
         for (std::size_t i = 0; i < controller_data[aruid_index].size(); ++i) {
             auto& controller = controller_data[aruid_index][i];
             controller.device = hid_core.GetEmulatedControllerByIndex(i);
-            Core::HID::ControllerUpdateCallback engine_callback{
-                .on_change = [this, i, kernel = &hid_core.kernel](Core::HID::ControllerTriggerType type) {
-                    ControllerUpdate(*kernel, type, i);
-                },
-                .is_npad_service = true,
-            };
-            controller.callback_key = controller.device->SetCallback(engine_callback);
         }
     }
     for (std::size_t i = 0; i < abstracted_pads.size(); ++i) {
@@ -448,6 +441,17 @@ void NPad::RequestPadStateUpdate(Kernel::KernelCore& kernel, u64 aruid, Core::HI
     auto& trigger_entry = controller.npad_trigger_state;
     const auto button_state = controller.device->GetNpadButtons();
     const auto stick_state = controller.device->GetSticks();
+    {
+        static const bool input_trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
+        static u64 last_buttons{};
+        const u64 buttons = static_cast<u64>(button_state.raw);
+        if (input_trace && buttons != last_buttons) {
+            last_buttons = buttons;
+            LOG_INFO(Service_HID, "device buttons aruid={} npad_id={} raw={:#x} type={}", aruid,
+                     static_cast<u32>(npad_id), buttons,
+                     static_cast<u32>(controller.device->GetNpadStyleIndex()));
+        }
+    }
 
     using btn = Core::HID::NpadButton;
     pad_entry.npad_buttons.raw = btn::None;
@@ -510,6 +514,36 @@ void NPad::OnUpdate(Kernel::KernelCore& kernel, const Core::Timing::CoreTiming& 
         bool is_set{};
         const auto aruid = data->aruid;
         npad_resource.IsSupportedNpadStyleSet(is_set, aruid);
+        static const bool input_trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
+        if (input_trace) {
+            static std::chrono::steady_clock::time_point last{};
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last >= std::chrono::seconds{2}) {
+                last = now;
+                std::string summary;
+                for (std::size_t index = 0; index < controller_data[aruid_index].size(); ++index) {
+                    const auto& entry = controller_data[aruid_index][index];
+                    summary += fmt::format(" [{}{}c={}a={}]", index,
+                                           entry.device ? "d" : "n",
+                                           entry.device ? entry.device->IsConnected() : false,
+                                           entry.is_active);
+                }
+                LOG_INFO(Service_HID,
+                         "npad aruid={} assigned={} style={} pad={} dev_btn={:#x} dev_id={} btn0={}{}",
+                         aruid, data->flag.is_assigned.Value(), is_set,
+                         data->flag.enable_pad_input.Value(),
+                         static_cast<u64>(controller_data[aruid_index][0].device
+                                              ? controller_data[aruid_index][0].device->GetNpadButtons().raw
+                                              : Core::HID::NpadButton::None),
+                         static_cast<u32>(controller_data[aruid_index][0].device
+                                              ? controller_data[aruid_index][0].device->GetNpadIdType()
+                                              : Core::HID::NpadIdType::Invalid),
+                         controller_data[aruid_index][0].device
+                             ? controller_data[aruid_index][0].device->GetNpadButtons().a.Value()
+                             : false,
+                         summary);
+            }
+        }
         // Wait until style is defined
         if (!is_set) {
             continue;
@@ -532,6 +566,11 @@ void NPad::OnUpdate(Kernel::KernelCore& kernel, const Core::Timing::CoreTiming& 
             }
 
             if (!data->flag.enable_pad_input) {
+                static const bool trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
+                if (trace) {
+                    LOG_INFO(Service_HID, "npad update skipped: pad input disabled aruid={}",
+                             aruid);
+                }
                 continue;
             }
 
@@ -651,6 +690,10 @@ void NPad::OnUpdate(Kernel::KernelCore& kernel, const Core::Timing::CoreTiming& 
                 npad->system_ext_lifo.ReadCurrentEntry().state.sampling_number + 1;
             npad->system_ext_lifo.WriteNextEntry(libnx_state);
 
+            if (input_trace && static_cast<u64>(pad_state.npad_buttons.raw) != 0) {
+                LOG_INFO(Service_HID, "npad buttons aruid={} index={} raw={:#x}", aruid, i,
+                         static_cast<u64>(pad_state.npad_buttons.raw));
+            }
             press_state |= static_cast<u64>(pad_state.npad_buttons.raw);
         }
     }
@@ -1142,6 +1185,21 @@ void NPad::SetNpadExternals(std::shared_ptr<AppletResource> resource,
     for (auto& abstract_pad : abstracted_pads) {
         abstract_pad.SetExternals(&applet_resource_holder, nullptr, nullptr, nullptr, nullptr,
                                   &vibration_handler, &hid_core);
+    }
+
+    // ControllerUpdate reads the applet resource. The UI thread sends pad events at all times, also
+    // while a game boots, so the callbacks must start after the applet resource is set.
+    for (std::size_t aruid_index = 0; aruid_index < AruidIndexMax; ++aruid_index) {
+        for (std::size_t i = 0; i < controller_data[aruid_index].size(); ++i) {
+            auto& controller = controller_data[aruid_index][i];
+            Core::HID::ControllerUpdateCallback engine_callback{
+                .on_change = [this, i, kernel = &hid_core.kernel](Core::HID::ControllerTriggerType type) {
+                    ControllerUpdate(*kernel, type, i);
+                },
+                .is_npad_service = true,
+            };
+            controller.callback_key = controller.device->SetCallback(engine_callback);
+        }
     }
 }
 

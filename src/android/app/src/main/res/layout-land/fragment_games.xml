@@ -244,6 +244,23 @@
         />
 
     <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
+        android:id="@+id/launch_file"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="8dp"
+        android:contentDescription="Open_game_file"
+        android:text="@string/open_file"
+        app:icon="@drawable/ic_play"
+        app:layout_constraintBottom_toTopOf="@id/add_directory"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:textColor="?attr/colorOnPrimary"
+        app:backgroundTint="?attr/colorPrimary"
+        app:iconTint="?attr/colorOnPrimary"
+        app:rippleColor="#99FFFFFF"
+        />
+
+    <com.google.android.material.floatingactionbutton.ExtendedFloatingActionButton
         android:id="@+id/launch_qlaunch"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

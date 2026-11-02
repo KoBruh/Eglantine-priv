@@ -224,11 +224,12 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
     VkImage handle{};
     VmaAllocation allocation{};
     VmaAllocationInfo alloc_info{};
-    // Images this large (title 1's sparse texture arrays reach 4.5G texels, ~23 GB) are never
-    // backed: VMA would quietly place them in system memory once VRAM is full. They take the
-    // unbacked sparse fallback below.
+    // On sparse-capable devices, images this large (title 1's arrays reach 4.5G texels, ~23 GB)
+    // are never backed: VMA would quietly place them in system memory once VRAM is full.
+    // They take the unbacked sparse fallback below.
     const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
-    const bool huge = texels > (u64{1} << 28);
+    const bool huge = texels > (u64{1} << 28) && ci.samples == VK_SAMPLE_COUNT_1_BIT &&
+                      device.IsSparseResidencyImageSupported(ci.imageType);
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
@@ -276,23 +277,29 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
         );
     }
 
+    const u32 heap = properties.memoryTypes[alloc_info.memoryType].heapIndex;
+    const VkDeviceSize device_size = device.TracksMemoryHeap(heap) ? alloc_info.size : 0;
     return vk::Image(handle, ci.usage, *device.GetLogical(), allocator, allocation,
-                        device.GetDispatchLoader());
+                     device.GetDispatchLoader(), device_size);
 }
 
-vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci) const {
-    if (ci.imageType == VK_IMAGE_TYPE_1D) {
+vk::Image MemoryAllocator::CreateUnbackedImage(const VkImageCreateInfo &ci, bool aliased) const {
+    if (ci.samples != VK_SAMPLE_COUNT_1_BIT ||
+        !device.IsSparseResidencyImageSupported(ci.imageType)) {
         return vk::Image{};
     }
     VkImageCreateInfo sparse_ci = ci;
     sparse_ci.flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+    if (aliased) {
+        sparse_ci.flags |= VK_IMAGE_CREATE_SPARSE_ALIASED_BIT;
+    }
     VkImage sparse{};
     if (device.GetDispatchLoader().vkCreateImage(*device.GetLogical(), &sparse_ci, nullptr,
                                                  &sparse) != VK_SUCCESS) {
         return vk::Image{};
     }
     return vk::Image(sparse, ci.usage, *device.GetLogical(), allocator, VK_NULL_HANDLE,
-                     device.GetDispatchLoader());
+                     device.GetDispatchLoader(), 0);
 }
 
 VmaAllocation MemoryAllocator::AllocateSparseMemory(const VkMemoryRequirements &requirements,

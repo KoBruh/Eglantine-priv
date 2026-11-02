@@ -57,6 +57,12 @@ enum class Zone : u32 {
     GpuWait,      ///< Waiting for the host GPU to reach a tick (Scheduler::Wait)
     WorkerWait,   ///< Waiting for the Vulkan worker thread to drain its queue
     Invalidate,   ///< Applying held-back guest CPU writes (GPU::InvalidateGPUCache)
+    DrainAcquire, ///< Split drains by cause: semaphore acquires and reads (puller)
+    DrainPbFlush, ///< Pushbuffer parameter flushes
+    DrainSync,    ///< Synced command lists
+    DrainWritten, ///< Guest writes to command words
+    DrainDmaRead, ///< Front MME DMA reads
+    DrainRelease, ///< Reads of pending releases
     Count,
 };
 
@@ -68,14 +74,13 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "descriptor acquire", "bind stage buffers", "push descriptors", "render targets",
     "configure draw", "dynamic state", "draw record", "texture upload", "fence",
     "fence skipped", "method", "split drain", "split wait", "gpu wait", "worker wait",
-    "invalidate",
+    "invalidate", "drain acquire", "drain pbflush", "drain sync", "drain written",
+    "drain dma read", "drain release",
 };
 
-// Read once at startup: Enabled() runs several times per method write (no guard to check).
-inline const bool g_enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
-
 inline bool Enabled() {
-    return g_enabled;
+    static const bool enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+    return enabled;
 }
 
 // Nanoseconds; from the host's own counter where the wall clock reads it directly (the zones
@@ -94,21 +99,43 @@ struct ThreadData {
 
 inline thread_local ThreadData t_data;
 
+// The zones wrap hot paths (~150,000 times a second): when profiling is off a scope must cost a
+// flag test, so the timing work stays out of line.
 class Scope {
 public:
     explicit Scope(Zone zone_) : zone{zone_}, enabled{Enabled()} {
-        if (!enabled) {
-            return;
+        if (enabled) [[unlikely]] {
+            Begin();
         }
+    }
+
+    ~Scope() {
+        if (enabled) [[unlikely]] {
+            End();
+        }
+    }
+
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+
+private:
+#ifdef _MSC_VER
+    __declspec(noinline)
+#else
+    __attribute__((noinline))
+#endif
+    void Begin() {
         parent_child_ns = t_data.child_ns;
         t_data.child_ns = 0;
         start = Now();
     }
 
-    ~Scope() {
-        if (!enabled) {
-            return;
-        }
+#ifdef _MSC_VER
+    __declspec(noinline)
+#else
+    __attribute__((noinline))
+#endif
+    void End() {
         const u64 elapsed = Now() - start;
         auto& data = t_data;
         const auto index = static_cast<size_t>(zone);
@@ -117,10 +144,6 @@ public:
         data.child_ns = parent_child_ns + elapsed;
     }
 
-    Scope(const Scope&) = delete;
-    Scope& operator=(const Scope&) = delete;
-
-private:
     Zone zone;
     bool enabled;
     u64 start{};

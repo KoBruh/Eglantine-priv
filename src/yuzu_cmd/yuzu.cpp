@@ -456,6 +456,7 @@ struct SdlState {
     // Must outlive emu_window, which keeps a pointer to it.
     InputCommon::InputSubsystem input_subsystem{};
     std::unique_ptr<EmuWindow_SDL3> emu_window;
+    bool network_initialized{};
 };
 
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
@@ -518,7 +519,10 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     }
 
     state->system.Initialize();
-
+    state->network_initialized = Network::Init();
+    if (!state->network_initialized) {
+        return SDL_APP_FAILURE;
+    }
 
     // Apply the command line arguments
     state->system.ApplySettings();
@@ -716,7 +720,11 @@ extern "C" void SDL_AppQuit(void *appstate, SDL_AppResult result) {
         void(state->system.Pause());
         state->system.ShutdownMainProcess();
     }
+    const bool network_initialized = state->network_initialized;
     delete state;
+    if (network_initialized) {
+        Network::Shutdown();
+    }
 }
 
 #define VMA_IMPLEMENTATION

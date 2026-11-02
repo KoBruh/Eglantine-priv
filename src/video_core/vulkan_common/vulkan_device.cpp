@@ -28,6 +28,7 @@
 #include "common/settings.h"
 #include "common/settings_enums.h"
 #include "video_core/vulkan_common/nsight_aftermath_tracker.h"
+#include "video_core/vulkan_common/cooperative_matrix.h"
 #include "video_core/vulkan_common/vma.h"
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
@@ -495,10 +496,6 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     if (!is_suitable)
         LOG_WARNING(Render_Vulkan, "Unsuitable driver - continuing anyways");
 
-    // Preserve the hardware-generation result before driver workarounds disable fp16.
-    const bool is_amd_gcn4_or_earlier =
-        is_amd && !features.shader_float16_int8.shaderFloat16;
-
     if (is_nvidia) {
         nvidia_arch = GetNvidiaArchitecture(physical, supported_extensions);
     }
@@ -634,12 +631,16 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     }
 
     sets_per_pool = 64;
+    // AMD GCN4 and older are told apart by their lack of float16, read before float16 is turned
+    // off for newer AMD drivers below: checked after that, every AMD GPU looked like GCN4 and lost
+    // VK_EXT_sampler_filter_minmax (an RDNA3 Radeon 780M logged it).
+    const bool amd_gcn4_or_older = is_amd && !features.shader_float16_int8.shaderFloat16;
     if (is_amd_driver) {
         // AMD drivers need a higher amount of Sets per Pool in certain circumstances like in XC2.
         sets_per_pool = 96;
 
         // Disable VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT on AMD GCN4 and lower as it is broken.
-        if (is_amd_gcn4_or_earlier) {
+        if (amd_gcn4_or_older) {
             LOG_WARNING(Render_Vulkan,
                         "AMD GCN4 and earlier have broken VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT");
             has_broken_cube_compatibility = true;
@@ -655,7 +656,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 
     if (extensions.sampler_filter_minmax && is_amd) {
         // Disable ext_sampler_filter_minmax on AMD GCN4 and lower as it is broken.
-        if (is_amd_gcn4_or_earlier) {
+        if (amd_gcn4_or_older) {
             LOG_WARNING(Render_Vulkan,
                         "AMD GCN4 and earlier have broken VK_EXT_sampler_filter_minmax");
             RemoveExtension(extensions.sampler_filter_minmax,
@@ -767,7 +768,8 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     functions.vkGetInstanceProcAddr = dld.vkGetInstanceProcAddr;
     functions.vkGetDeviceProcAddr = dld.vkGetDeviceProcAddr;
 
-    VmaAllocatorCreateFlags flags = VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT;
+    // More than one thread can create and destroy resources, and no lock covers all of these calls.
+    VmaAllocatorCreateFlags flags = 0;
     if (extensions.memory_budget) {
         flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     }
@@ -1060,6 +1062,14 @@ bool Device::GetSuitability(bool requires_swapchain) {
         supported_extensions.insert(property.extensionName);
     }
 
+    // EDEN_NX2_NO_NV_GEOMETRY=1 hides the NVIDIA geometry extensions. An NVIDIA card then takes the
+    // shader paths of AMD and Intel, so a fault on those cards can be tested on an NVIDIA card.
+    if (std::getenv("EDEN_NX2_NO_NV_GEOMETRY") != nullptr) {
+        supported_extensions.erase(VK_NV_GEOMETRY_SHADER_PASSTHROUGH_EXTENSION_NAME);
+        supported_extensions.erase(VK_NV_VIEWPORT_ARRAY2_EXTENSION_NAME);
+        supported_extensions.erase(VK_NV_VIEWPORT_SWIZZLE_EXTENSION_NAME);
+    }
+
     // Generate list of extensions to load.
     loaded_extensions.clear();
 
@@ -1176,6 +1186,12 @@ bool Device::GetSuitability(bool requires_swapchain) {
 #undef EXT_FEATURE
 #undef FEATURE
 
+    if (extensions.cooperative_matrix) {
+        features.cooperative_matrix_features.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_NV;
+        SetNext(next, features.cooperative_matrix_features);
+    }
+
     // Perform the feature test.
     physical.GetFeatures2(features2);
 
@@ -1225,6 +1241,11 @@ bool Device::GetSuitability(bool requires_swapchain) {
     // Retrieve subgroup properties.
     properties.subgroup_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
     SetNext(next, properties.subgroup_properties);
+    if (extensions.cooperative_matrix) {
+        properties.cooperative_matrix.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_NV;
+        SetNext(next, properties.cooperative_matrix);
+    }
 
     // Retrieve relevant extension properties.
     if (extensions.shader_float_controls) {
@@ -1262,6 +1283,11 @@ bool Device::GetSuitability(bool requires_swapchain) {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES_KHR;
         SetNext(next, properties.maintenance5);
     }
+    if (extensions.graphics_pipeline_library) {
+        properties.graphics_pipeline_library.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT;
+        SetNext(next, properties.graphics_pipeline_library);
+    }
     if (extensions.custom_border_color) {
         properties.custom_border_color.sType =
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_PROPERTIES_EXT;
@@ -1270,6 +1296,24 @@ bool Device::GetSuitability(bool requires_swapchain) {
 
     // Perform the property fetch.
     physical.GetProperties2(properties2);
+
+    if (extensions.cooperative_matrix && dld.vkGetPhysicalDeviceCooperativeMatrixPropertiesNV &&
+        (properties.cooperative_matrix.cooperativeMatrixSupportedStages &
+         VK_SHADER_STAGE_COMPUTE_BIT)) {
+        u32 count{};
+        const auto query = dld.vkGetPhysicalDeviceCooperativeMatrixPropertiesNV;
+        if (query(physical, &count, nullptr) == VK_SUCCESS && count != 0) {
+            std::vector<VkCooperativeMatrixPropertiesNV> matrices(count);
+            for (auto& matrix : matrices) {
+                matrix.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_NV;
+            }
+            if (query(physical, &count, matrices.data()) == VK_SUCCESS) {
+                matrices.resize(count);
+                cooperative_matrix_shape_supported =
+                    std::ranges::any_of(matrices, IsTensorMatrixShape);
+            }
+        }
+    }
 
     // Store base properties
     properties.properties = properties2.properties;
@@ -1512,6 +1556,40 @@ void Device::RemoveUnsuitableExtensions() {
                                        features.vertex_input_dynamic_state,
                                        VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
 
+    // VK_EXT_graphics_pipeline_library, which needs VK_KHR_pipeline_library. Only used when
+    // linking is fast (otherwise it saves nothing over a monolithic compile) and when the vertex
+    // and fragment shaders may disagree on interpolation decorations: libraries are compiled
+    // separately and the SPIR-V backend decorates fragment inputs only.
+    {
+        // Off unless EDEN_NX2_GPL=1: in Mario Kart World memory grew past 19 GB in under two
+        // minutes with it on, against a 11 GB peak without.
+        const char* const gpl_env = std::getenv("EDEN_NX2_GPL");
+        const bool gpl_allowed = gpl_env != nullptr && gpl_env[0] == '1';
+        const auto& gpl_properties = properties.graphics_pipeline_library;
+        const bool gpl_usable =
+            features.graphics_pipeline_library.graphicsPipelineLibrary &&
+            extensions.pipeline_library &&
+            gpl_properties.graphicsPipelineLibraryFastLinking &&
+            gpl_properties.graphicsPipelineLibraryIndependentInterpolationDecoration;
+        if (extensions.graphics_pipeline_library) {
+            LOG_INFO(Render_Vulkan,
+                     "VK_EXT_graphics_pipeline_library: fast linking {}, independent "
+                     "interpolation {}, {}",
+                     gpl_properties.graphicsPipelineLibraryFastLinking == VK_TRUE,
+                     gpl_properties.graphicsPipelineLibraryIndependentInterpolationDecoration ==
+                         VK_TRUE,
+                     !gpl_allowed ? "off (EDEN_NX2_GPL=1 turns it on)"
+                                  : (gpl_usable ? "used" : "not used"));
+        }
+        extensions.graphics_pipeline_library = gpl_allowed && gpl_usable;
+        RemoveExtensionFeatureIfUnsuitable(extensions.graphics_pipeline_library,
+                                           features.graphics_pipeline_library,
+                                           VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+        extensions.pipeline_library = extensions.graphics_pipeline_library;
+        RemoveExtensionIfUnsuitable(extensions.pipeline_library,
+                                    VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+    }
+
     // VK_KHR_pipeline_executable_properties
     if (Settings::values.renderer_shader_feedback.GetValue()) {
         extensions.pipeline_executable_properties =
@@ -1676,6 +1754,13 @@ u64 Device::GetDeviceMemoryBudget() const {
         if (heap != main_heap) {
             result += AllocatedUsage(budget.heapUsage[heap], heap_budgets[heap]);
         }
+    }
+    if (is_integrated) {
+        // An integrated GPU's device-local heap is system memory (a Radeon 780M reported a 21 GB
+        // budget): following it let the texture cache fill that much RAM before collecting, and
+        // kept ASTC uncompressed. Its budget is at most the share CollectPhysicalMemoryInfo
+        // gives it (4 GiB, 6 GiB with aggressive VRAM use).
+        result = (std::min)(result, device_access_memory);
     }
     return result;
 }

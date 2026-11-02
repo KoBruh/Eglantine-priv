@@ -74,6 +74,9 @@ endif()
 option(ENABLE_QT "Enable the Qt frontend" ON)
 option(ENABLE_QT_TRANSLATION "Enable translations for the Qt frontend" OFF)
 option(ENABLE_UPDATE_CHECKER "Enable update checker (for Qt and Android)" OFF)
+set(EGLANTINE_UPDATE_REPO "Djihads80/Eglantine" CACHE STRING "GitHub repository (owner/name) whose releases the update checker and news feed read")
+set(EGLANTINE_BUILD_TAG "" CACHE STRING "Release tag CI publishes this build under, <channel>-build-<number>. Empty for local builds, which never report updates")
+set(EGLANTINE_BUILD_PLATFORM "" CACHE STRING "Platform suffix of this build's release file, such as linux-x86_64-pgo, so the updater downloads the same variant")
 cmake_dependent_option(YUZU_USE_QT_MULTIMEDIA "Use QtMultimedia for Camera"  OFF "NOT YUZU_USE_BUNDLED_QT" OFF)
 cmake_dependent_option(YUZU_USE_QT_WEB_ENGINE "Use QtWebEngine for web applet implementation" OFF "NOT YUZU_USE_BUNDLED_QT" OFF)
 set(YUZU_QT_MIRROR "" CACHE STRING "What mirror to use for downloading the bundled Qt libraries")
@@ -249,14 +252,6 @@ option(YUZU_USE_BUNDLED_SDL3 "Download bundled SDL3 build" ${EXT_DEFAULT})
 # ffmpeg
 option(YUZU_USE_BUNDLED_FFMPEG "Download bundled FFmpeg" ${EXT_DEFAULT})
 cmake_dependent_option(YUZU_USE_EXTERNAL_FFMPEG "Build FFmpeg from external source" "${SOLARIS}" "NOT WIN32 AND NOT ANDROID" OFF)
-
-# sirit
-set(BUNDLED_SIRIT_DEFAULT OFF)
-if (MSVC AND NOT (CMAKE_BUILD_TYPE MATCHES "Deb") OR ANDROID)
-    set(BUNDLED_SIRIT_DEFAULT ON)
-endif()
-
-option(YUZU_USE_BUNDLED_SIRIT "Download bundled sirit" ${BUNDLED_SIRIT_DEFAULT})
 
 # FreeBSD 15+ has libusb, versions below should disable it
 cmake_dependent_option(ENABLE_LIBUSB "Enable the use of LibUSB" ON "WIN32 OR LINUX OR FREEBSD OR APPLE" OFF)

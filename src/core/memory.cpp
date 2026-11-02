@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
@@ -39,12 +40,19 @@
 #endif
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
+#include "core/memory/read_traps.h"
+#include "core/memory/readback_cache.h"
+#include "core/memory/readback_diagnostics.h"
+#include "core/memory/core_readback_shadow.h"
+#include "core/memory/core_readback_cache.h"
+#include "core/memory/core_readback_capacity_shadow.h"
 #include "video_core/gpu.h"
 #include "video_core/nx2.h"
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
+#include "video_core/nx2.h"
 #include "video_core/rasterizer_download_area.h"
 
 namespace Core::Memory {
@@ -102,6 +110,8 @@ struct Memory::Impl {
                                        buffer.BackingBasePointer(), buffer.BackingSize());
         }
 #endif
+        std::scoped_lock lk{read_trap_mutex};
+        read_traps.Clear();
     }
 
     void MapMemoryRegion(Common::PageTable& page_table, Common::ProcessAddress base, u64 size,
@@ -111,6 +121,13 @@ struct Memory::Impl {
         ASSERT_MSG((base & YUZU_PAGEMASK) == 0, "non-page aligned base: {:016X}", GetInteger(base));
         ASSERT_MSG(target >= DramMemoryMap::Base, "Out of bounds target: {:016X}",
                    GetInteger(target));
+        std::unique_lock trap_lock{read_trap_mutex, std::defer_lock};
+        if (current_page_table->fastmem_arena) {
+            trap_lock.lock();
+            read_traps.Drop(GetInteger(base) >> YUZU_PAGEBITS,
+                            (GetInteger(base) + size) >> YUZU_PAGEBITS);
+        }
+
         MapPages(page_table, base / YUZU_PAGESIZE, size / YUZU_PAGESIZE, target,
                  Common::PageType::Memory);
 #ifdef HAS_HYPERVISOR
@@ -128,6 +145,13 @@ struct Memory::Impl {
                      bool separate_heap) {
         ASSERT_MSG((size & YUZU_PAGEMASK) == 0, "non-page aligned size: {:016X}", size);
         ASSERT_MSG((base & YUZU_PAGEMASK) == 0, "non-page aligned base: {:016X}", GetInteger(base));
+        std::unique_lock trap_lock{read_trap_mutex, std::defer_lock};
+        if (current_page_table->fastmem_arena) {
+            trap_lock.lock();
+            read_traps.Drop(GetInteger(base) >> YUZU_PAGEBITS,
+                            (GetInteger(base) + size) >> YUZU_PAGEBITS);
+        }
+
         MapPages(page_table, base / YUZU_PAGESIZE, size / YUZU_PAGESIZE, 0,
                  Common::PageType::Unmapped);
 #ifdef HAS_HYPERVISOR
@@ -348,7 +372,8 @@ struct Memory::Impl {
         },
         [&](const Common::ProcessAddress current_vaddr, const std::size_t offset, const std::size_t copy_amount, const u8* const ptr) {
             if (!unsafe) {
-                HandleRasterizerDownload(GetInteger(current_vaddr), copy_amount);
+                HandleRasterizerDownload(GetInteger(current_vaddr), copy_amount,
+                                         ReadbackDiagnostics::Caller::ReadBlock);
             }
             std::memcpy(reinterpret_cast<u8*>(buffer) + offset, ptr, copy_amount);
         });
@@ -370,10 +395,10 @@ struct Memory::Impl {
             std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
         },
         [&](const Common::ProcessAddress current_vaddr, const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
+            std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
             if (!unsafe) {
                 HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
             }
-            std::memcpy(ptr, reinterpret_cast<u8 const*>(buffer) + offset, copy_amount);
         });
     }
 
@@ -386,8 +411,8 @@ struct Memory::Impl {
             std::memset(ptr, 0, copy_amount);
         },
         [&](const Common::ProcessAddress current_vaddr, const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
-            HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
             std::memset(ptr, 0, copy_amount);
+            HandleRasterizerWrite(GetInteger(current_vaddr), copy_amount);
         });
     }
 
@@ -401,7 +426,8 @@ struct Memory::Impl {
             WriteBlockImpl(dest_addr + offset, ptr, copy_amount, false);
         },
         [&](const Common::ProcessAddress current_vaddr, const std::size_t offset, const std::size_t copy_amount, u8* const ptr) {
-            HandleRasterizerDownload(GetInteger(current_vaddr), copy_amount);
+            HandleRasterizerDownload(GetInteger(current_vaddr), copy_amount,
+                                     ReadbackDiagnostics::Caller::CopyBlock);
             WriteBlockImpl(dest_addr + offset, ptr, copy_amount, false);
         });
     }
@@ -424,7 +450,8 @@ struct Memory::Impl {
         auto on_rasterizer = [&](const Common::ProcessAddress current_vaddr, const std::size_t offset, const std::size_t block_size) {
             // dc ivac: Invalidate to point of coherency
             // GPU flush -> CPU invalidate
-            HandleRasterizerDownload(GetInteger(current_vaddr), block_size);
+            HandleRasterizerDownload(GetInteger(current_vaddr), block_size,
+                                     ReadbackDiagnostics::Caller::InvalidateDataCache);
         };
         return PerformCacheOperation(dest_addr, size, on_rasterizer);
     }
@@ -518,7 +545,11 @@ struct Memory::Impl {
         }
 #endif
 
+        // Page types change under the read trap lock, so arming and disarming never act on a page
+        // whose cached state changed after they looked at it.
+        std::unique_lock trap_lock{read_trap_mutex, std::defer_lock};
         if (current_page_table->fastmem_arena) {
+            trap_lock.lock();
             Common::MemoryPermission perm{};
             if (!Settings::values.use_reactive_flushing.GetValue() || !cached) {
                 perm |= Common::MemoryPermission::Read;
@@ -527,8 +558,17 @@ struct Memory::Impl {
                 perm |= Common::MemoryPermission::Write;
             }
             host_buffer->Protect(vaddr, size, perm);
-            if (cached && perm != Common::MemoryPermission{}) {
-                ProtectArmedPages(vaddr, size);
+            const u64 page_begin = vaddr >> YUZU_PAGEBITS;
+            const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
+            if (!cached) {
+                // Nothing is left to flush on pages the GPU no longer caches.
+                read_traps.Drop(page_begin, page_end);
+            } else if (perm != Common::MemoryPermission{}) {
+                // Armed pages that were just cached again lose read permission again.
+                read_traps.ForEach(page_begin, page_end, [&](u64 page) {
+                    host_buffer->Protect(page << YUZU_PAGEBITS, YUZU_PAGESIZE,
+                                         Common::MemoryPermission{});
+                });
             }
         }
 
@@ -592,16 +632,14 @@ struct Memory::Impl {
 
     /// Read traps replace reactive flushing's blanket read protection of every cached page: only
     /// pages the GPU writes are protected, and each one only until its first read
-    /// (EDEN_NX2_READ_TRAPS=0 turns them off). Under NCE every fault is taken as a write, so they
-    /// are not used there.
+    /// (EDEN_NX2_READ_TRAPS=0 turns them off). Under NCE the fault's ESR tells reads from writes.
     bool ReadTrapsEnabled() const {
         static const bool disabled = [] {
             const char* value = std::getenv("EDEN_NX2_READ_TRAPS");
             return value != nullptr && value[0] == '0';
         }();
         return !disabled && current_page_table->fastmem_arena &&
-               !Settings::values.use_reactive_flushing.GetValue() &&
-               Settings::values.cpu_backend.GetValue() != Settings::CpuBackend::Nce;
+               !Settings::values.use_reactive_flushing.GetValue();
     }
 
     void RasterizerArmReadTraps(u64 vaddr, u64 size) {
@@ -611,25 +649,28 @@ struct Memory::Impl {
         }
         const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
         std::scoped_lock lk{read_trap_mutex};
+        // A new generation makes reads that hit a cached read area flush again, and keeps a read
+        // that is already flushing from disarming what is armed after it started.
+        u64 generation = 0;
         u64 run_begin = 0;
         u64 run_pages = 0;
         const auto protect_run = [&] {
             if (run_pages > 0) {
-                // Reads that hit a cached read area must not skip the flush of a new trap.
-                read_trap_generation.fetch_add(1, std::memory_order_release);
                 host_buffer->Protect(run_begin << YUZU_PAGEBITS, run_pages << YUZU_PAGEBITS,
                                      Common::MemoryPermission{});
                 run_pages = 0;
             }
         };
         for (u64 page = vaddr >> YUZU_PAGEBITS; page != page_end; ++page) {
-            const bool cached = std::as_const(current_page_table->entries)[page].Type() ==
-                                Common::PageType::RasterizerCachedMemory;
-            if (!cached || !armed_read_traps.insert(page).second) {
+            if (std::as_const(current_page_table->entries)[page].Type() !=
+                Common::PageType::RasterizerCachedMemory) {
                 protect_run();
                 continue;
             }
-            armed_read_trap_count.fetch_add(1, std::memory_order_relaxed);
+            if (generation == 0) {
+                generation = read_traps.NewGeneration();
+            }
+            read_traps.Arm(page, generation);
             if (run_pages == 0) {
                 run_begin = page;
             }
@@ -638,34 +679,33 @@ struct Memory::Impl {
         protect_run();
     }
 
-    /// Takes read permission away again from armed pages that were just cached again.
-    void ProtectArmedPages(u64 vaddr, u64 size) {
-        if (armed_read_trap_count.load(std::memory_order_relaxed) == 0) {
-            return;
+    bool IsReadTrapArmed(u64 vaddr) {
+        if (read_traps.Empty()) {
+            return false;
         }
         std::scoped_lock lk{read_trap_mutex};
-        const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
-        for (auto it = armed_read_traps.lower_bound(vaddr >> YUZU_PAGEBITS);
-             it != armed_read_traps.end() && *it < page_end; ++it) {
-            host_buffer->Protect(*it << YUZU_PAGEBITS, YUZU_PAGESIZE, Common::MemoryPermission{});
-        }
+        const u64 page = vaddr >> YUZU_PAGEBITS;
+        bool armed = false;
+        read_traps.ForEach(page, page + 1, [&](u64) { armed = true; });
+        return armed;
     }
 
-    /// A slow-path read of a cached page: its trap, if any, has done its job.
-    void DisarmReadTraps(u64 vaddr, size_t size) {
-        if (armed_read_trap_count.load(std::memory_order_relaxed) == 0) {
+    /// A slow-path read of a cached page has been flushed: traps armed up to flushed_generation
+    /// have done their job. Later ones belong to GPU writes the flush may have missed.
+    void DisarmReadTraps(u64 vaddr, size_t size, u64 flushed_generation) {
+        if (read_traps.Empty()) {
             return;
         }
         std::scoped_lock lk{read_trap_mutex};
         const u64 page_end = ((vaddr + size - 1) >> YUZU_PAGEBITS) + 1;
-        auto it = armed_read_traps.lower_bound(vaddr >> YUZU_PAGEBITS);
-        while (it != armed_read_traps.end() && *it < page_end) {
+        read_traps.Disarm(vaddr >> YUZU_PAGEBITS, page_end, flushed_generation, [&](u64 page) {
             // Still cached (this read came through the rasterizer path): writes stay trapped.
-            host_buffer->Protect(*it << YUZU_PAGEBITS, YUZU_PAGESIZE,
-                                 Common::MemoryPermission::Read);
-            it = armed_read_traps.erase(it);
-            armed_read_trap_count.fetch_sub(1, std::memory_order_relaxed);
-        }
+            if (std::as_const(current_page_table->entries)[page].Type() ==
+                Common::PageType::RasterizerCachedMemory) {
+                host_buffer->Protect(page << YUZU_PAGEBITS, YUZU_PAGESIZE,
+                                     Common::MemoryPermission::Read);
+            }
+        });
     }
 
     /**
@@ -777,7 +817,7 @@ struct Memory::Impl {
             }
             ++UnmappedReadFlag();
         }, [&]() {
-            HandleRasterizerDownload(addr, sizeof(T));
+            HandleRasterizerDownload(addr, sizeof(T), ReadbackDiagnostics::Caller::ScalarRead);
         }); ptr) [[likely]] {
             // It may be tempting to rewrite this particular section to use "reinterpret_cast";
             // afterall, it's trivially copyable so surely it can be copied ov- Alignment.
@@ -795,63 +835,246 @@ struct Memory::Impl {
     template <typename T>
     inline void Write(Common::ProcessAddress vaddr, const T data) noexcept requires(std::is_trivially_copyable_v<T>) {
         const u64 addr = GetInteger(vaddr);
+        bool cached = false;
         if (auto const ptr = GetPointerImpl(addr, [addr, data]() {
             LOG_ERROR(HW_Memory, "Unmapped Write{} @ {:#016x} = {:#016x}", sizeof(T) * 8, addr, u64(data));
-        }, [&]() { HandleRasterizerWrite(addr, sizeof(T)); }); ptr) [[likely]]
+        }, [&]() { cached = true; }); ptr) [[likely]] {
             std::memcpy(ptr, &data, sizeof(T));
+            // Report the write after the store. The GPU thread can apply a report at any time. It
+            // reads the bytes then and keeps the page protected, so an earlier report can lose them.
+            if (cached) [[unlikely]] {
+                HandleRasterizerWrite(addr, sizeof(T));
+            }
+        }
     }
 
     template <typename T>
     bool WriteExclusive(Common::ProcessAddress vaddr, const T data, const T expected) {
+        bool cached = false;
         u8* const ptr = GetPointerImpl(
             GetInteger(vaddr),
             [vaddr, data]() {
                 LOG_ERROR(HW_Memory, "Unmapped WriteExclusive{} @ {:#016x} = {:#016x}",
                           sizeof(T) * 8, GetInteger(vaddr), static_cast<u64>(data));
             },
-            [&]() { HandleRasterizerWrite(GetInteger(vaddr), sizeof(T)); });
+            [&]() { cached = true; });
         if (ptr) {
-            return Common::AtomicCompareAndSwap(reinterpret_cast<T*>(ptr), data, expected);
+            const bool result = Common::AtomicCompareAndSwap(reinterpret_cast<T*>(ptr), data, expected);
+            if (cached && result) {
+                HandleRasterizerWrite(GetInteger(vaddr), sizeof(T));
+            }
+            return result;
         }
         return true;
     }
 
     bool WriteExclusive128(Common::ProcessAddress vaddr, const u128 data, const u128 expected) {
+        bool cached = false;
         u8* const ptr = GetPointerImpl(
             GetInteger(vaddr),
             [vaddr, data]() {
                 LOG_ERROR(HW_Memory, "Unmapped WriteExclusive128 @ {:#016x} = {:#016x}{:016X}",
                           GetInteger(vaddr), static_cast<u64>(data[1]), static_cast<u64>(data[0]));
             },
-            [&]() { HandleRasterizerWrite(GetInteger(vaddr), sizeof(u128)); });
+            [&]() { cached = true; });
         if (ptr) {
-            return Common::AtomicCompareAndSwap(reinterpret_cast<u64*>(ptr), data, expected);
+            const bool result = Common::AtomicCompareAndSwap(reinterpret_cast<u64*>(ptr), data, expected);
+            if (cached && result) {
+                HandleRasterizerWrite(GetInteger(vaddr), sizeof(u128));
+            }
+            return result;
         }
         return true;
     }
 
-    void HandleRasterizerDownload(VAddr v_address, size_t size) {
+    void HandleRasterizerDownload(VAddr v_address, size_t size, ReadbackDiagnostics::Caller caller) {
+        ReadbackDiagnostics::Scope diagnostics{caller, size};
+        using ReadbackDiagnostics::Event;
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
-        if (!gpu_device_memory) [[unlikely]] {
-            gpu_device_memory = &system.Host1x().MemoryManager();
-        }
+        auto& gpu_device_memory = system.Host1x().MemoryManager();
         const size_t core = system.GetCurrentHostThreadID();
+        diagnostics.BindCore(core);
+        const u64 generation = read_traps.Generation();
+        if (core >= Core::Hardware::NUM_CPU_CORES) {
+            thread_local Common::ScratchBuffer<u32> host_thread_scratch;
+            thread_local HostReadbackCache host_read_cache;
+            auto& gpu = system.GPU();
+            const u64 offset = v_address & YUZU_PAGEMASK;
+            if (Tegra::g_nx2_ampere.load(std::memory_order_relaxed) &&
+                current_page_table->fastmem_arena && p != nullptr &&
+                HostReadbackCache::FitsInPage(offset, size)) {
+                diagnostics.Add(Event::HostGate);
+                const auto resolve_page = [&](const u8* pointer, u64 trap_generation) {
+                    HostReadbackCache::Page page{};
+                    size_t aliases = 0;
+                    if (pointer != nullptr) {
+                        gpu_device_memory.ApplyOpOnPointer(
+                            pointer, host_thread_scratch, [&](DAddr address) {
+                                ++aliases;
+                                if (address != 0 && (address & YUZU_PAGEMASK) == offset &&
+                                    gpu_device_memory.GetPointer<u8>(address) == pointer) {
+                                    page = {this, pointer - offset, address - offset,
+                                            trap_generation, readback_owner};
+                                }
+                            });
+                    }
+                    if (aliases != 1 || page.owner == nullptr) {
+                        page = {};
+                    }
+                    return std::pair{page, aliases};
+                };
+                const auto [page, aliases] = resolve_page(p, generation);
+                if (page.owner != nullptr) {
+                    diagnostics.Add(Event::HostEligible);
+                    diagnostics.SetAliases(aliases);
+                    const u64 work_generation = gpu.ReadbackGeneration();
+                    if (host_read_cache.CanReuse(page, aliases, work_generation, offset, size) &&
+                        read_traps.Generation() == generation &&
+                        gpu.ReadbackGeneration() == work_generation &&
+                        GetPointerImpl(v_address, []() {}, []() {}) == p) {
+                        diagnostics.Add(Event::HostHit);
+                        DisarmReadTraps(v_address, size, generation);
+                        return;
+                    }
+                    host_read_cache.Invalidate();
+                    diagnostics.Add(Event::HostMiss);
+                    diagnostics.Add(Event::GpuPage);
+                    const auto area = gpu.OnCPURead(page.device_page, YUZU_PAGESIZE);
+                    const auto [current_page, current_aliases] = resolve_page(
+                        GetPointerImpl(v_address, []() {}, []() {}), read_traps.Generation());
+                    const u64 completed_generation = gpu.ReadbackGeneration();
+                    host_read_cache.Remember(page, area, current_page, current_aliases,
+                                             completed_generation);
+                    if (ReadbackDiagnostics::Enabled() &&
+                        (page != current_page || current_aliases != 1 || page.owner == nullptr ||
+                         page.owner_instance == 0 || page.host_page == nullptr ||
+                         page.device_page == 0 || (page.device_page & YUZU_PAGEMASK) != 0 ||
+                         page.device_page > ~u64{0} - YUZU_PAGESIZE ||
+                         area.completed_generation == 0 ||
+                         area.completed_generation != completed_generation ||
+                         area.start_address > page.device_page ||
+                         area.end_address < page.device_page + YUZU_PAGESIZE)) {
+                        diagnostics.Add(Event::RememberRejected);
+                    }
+                    DisarmReadTraps(v_address, size, generation);
+                    return;
+                }
+                diagnostics.Add(aliases > 1 ? Event::MultiAliasFallback : Event::OtherFallback);
+            } else if (ReadbackDiagnostics::Enabled()) {
+                diagnostics.Add(!current_page_table->fastmem_arena ? Event::FastmemFallback
+                                                                  : Event::OtherFallback);
+            }
+            host_read_cache.Invalidate();
+            gpu_device_memory.ApplyOpOnPointer(p, host_thread_scratch, [&](DAddr address) {
+                diagnostics.AddAlias();
+                diagnostics.Add(Event::GpuFallback);
+                static_cast<void>(gpu.OnCPURead(address, size));
+            });
+            DisarmReadTraps(v_address, size, generation);
+            return;
+        }
         auto& current_area = rasterizer_read_areas[core];
-        if (const u64 generation = read_trap_generation.load(std::memory_order_acquire);
-            read_area_generations[core] != generation) {
+        if (read_area_generations[core] != generation) {
             current_area = {};
             read_area_generations[core] = generation;
         }
-        gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+        gpu_device_memory.ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+            diagnostics.AddAlias();
             const DAddr end_address = address + size;
             if (current_area.start_address <= address && end_address <= current_area.end_address)
                 [[likely]] {
+                diagnostics.Add(Event::AreaHit);
                 return;
             }
-            DisarmReadTraps(v_address, size);
+            diagnostics.Add(Event::AreaMiss);
+            CoreReadbackShadow::Snapshot shadow_before{};
+            const auto capture_shadow = [&] {
+                CoreReadbackShadow::Snapshot snapshot;
+                const u64 offset = v_address & YUZU_PAGEMASK;
+                if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) ||
+                    !current_page_table->fastmem_arena || p == nullptr ||
+                    !HostReadbackCache::FitsInPage(offset, size)) {
+                    return snapshot;
+                }
+                const u64 trap_before = read_traps.Generation();
+                const u64 work_before = system.GPU().ReadbackGeneration();
+                thread_local Common::ScratchBuffer<u32> shadow_scratch;
+                gpu_device_memory.ApplyOpOnPointer(p, shadow_scratch, [&](DAddr alias) {
+                    ++snapshot.aliases;
+                    if (alias == address && alias != 0 && (alias & YUZU_PAGEMASK) == offset &&
+                        gpu_device_memory.GetPointer<u8>(alias) == p) {
+                        snapshot.page = {this, p - offset, alias - offset,
+                                         trap_before, readback_owner};
+                    }
+                });
+                if (snapshot.aliases != 1 || read_traps.Generation() != trap_before ||
+                    GetPointerImpl(v_address, []() {}, []() {}) != p ||
+                    system.GPU().ReadbackGeneration() != work_before) {
+                    snapshot.page = {};
+                    return snapshot;
+                }
+                snapshot.generation = work_before;
+                return snapshot;
+            };
+            CoreReadbackCapacityShadow::State* capacity = nullptr;
+            if (CoreReadbackCapacityShadow::Enabled()) {
+                auto& state = core_readback_capacity_shadows[core];
+                if (!state) {
+                    state = std::make_unique<CoreReadbackCapacityShadow::State>();
+                }
+                capacity = state.get();
+            }
+            if (CoreReadbackCache::Enabled() || CoreReadbackShadow::Enabled() || capacity) {
+                shadow_before = capture_shadow();
+            }
+            if (CoreReadbackCache::Enabled() &&
+                core_readback_caches[core].CanReuse(shadow_before.page, shadow_before.aliases,
+                                                   shadow_before.generation,
+                                                   v_address & YUZU_PAGEMASK, size)) {
+                const auto confirmed = capture_shadow();
+                if (confirmed.page == shadow_before.page && confirmed.aliases == 1 &&
+                    confirmed.generation == shadow_before.generation) {
+                    if (capacity) {
+                        capacity->Before(shadow_before, capture_shadow, v_address & YUZU_PAGEMASK,
+                                         size, true, core);
+                    }
+                    diagnostics.Add(Event::CoreCacheHit);
+                    return;
+                }
+            }
+            if (capacity) {
+                capacity->Before(shadow_before, capture_shadow, v_address & YUZU_PAGEMASK,
+                                 size, false, core);
+            }
+            if (CoreReadbackShadow::Enabled()) {
+                if (core_readback_shadows[core].Before(shadow_before, v_address & YUZU_PAGEMASK, size)) {
+                    core_readback_shadows[core].Confirm(
+                        read_traps.Generation() == shadow_before.page.trap_generation &&
+                        system.GPU().ReadbackGeneration() == shadow_before.generation &&
+                        GetPointerImpl(v_address, []() {}, []() {}) == p);
+                }
+            }
+            diagnostics.Add(Event::GpuCore);
             current_area = system.GPU().OnCPURead(address, size);
+            if (CoreReadbackCache::Enabled() || CoreReadbackShadow::Enabled() || capacity) {
+                const auto current = capture_shadow();
+                if (capacity) {
+                    capacity->After(shadow_before, current_area, current);
+                }
+                if (CoreReadbackCache::Enabled()) {
+                    core_readback_caches[core].Remember(shadow_before.page, current_area,
+                                                       current.page, current.aliases,
+                                                       current.generation);
+                }
+                if (CoreReadbackShadow::Enabled()) {
+                    core_readback_shadows[core].After(shadow_before, current_area, current, core);
+                }
+            }
         });
+        // Only once every device alias is flushed (or inside an area flushed after this
+        // generation's traps were armed): a disarmed page is read through fastmem without trapping.
+        DisarmReadTraps(v_address, size, generation);
     }
 
     // EDEN_NX2_WRITE_STATS: guest writes to pages the GPU caches track leave the JIT's fast path
@@ -935,9 +1158,6 @@ struct Memory::Impl {
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
         const size_t core = (std::min)(system.GetCurrentHostThreadID(),
                                      sys_core); // any other calls threads go to syscore.
-        if (!gpu_device_memory) [[unlikely]] {
-            gpu_device_memory = &system.Host1x().MemoryManager();
-        }
         // Guard on sys_core;
         if (core == sys_core) [[unlikely]] {
             sys_core_guard.lock();
@@ -947,7 +1167,7 @@ struct Memory::Impl {
                 sys_core_guard.unlock();
             }
         };
-        gpu_device_memory->ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
+        system.Host1x().MemoryManager().ApplyOpOnPointer(p, scratch_buffers[core], [&](DAddr address) {
             auto& current_area = rasterizer_write_areas[core];
             PAddr subaddress = address >> YUZU_PAGEBITS;
             // Performance note:
@@ -980,9 +1200,6 @@ struct Memory::Impl {
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
         const size_t core = (std::min)(system.GetCurrentHostThreadID(),
                                      sys_core); // any other calls threads go to syscore.
-        if (!gpu_device_memory) [[unlikely]] {
-            gpu_device_memory = &system.Host1x().MemoryManager();
-        }
         // Guard on sys_core;
         if (core == sys_core) [[unlikely]] {
             sys_core_guard.lock();
@@ -993,19 +1210,22 @@ struct Memory::Impl {
             }
         };
         auto& gpu = system.GPU();
-        gpu_device_memory->ApplyOpOnPointer(
+        system.Host1x().MemoryManager().ApplyOpOnPointer(
             p, scratch_buffers[core], [&](DAddr address) { gpu.InvalidateRegion(address, size, true); });
     }
 
     Core::System& system;
-    Tegra::MaxwellDeviceMemoryManager* gpu_device_memory{};
     Common::PageTable* current_page_table = nullptr;
 
     std::array<VideoCore::RasterizerDownloadArea, Core::Hardware::NUM_CPU_CORES> rasterizer_read_areas{};
     std::array<u64, Core::Hardware::NUM_CPU_CORES> read_area_generations{};
-    std::atomic<u64> read_trap_generation{};
-    std::set<u64> armed_read_traps;
-    std::atomic<size_t> armed_read_trap_count{};
+    std::array<CoreReadbackShadow::State, Core::Hardware::NUM_CPU_CORES> core_readback_shadows{};
+    std::array<CoreReadbackCache, Core::Hardware::NUM_CPU_CORES> core_readback_caches{};
+    std::array<std::unique_ptr<CoreReadbackCapacityShadow::State>, Core::Hardware::NUM_CPU_CORES>
+        core_readback_capacity_shadows{};
+    ReadTraps read_traps;
+    static inline std::atomic<u64> next_readback_owner{1};
+    const u64 readback_owner{next_readback_owner.fetch_add(1, std::memory_order_relaxed)};
     std::mutex read_trap_mutex;
     std::array<GPUDirtyState, Core::Hardware::NUM_CPU_CORES> rasterizer_write_areas{};
     std::array<Common::ScratchBuffer<u32>, Core::Hardware::NUM_CPU_CORES> scratch_buffers{};
@@ -1207,7 +1427,7 @@ void Memory::MarkRegionDebug(Common::ProcessAddress vaddr, u64 size, bool debug)
     impl->MarkRegionDebug(GetInteger(vaddr), size, debug);
 }
 
-bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
+bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size, bool is_write) {
     [[maybe_unused]] bool mapped = true;
     [[maybe_unused]] bool rasterizer = false;
 
@@ -1219,7 +1439,17 @@ bool Memory::InvalidateNCE(Common::ProcessAddress vaddr, size_t size) {
             mapped = false;
         },
         [&] { rasterizer = true; });
-    if (rasterizer) {
+    if (rasterizer && !is_write) {
+        // Flushes the GPU's writes and records the read (later GPU writes there are copied back
+        // at fences). A read trap is disarmed by this and leaves the page readable; a page read
+        // protected by reactive flushing is released as a write would release it.
+        const bool trapped = impl->IsReadTrapArmed(GetInteger(vaddr));
+        impl->HandleRasterizerDownload(GetInteger(vaddr), size,
+                                       ReadbackDiagnostics::Caller::ScalarRead);
+        if (!trapped) {
+            impl->InvalidateGPUMemory(ptr, size);
+        }
+    } else if (rasterizer) {
         impl->InvalidateGPUMemory(ptr, size);
     }
 

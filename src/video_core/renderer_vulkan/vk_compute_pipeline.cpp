@@ -11,6 +11,7 @@
 #include <boost/container/small_vector.hpp>
 #include <fmt/format.h>
 
+#include "shader_recompiler/exception.h"
 #include "video_core/renderer_vulkan/pipeline_helper.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/pipeline_stats.h"
@@ -46,6 +47,15 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_},
       descriptor_buffer_ring{descriptor_buffer_ring_}, info{info_},
       shader_hash{shader_hash_}, spv_module(std::move(spv_module_)) {
+    const u32 storage_buffers = Shader::NumDescriptors(info.storage_buffers_descriptors);
+    const u32 storage_buffer_limit =
+        (std::min)(device.GetMaxPerStageDescriptorStorageBuffers(),
+                   device.GetMaxDescriptorSetStorageBuffers());
+    if (storage_buffers > storage_buffer_limit) {
+        throw Shader::NotImplementedException(
+            "Compute shader {:016X} needs {} storage buffers, device supports {}",
+            shader_hash, storage_buffers, storage_buffer_limit);
+    }
     if (shader_notify) {
         shader_notify->MarkShaderBuilding();
     }
@@ -93,6 +103,12 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             .pNext = nullptr,
             .requiredSubgroupSize = GuestWarpSize,
         };
+        // Only warp-level ops observe the subgroup size. Forcing 32 on other shaders makes Intel
+        // compile SIMD32, which can spill a register-heavy kernel for minutes (Mario Kart World).
+        const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
+                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
+                                   info.uses_quad_shuffles || info.uses_fswzadd ||
+                                   info.uses_tensor_mul_add;
         VkPipelineCreateFlags flags{};
         if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
             flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
@@ -106,9 +122,13 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             .flags = flags,
             .stage{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext =
-                    device.IsExtSubgroupSizeControlSupported() ? &subgroup_size_ci : nullptr,
-                .flags = 0,
+                .pNext = device.IsExtSubgroupSizeControlSupported() && uses_warp_ops
+                             ? &subgroup_size_ci
+                             : nullptr,
+                .flags = info.uses_tensor_mul_add
+                             ? VkPipelineShaderStageCreateFlags{
+                                   VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT}
+                             : 0U,
                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                 .module = *spv_module,
                 .pName = "main",
@@ -122,9 +142,12 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
             const PipelineStats::ScopedTimer stats_timer{PipelineStats::Kind::Compute,
                                                          PipelineStats::Stage::Driver};
             pipeline = device.GetLogical().CreateComputePipeline(compute_ci, *pipeline_cache);
+            // Only needed to create the pipeline.
+            spv_module = {};
         } catch (const vk::Exception& exception) {
             LOG_CRITICAL(Render_Vulkan, "Adreno rejected compute shader {:016X}: {}", shader_hash,
                          exception.what());
+            spv_module = {};
             std::scoped_lock lock{build_mutex};
             is_built = true;
             build_condvar.notify_one();

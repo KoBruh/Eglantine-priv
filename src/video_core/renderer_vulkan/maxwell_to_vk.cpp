@@ -256,9 +256,8 @@ FormatInfo SurfaceFormat(const Device& device, FormatType format_type, bool with
             }
             break;
         case Settings::AstcRecompression::Bc1:
-            tuple.format = is_srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
-            break;
         case Settings::AstcRecompression::Bc3:
+            // Opaque images are switched to BC1 per image (AstcHostFormat).
             tuple.format = is_srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
             break;
         }

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <thread>
+#include <utility>
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -110,6 +111,14 @@ void GpuSplit::MaybeStart(Core::System& system_) {
         LOG_INFO(HW_GPU, "GPU thread split: stopped ({})", ab_off ? "A/B window" : "safe DMA or not Vulkan");
         return;
     }
+    if (!allowed) {
+        // Called by the GPU thread only. Say once why the split is off: it costs ~1.5x.
+        static bool reported = false;
+        if (!std::exchange(reported, true)) {
+            LOG_WARNING(HW_GPU, "GPU thread split: not started, it needs DMA accuracy not Safe and "
+                                "the Vulkan renderer");
+        }
+    }
     if (active || !allowed) {
         return;
     }
@@ -199,13 +208,37 @@ void GpuSplit::Publish() {
     }
 }
 
+void GpuSplit::AwaitReleases(GPUVAddr address, u64 size) {
+    if (sent_releases.empty()) {
+        return;
+    }
+    const u64 done = consumed.load(std::memory_order_acquire);
+    bool wait = false;
+    for (auto it = sent_releases.begin(); it != sent_releases.end();) {
+        if (it->second <= done) {
+            it = sent_releases.erase(it);
+            continue;
+        }
+        wait |= it->first >= address && it->first < address + size;
+        ++it;
+    }
+    if (wait) {
+        Drain(Nx2Profile::Zone::DrainRelease);
+        sent_releases.clear();
+    }
+}
+
 void GpuSplit::Drain() {
+    Drain(Nx2Profile::Zone::SplitDrain);
+}
+
+void GpuSplit::Drain(Nx2Profile::Zone zone) {
     consumed_cache = consumed.load(std::memory_order_acquire);
     if (consumed_cache == write_position) {
         return;
     }
     Publish();
-    Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
+    Nx2Profile::Scope scope{zone};
     for (u32 spins = 0;; ++spins) {
         consumed_cache = consumed.load(std::memory_order_acquire);
         if (consumed_cache == write_position) {
@@ -313,6 +346,7 @@ size_t GpuSplit::Execute(const u64* entry) {
 }
 
 void GpuSplit::BackLoop(std::stop_token stop_token) {
+    back_thread_context = true;
     Common::SetCurrentThreadName("GPUBack");
     Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
     Common::SetCurrentThreadToPerformanceCores();

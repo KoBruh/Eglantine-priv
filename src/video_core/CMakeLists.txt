@@ -75,6 +75,8 @@ add_library(video_core STATIC
     host1x/codec_types.h
     host1x/ffmpeg.cpp
     host1x/ffmpeg.h
+    host1x/native_video.cpp
+    host1x/native_video.h
     host1x/control.cpp
     host1x/control.h
     host1x/gpu_device_memory_manager.cpp
@@ -185,6 +187,8 @@ add_library(video_core STATIC
     renderer_vulkan/vk_master_semaphore.h
     renderer_vulkan/vk_pipeline_cache.cpp
     renderer_vulkan/vk_pipeline_cache.h
+    renderer_vulkan/vk_pipeline_library.cpp
+    renderer_vulkan/vk_pipeline_library.h
     renderer_vulkan/vk_present_manager.cpp
     renderer_vulkan/vk_present_manager.h
     renderer_vulkan/vk_query_cache.cpp
@@ -218,6 +222,7 @@ add_library(video_core STATIC
     vulkan_common/vulkan_debug_callback.h
     vulkan_common/vulkan_device.cpp
     vulkan_common/vulkan_device.h
+    vulkan_common/cooperative_matrix.h
     vulkan_common/vulkan_instance.cpp
     vulkan_common/vulkan_instance.h
     vulkan_common/vulkan_library.cpp

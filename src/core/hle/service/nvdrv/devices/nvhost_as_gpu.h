@@ -23,6 +23,7 @@
 #include "common/swap.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/hle/service/nvdrv/devices/nvdevice.h"
+#include "core/hle/service/nvdrv/devices/nx2_gpu_mapping_table.h"
 
 namespace Tegra {
 class MemoryManager;
@@ -73,6 +74,17 @@ public:
     static_assert(sizeof(VaRegion) == 0x18);
 
 private:
+    struct IoctlMappingModify {
+        s16_le compression_kind;
+        s16_le incompressible_kind;
+        u32_le reserved;
+        u64_le buffer_offset;
+        u64_le buffer_size;
+        u64_le map_address;
+    };
+    static_assert(sizeof(IoctlMappingModify) == 0x20);
+
+
     struct IoctlAllocAsEx {
         u32_le flags{}; // usually passes 1
         s32_le as_fd{}; // ignored; passes 0
@@ -237,15 +249,20 @@ private:
     NvCore::SessionId nx2_session{};
     struct Nx2DeviceRange {
         DAddr address;
-        bool heap; ///< Mapped through the session's heap mapper (else an SMMU allocation)
+        bool heap;   ///< Mapped through the session's heap mapper (else an SMMU allocation)
+        bool shared; ///< Borrows an existing backing range; this entry must not free it
     };
     std::map<std::pair<u64, u64>, Nx2DeviceRange> nx2_device_ranges;
+    Nx2GpuMappingTable nx2_gpu_views;
     void Nx2Release(u64 cpu_address, u64 size);
 
     // Switch 2 sparse regions: a device range per region, mapped for the GPU when it's created;
     // blocks get memory behind their device pages as the GPU writes them.
     void Nx2Sparse(u64 gpu_address, u64 size, bool create);
     void Nx2BackSparse(u64 gpu_address, u64 cpu_address, u64 size);
+    // A tile of a sparse region (nx2:gpu 216): its device pages show process memory, or nothing.
+    void Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size);
+    void Nx2Reserve(u64 gpu_address, u64 size);
     std::map<u64, std::pair<u64, DAddr>> nx2_sparse_ranges; ///< GPU address -> (size, device)
 };
 

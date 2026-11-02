@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <unordered_set>
 #include <fmt/ranges.h>
@@ -14,6 +15,7 @@
 #include <boost/container/small_vector.hpp>
 
 #include "common/assert.h"
+#include "video_core/native_clip.h"
 #include "shader_recompiler/frontend/maxwell/control_flow.h"
 #include "shader_recompiler/exception.h"
 #include "shader_recompiler/object_pool.h"
@@ -35,6 +37,17 @@ void ShaderCache::InvalidateRegion(VAddr addr, size_t size) {
     RemovePendingShaders();
 }
 
+void ShaderCache::InvalidateRegions(std::span<const std::pair<DAddr, size_t>> sequences) {
+    if (sequences.empty()) {
+        return;
+    }
+    std::scoped_lock lock{invalidation_mutex};
+    for (const auto& [addr, size] : sequences) {
+        InvalidatePagesInRegion(addr, size);
+    }
+    RemovePendingShaders();
+}
+
 void ShaderCache::OnCacheInvalidation(VAddr addr, size_t size) {
     std::scoped_lock lock{invalidation_mutex};
     InvalidatePagesInRegion(addr, size);
@@ -45,15 +58,30 @@ void ShaderCache::SyncGuestHost() {
     RemovePendingShaders();
 }
 
-ShaderCache::ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
-                         bool native_tensor_full_by_default_)
-    : device_memory{device_memory_},
-      native_tensor_full_by_default{native_tensor_full_by_default_} {}
+ShaderCache::ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory_)
+    : device_memory{device_memory_} {}
 
 bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
+    const auto clip_compatible = [&] {
+        const bool needs_clip = std::any_of(shader_infos.begin(), shader_infos.end(),
+            [](const ShaderInfo* info) { return info && info->requires_rasterizer_clip; });
+        if (!needs_clip) return true;
+        const bool compatible = RasterizerFrustumClipCompatible(maxwell3d->regs);
+        if (!compatible) {
+            static bool reported{};
+            if (!reported) {
+                reported = true;
+                LOG_WARNING(HW_GPU, "Deferred clip export rejected by pipeline: geometry_clip={}, gs={}, tf={}",
+                    maxwell3d->regs.viewport_clip_control.geometry_clip.Value(),
+                    maxwell3d->regs.IsShaderConfigEnabled(Tegra::Engines::Maxwell3D::Regs::ShaderType::Geometry),
+                    maxwell3d->regs.transform_feedback_enabled);
+            }
+        }
+        return compatible;
+    };
     auto& dirty{maxwell3d->dirty.flags};
     if (!dirty[VideoCommon::Dirty::Shaders]) {
-        return last_shaders_valid;
+        return last_shaders_valid && clip_compatible();
     }
     dirty[VideoCommon::Dirty::Shaders] = false;
 
@@ -62,6 +90,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     for (size_t index = 0; index < Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram; ++index) {
         if (!maxwell3d->regs.IsShaderConfigEnabled(index)) {
             unique_hashes[index] = 0;
+            shader_infos[index] = nullptr;
             continue;
         }
         const auto& shader_config{maxwell3d->regs.pipelines[index]};
@@ -69,6 +98,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         if (program == Tegra::Engines::Maxwell3D::Regs::ShaderType::Pixel &&
             !maxwell3d->regs.rasterize_enable) {
             unique_hashes[index] = 0;
+            shader_infos[index] = nullptr;
             continue;
         }
         const GPUVAddr shader_addr{native
@@ -94,13 +124,8 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
                 // Native programs are lowered while the environment is built (once: the
                 // ShaderInfo keeps the result for the pipeline's environments).
                 RethrowIfRejected(*cpu_shader_addr);
-                GraphicsEnvironment env{*maxwell3d,
-                                        *gpu_memory,
-                                        program,
-                                        native ? shader_addr : base_addr,
-                                        start_address,
-                                        {},
-                                        native_tensor_full_by_default};
+                GraphicsEnvironment env{*maxwell3d, *gpu_memory, program, native ? shader_addr : base_addr,
+                                       start_address, {}, support_cooperative_matrix};
                 shader_info = MakeShaderInfo(env, *cpu_shader_addr);
             } catch (const Shader::Exception&) {
                 RememberRejection(*cpu_shader_addr);
@@ -122,7 +147,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         unique_hashes[index] = shader_info->unique_hash;
     }
     last_shaders_valid = true;
-    return true;
+    return clip_compatible();
 } catch (const Shader::Exception& error) {
     auto& native = maxwell3d->GetNativeMacroEngine();
     if (!native.native_turing) throw;
@@ -166,8 +191,8 @@ const ShaderInfo* ShaderCache::ComputeShader() {
     }
     try {
         RethrowIfRejected(*cpu_shader_addr);
-        ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start, {},
-                               native_tensor_full_by_default};
+        ComputeEnvironment env{*kepler_compute, *gpu_memory, program_base, qmd.program_start,
+                               {}, support_cooperative_matrix};
         return MakeShaderInfo(env, *cpu_shader_addr);
     } catch (const Shader::Exception&) {
         RememberRejection(*cpu_shader_addr);
@@ -213,8 +238,7 @@ void ShaderCache::GetGraphicsEnvironments(GraphicsEnvironments& result,
             ? (static_cast<u64>(config.reserved[0] & 0xff) << 32) | config.reserved[1]
             : base_addr;
         env = GraphicsEnvironment{*maxwell3d, *gpu_memory, program, address, start_address,
-                                  shader_infos[index]->lowered_native,
-                                  native_tensor_full_by_default};
+                                  shader_infos[index]->lowered_native, support_cooperative_matrix};
         env.SetCachedSize(shader_infos[index]->size_bytes);
         result.env_ptrs[env_index++] = &env;
     }
@@ -264,6 +288,7 @@ void ShaderCache::InvalidatePagesInRegion(VAddr addr, size_t size) {
         });
     }
     const u64 page_end = (addr_end + YUZU_PAGESIZE - 1) >> YUZU_PAGEBITS;
+    const size_t pending_start = marked_for_removal.size();
     for (u64 page = addr >> YUZU_PAGEBITS; page < page_end; ++page) {
         auto it = invalidation_cache.find(page);
         if (it == invalidation_cache.end()) {
@@ -271,6 +296,16 @@ void ShaderCache::InvalidatePagesInRegion(VAddr addr, size_t size) {
         }
         InvalidatePageEntries(it->second, addr, addr_end);
     }
+
+    // Prune page vectors after the scan so its active vector reference stays valid.
+    auto invalidated_begin = marked_for_removal.begin() + pending_start;
+    auto invalidated_end = marked_for_removal.end();
+    std::ranges::sort(invalidated_begin, invalidated_end);
+    invalidated_end = std::unique(invalidated_begin, invalidated_end);
+    for (auto it = invalidated_begin; it != invalidated_end; ++it) {
+        RemoveEntryFromInvalidationCache(*it);
+    }
+    marked_for_removal.erase(invalidated_end, marked_for_removal.end());
 }
 
 void ShaderCache::RemovePendingShaders() {
@@ -293,10 +328,17 @@ void ShaderCache::RemovePendingShaders() {
     marked_for_removal.clear();
 
     if (!removed_shaders.empty()) {
-        // Remove the given shaders from the cache
-        std::erase_if(storage, [&removed_shaders](const std::unique_ptr<ShaderInfo>& shader) {
-            return std::ranges::find(removed_shaders, shader.get()) != removed_shaders.end();
-        });
+        if (removed_shaders.size() > 16) {
+            std::ranges::sort(removed_shaders, std::less<ShaderInfo*>{});
+            std::erase_if(storage, [&removed_shaders](const std::unique_ptr<ShaderInfo>& shader) {
+                return std::binary_search(removed_shaders.begin(), removed_shaders.end(),
+                                          shader.get(), std::less<ShaderInfo*>{});
+            });
+        } else {
+            std::erase_if(storage, [&removed_shaders](const std::unique_ptr<ShaderInfo>& shader) {
+                return std::ranges::find(removed_shaders, shader.get()) != removed_shaders.end();
+            });
+        }
     }
 }
 
@@ -310,8 +352,8 @@ void ShaderCache::InvalidatePageEntries(std::vector<Entry*>& entries, VAddr addr
         }
 
         UnmarkMemory(entry);
-        RemoveEntryFromInvalidationCache(entry);
         marked_for_removal.push_back(entry);
+        ++index;
     }
 }
 
@@ -325,6 +367,9 @@ void ShaderCache::RemoveEntryFromInvalidationCache(const Entry* entry) {
         const auto entry_it = std::ranges::find(entries, entry);
         ASSERT(entry_it != entries.end());
         entries.erase(entry_it);
+        if (entries.empty()) {
+            invalidation_cache.erase(entries_it);
+        }
     }
 }
 
@@ -349,6 +394,7 @@ ShaderCache::Entry* ShaderCache::NewEntry(VAddr addr, VAddr addr_end, ShaderInfo
 
 const ShaderInfo* ShaderCache::MakeShaderInfo(GenericEnvironment& env, VAddr cpu_addr) {
     auto info = std::make_unique<ShaderInfo>();
+    info->requires_rasterizer_clip = env.RequiresRasterizerClip();
     if (const std::optional<u64> cached_hash{env.Analyze()}) {
         info->unique_hash = *cached_hash;
         info->size_bytes = env.CachedSizeBytes();

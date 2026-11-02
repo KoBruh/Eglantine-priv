@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdlib>
 #include <string_view>
+#include <thread>
 #include <atomic>
 #include <memory>
 #include <utility>
@@ -12,6 +13,7 @@
 #include "common/cpu_features.h"
 #include "audio_core/audio_core.h"
 #include "common/fs/fs.h"
+#include "common/fs/path_util.h"
 #include "common/logging.h"
 #include "common/adpf.h"
 #include "common/settings.h"
@@ -33,6 +35,7 @@
 #include "core/file_sys/romfs_factory.h"
 #include "core/file_sys/savedata_factory.h"
 #include "core/file_sys/vfs/vfs_concat.h"
+#include "core/file_sys/vfs/vfs_edenpack.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/gpu_dirty_memory_manager.h"
 #include "core/hle/kernel/k_memory_manager.h"
@@ -132,10 +135,27 @@ FileSys::VirtualFile GetGameFileFromPath(const FileSys::VirtualFilesystem& vfs,
 
 namespace {
 
-// Switch 2 titles boot as a loose ExeFS, with main.npdm next to main.
+// Switch 2 titles boot as a loose ExeFS, with main.npdm next to main. EdenPack
+// stores that ExeFS inside its own VFS, so the archive's host directory is not the
+// metadata directory.
 bool IsSwitch2Program(const FileSys::VirtualFile& file) {
-    const auto dir = file != nullptr ? file->GetContainingDirectory() : nullptr;
-    const auto npdm = dir != nullptr ? dir->GetFile("main.npdm") : nullptr;
+    if (!file) {
+        return false;
+    }
+
+    FileSys::VirtualFile npdm;
+    const auto extension =
+        Common::ToLower(std::string(Common::FS::GetExtensionFromFilename(file->GetName())));
+
+    if (extension == "edenpack") {
+        const auto root = FileSys::EdenPackVfsFilesystem::Open(file);
+        const auto exefs = root ? root->GetSubdirectory("ExeFS") : nullptr;
+        npdm = exefs ? exefs->GetFile("main.npdm") : nullptr;
+    } else {
+        const auto dir = file->GetContainingDirectory();
+        npdm = dir ? dir->GetFile("main.npdm") : nullptr;
+    }
+
     FileSys::ProgramMetadata metadata;
     return npdm != nullptr && metadata.Load(npdm) == Loader::ResultStatus::Success &&
            metadata.IsSwitch2();
@@ -346,6 +366,16 @@ struct System::Impl {
             Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
         }
 
+        // GPU accuracy stays as configured: the GPU thread split runs under high accuracy too
+        // (gpu_split.cpp), and Switch 2 titles default to immediate fences (Nx2DelayFences).
+        // Read traps, which replace reactive flushing when it is off, miss GPU writes that Pokemon
+        // Pokopia reads back for its sky and exposure (black sky, desktop and Android).
+        if (switch2_program && !Settings::values.use_reactive_flushing.GetValue()) {
+            LOG_INFO(Core, "Switch 2 program: reactive flushing on (read traps miss GPU writes)");
+            Settings::values.use_reactive_flushing.SetGlobal(false);
+            Settings::values.use_reactive_flushing.SetValue(true);
+        }
+
         // The Switch 2 counter runs at 31.25 MHz and its SDK converts ticks with that constant
         // (nn::os::GetSystemTickFrequency, TickManager::ConvertToTimeSpan/ConvertToTick). At 19.2 MHz
         // every tick-based time in the game was off by 1.63x: elapsed times read short and a frame
@@ -396,6 +426,22 @@ struct System::Impl {
 
         // Expose program id to dump sites and other global readers.
         Settings::SetCurrentProgramID(params.program_id);
+
+        // EDEN_NX2_THREAD_DUMP_AFTER=<seconds>[,...] (diagnostic): dump the guest threads that long
+        // after loading, for hangs before the first present.
+        if (const char* after = std::getenv("EDEN_NX2_THREAD_DUMP_AFTER")) {
+            std::thread([&system, times = std::string{after},
+                         start = std::chrono::steady_clock::now()] {
+                for (const char* v = times.c_str(); v && *v;) {
+                    std::this_thread::sleep_until(start +
+                                                  std::chrono::seconds(std::strtoull(v, nullptr, 10)));
+                    Service::DumpGuestThreads(
+                        system, fmt::format("{} s after loading", std::strtoull(v, nullptr, 10)));
+                    v = std::strchr(v, ',');
+                    if (v) ++v;
+                }
+            }).detach();
+        }
 
         // Track launch time for frontend launches
         LaunchTimestampCache::SaveLaunchTimestamp(params.program_id);
@@ -456,6 +502,8 @@ struct System::Impl {
     }
 
     void ShutdownMainProcess() {
+        LOG_INFO(Core, "Shutdown phase: request GPU and socket cancellation");
+        Common::Log::Flush();
         SetShuttingDown(true);
         Common::ADPF::Shutdown();
 
@@ -471,8 +519,12 @@ struct System::Impl {
         stop_event.request_stop();
         core_timing.SyncPause(false);
         Network::CancelPendingSocketOperations();
+        LOG_INFO(Core, "Shutdown phase: suspend guest and close services");
+        Common::Log::Flush();
         kernel.SuspendEmulation(true);
         kernel.CloseServices();
+        LOG_INFO(Core, "Shutdown phase: stop guest cores");
+        Common::Log::Flush();
         kernel.ShutdownCores();
         services.reset();
         service_manager.reset();
@@ -481,9 +533,13 @@ struct System::Impl {
         core_timing.ClearPendingEvents();
         app_loader.reset();
         audio_core.reset();
+        LOG_INFO(Core, "Shutdown phase: destroy renderer and GPU resources");
+        Common::Log::Flush();
         gpu_core.reset();
         host1x_core.reset();
         perf_stats.reset();
+        LOG_INFO(Core, "Shutdown phase: stop CPU manager and kernel");
+        Common::Log::Flush();
         cpu_manager.Shutdown();
         debugger.reset();
         kernel.Shutdown();
@@ -498,7 +554,8 @@ struct System::Impl {
         // Reset all glue registrations
         arp_manager.ResetAll();
 
-        LOG_DEBUG(Core, "Shutdown OK");
+        LOG_INFO(Core, "Shutdown complete");
+        Common::Log::Flush();
     }
 
     bool IsShuttingDown() const {

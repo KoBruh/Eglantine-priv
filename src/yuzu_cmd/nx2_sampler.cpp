@@ -120,27 +120,41 @@ std::vector<Target> FindThreads(const std::vector<std::string>& patterns) {
     return targets;
 }
 
+#ifdef _M_ARM64
+DWORD64& PC(CONTEXT& context) {
+    return context.Pc;
+}
+#else
+DWORD64& PC(CONTEXT& context) {
+    return context.Rip;
+}
+#endif
+
 // Walks a suspended thread's stack from its context. Nothing here may allocate: the thread
 // could be paused holding the heap lock.
 unsigned Walk(CONTEXT context, std::array<DWORD64, MaxDepth>& frames) {
     unsigned depth = 0;
-    while (depth < MaxDepth && context.Rip != 0) {
-        frames[depth++] = context.Rip;
+    while (depth < MaxDepth && PC(context) != 0) {
+        frames[depth++] = PC(context);
         DWORD64 image_base{};
-        const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
+        const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(PC(context), &image_base, nullptr);
         if (function == nullptr) {
-            // A leaf function (no unwind data): its return address is on top of the stack. JIT
-            // code has none either; past the first frame, stop there.
+            // A leaf function (no unwind data): its return address is on top of the stack (in LR
+            // on arm64). JIT code has none either; past the first frame, stop there.
             if (depth != 1) {
                 break;
             }
+#ifdef _M_ARM64
+            context.Pc = context.Lr;
+#else
             context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
             context.Rsp += 8;
+#endif
             continue;
         }
         PVOID handler_data{};
         DWORD64 establisher_frame{};
-        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, function, &context,
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, PC(context), function, &context,
                          &handler_data, &establisher_frame, nullptr);
     }
     return depth;
@@ -207,7 +221,8 @@ struct Symbolizer {
 
 void Report(const std::vector<Target>& targets, const std::vector<Sample>& samples,
             const char* path) {
-    Symbolizer symbolizer;
+    // One for the whole run: a second SymInitialize on the process fails and names nothing.
+    static Symbolizer symbolizer;
     std::FILE* const file = std::fopen(path, "w");
     if (file == nullptr) {
         return;
@@ -277,17 +292,42 @@ void Report(const std::vector<Target>& targets, const std::vector<Sample>& sampl
 
 void Run(std::vector<std::string> patterns, double start, double seconds, std::string out) {
     std::this_thread::sleep_for(std::chrono::duration<double>(start));
-    const std::vector<Target> targets = FindThreads(patterns);
+    std::vector<Target> targets = FindThreads(patterns);
     std::fprintf(stderr, "nx2 sampler: %zu threads match, sampling %.0f s\n", targets.size(),
                  seconds);
     if (targets.empty()) {
         return;
     }
+    // EDEN_NX2_SAMPLE_SLICE=<s>: write a report every <s> seconds (<out>.<n>.txt and .folded)
+    // and start over, so a long play session can be cut into the parts worth reading.
+    const double slice = EnvSeconds("EDEN_NX2_SAMPLE_SLICE", 0.0);
     std::vector<Sample> samples;
-    samples.reserve(static_cast<size_t>(seconds * 1100.0) * targets.size() + 16);
+    samples.reserve(static_cast<size_t>((slice > 0 ? slice : seconds) * 1100.0) *
+                        (std::max)(targets.size(), patterns.size()) +
+                    16);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
-    while (std::chrono::steady_clock::now() < deadline &&
-           samples.size() + targets.size() <= samples.capacity()) {
+    auto slice_end = std::chrono::steady_clock::now() + std::chrono::duration<double>(slice);
+    unsigned slice_index = 0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (slice > 0 && std::chrono::steady_clock::now() >= slice_end) {
+            const std::string name = out + "." + std::to_string(slice_index++) + ".txt";
+            Report(targets, samples, name.c_str());
+            samples.clear();
+            // Threads started after the last look (the GPU split's back thread) join the next
+            // slice.
+            for (const auto& target : targets) {
+                CloseHandle(target.handle);
+            }
+            targets = FindThreads(patterns);
+            slice_end = std::chrono::steady_clock::now() + std::chrono::duration<double>(slice);
+        }
+        if (samples.size() + targets.size() > samples.capacity()) {
+            if (slice > 0) {
+                Sleep(1);
+                continue;
+            }
+            break;
+        }
         for (unsigned i = 0; i < targets.size(); ++i) {
             const HANDLE handle = targets[i].handle;
             if (SuspendThread(handle) == static_cast<DWORD>(-1)) {

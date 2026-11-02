@@ -178,6 +178,10 @@ add_library(core STATIC
     file_sys/vfs/vfs_offset.h
     file_sys/vfs/vfs_real.cpp
     file_sys/vfs/vfs_real.h
+    file_sys/vfs/vfs_edenpack.cpp
+    file_sys/vfs/vfs_edenpack.h
+    file_sys/edenpack_writer.cpp
+    file_sys/edenpack_writer.h
     file_sys/vfs/vfs_static.h
     file_sys/vfs/vfs_types.h
     file_sys/vfs/vfs_vector.cpp
@@ -1039,6 +1043,7 @@ add_library(core STATIC
     hle/service/nx2_streamplay.h
     hle/service/nx2_stub_interface.h
     hle/service/nx2_gsv.h
+    hle/service/nx2_sparse_region.h
     hle/service/services.cpp
     hle/service/services.h
     hle/service/set/factory_settings_server.cpp
@@ -1164,6 +1169,7 @@ add_library(core STATIC
     memory/dmnt_cheat_types.h
     memory/dmnt_cheat_vm.cpp
     memory/dmnt_cheat_vm.h
+    memory/read_traps.h
     perf_stats.cpp
     perf_stats.h
     reporter.cpp
@@ -1204,7 +1210,7 @@ else()
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wconversion>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-sign-conversion>
         $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-cast-function-type>
-        $<$<CXX_COMPILER_ID:Clang>:-fsized-deallocation>)
+        $<$<CXX_COMPILER_ID:AppleClang,Clang>:-fsized-deallocation>)
     # pre-clang19 will spam with "OH DID YOU MEAN THIS?" otherwise...
     if (CXX_CLANG AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 20)
         target_compile_options(core PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:-Wno-cast-function-type-mismatch>)
@@ -1285,6 +1291,7 @@ if (ARCHITECTURE_x86_64 OR ARCHITECTURE_arm64 OR ARCHITECTURE_riscv64 OR ARCHITE
         hle/service/jit/jit.cpp
         hle/service/jit/jit.h)
     target_link_libraries(core PRIVATE dynarmic::dynarmic)
+    target_include_directories(core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../dynarmic/src")
 endif()
 
 if (TARGET OpenSSL::SSL)
