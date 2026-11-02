@@ -219,6 +219,11 @@ void A64EmitX64::GenTerminalHandlers() {
 
     code.align();
     terminal_handler_pop_rsb_hint = code.getCurr<const void*>();
+    // Forward branches skip the halt check (TranslatorVisitor's LinkTo), so returns check
+    // instead: a halt is seen within one function body even when it has no loop. The return
+    // already stored its target in pc, which the dispatcher continues from.
+    code.cmp(dword[code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
+    code.jne(code.GetReturnFromRunCodeAddress());
     calculate_location_descriptor();
     code.mov(eax, dword[code.ABI_JIT_PTR + offsetof(A64JitState, rsb_ptr)]);
     code.sub(eax, 1);
