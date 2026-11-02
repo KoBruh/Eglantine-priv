@@ -926,6 +926,12 @@ static void EmitAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, size_t 
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     auto& carry_in = args[2];
 
+    if (bitsize == 64 && ctx.FoldedAddressOffset(IR::Value{inst})) {
+        // Only memory accesses use this sum, and they add the offset themselves.
+        ctx.reg_alloc.DefineValue(code, inst, args[0]);
+        return;
+    }
+
     // Consider using LEA.
     if (!carry_inst && !overflow_inst && !nzcv_inst && carry_in.IsImmediate() && !carry_in.GetImmediateU1()) {
         if (args[1].IsImmediate() && args[1].FitsInImmediateS32()) {

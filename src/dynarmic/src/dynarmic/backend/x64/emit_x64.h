@@ -65,7 +65,23 @@ struct EmitContext {
         return &shared_labels.emplace_back();
     }
 
+    /// The offset of an Add64(base, imm) whose every use is the address of a memory access: it
+    /// emits no code and shares base's location, and the accesses add the offset themselves.
+    [[nodiscard]] inline std::optional<s32> FoldedAddressOffset(const IR::Value& address) const noexcept {
+        if (folded_addresses.empty() || address.IsImmediate()) {
+            return std::nullopt;
+        }
+        const IR::Inst* const inst = address.GetInst();
+        for (const auto& [folded, offset] : folded_addresses) {
+            if (folded == inst) {
+                return offset;
+            }
+        }
+        return std::nullopt;
+    }
+
     std::vector<std::function<void()>> deferred_emits;
+    boost::container::small_vector<std::pair<const IR::Inst*, s32>, 8> folded_addresses;
     RegAlloc& reg_alloc;
     IR::Block& block;
     boost::container::stable_vector<Xbyak::Label>& shared_labels;

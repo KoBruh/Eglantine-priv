@@ -245,6 +245,15 @@ template<>
     }
 }
 
+/// Whether EmitFastmemVAddr returns the fastmem base plus the address register with no check, so a
+/// folded address offset can go in the access's displacement (A32 addresses wrap at 32 bits).
+[[maybe_unused]] inline bool FastmemAddressIsPlain(const A32EmitContext&) {
+    return false;
+}
+[[maybe_unused]] inline bool FastmemAddressIsPlain(const A64EmitContext& ctx) {
+    return ctx.conf.fastmem_address_space_bits == 64;
+}
+
 template<std::size_t bitsize>
 const void* EmitReadMemoryMov(BlockOfCode& code, int value_idx, const Xbyak::RegExp& addr, bool ordered) {
     if (ordered) {

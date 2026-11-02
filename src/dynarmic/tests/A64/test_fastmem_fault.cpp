@@ -138,3 +138,79 @@ TEST_CASE("A64: a fastmem fault recompiles its block to use the callbacks", "[a6
         REQUIRE(reserved_faults == faults_per_run);
     }
 }
+
+namespace {
+
+constexpr u32 LdrXOffset(u32 rt, u32 rn, u32 byte_offset) {
+    return 0xf9400000 | ((byte_offset / 8) << 10) | (rn << 5) | rt;
+}
+
+constexpr u32 StrXOffset(u32 rt, u32 rn, u32 byte_offset) {
+    return 0xf9000000 | ((byte_offset / 8) << 10) | (rn << 5) | rt;
+}
+
+constexpr u32 LdurX(u32 rt, u32 rn, s32 offset) {
+    return 0xf8400000 | ((u32(offset) & 0x1ff) << 12) | (rn << 5) | rt;
+}
+
+constexpr u64 offset_faults_per_run = 4;
+
+// Offsets from a base register go in the access's operand when fastmem has no address check; a
+// fault has to hand the fallback base + offset and leave base as it was for the next access.
+void LoadOffsetProgram(A64TestEnv& env) {
+    env.code_mem.emplace_back(LdrXOffset(1, 0, 0x10));
+    env.code_mem.emplace_back(LdurX(2, 0, -8));
+    env.code_mem.emplace_back(StrXOffset(1, 3, 0x18));
+    env.code_mem.emplace_back(StrXOffset(3, 3, 0x20));  // the value is the base register
+    env.code_mem.emplace_back(branch_to_self);
+}
+
+A64::UserConfig FullAddressSpaceConfig(A64TestEnv& env, const FaultingFastmem& memory, bool recompile) {
+    A64::UserConfig conf = FaultingConfig(env, memory, recompile);
+    conf.fastmem_address_space_bits = 64;
+    return conf;
+}
+
+void RunOffsetLoadStore(A64TestEnv& env, A64::Jit& jit) {
+    env.modified_memory.clear();
+    jit.SetPC(0);
+    jit.SetRegister(0, load_address);
+    jit.SetRegister(1, 0);
+    jit.SetRegister(2, 0);
+    jit.SetRegister(3, store_address);
+    env.ticks_left = 5;
+    CheckedRun([&]() { jit.Run(); });
+    REQUIRE(jit.GetPC() == 16);
+    REQUIRE(jit.GetRegister(0) == load_address);
+    REQUIRE(jit.GetRegister(3) == store_address);
+    REQUIRE(jit.GetRegister(1) == 0x4f4e4d4c4b4a4948);
+    REQUIRE(jit.GetRegister(2) == 0x3736353433323130);
+    REQUIRE(env.MemoryRead(store_address + 0x18, sizeof(u64)) == 0x4f4e4d4c4b4a4948);
+    REQUIRE(env.MemoryRead(store_address + 0x20, sizeof(u64)) == store_address);
+}
+
+}  // namespace
+
+TEST_CASE("A64: fastmem faults of accesses with an offset resume with the base unchanged", "[a64][fastmem]") {
+    FaultingFastmem memory;
+    A64TestEnv env;
+    LoadOffsetProgram(env);
+    A64::Jit jit{FullAddressSpaceConfig(env, memory, false)};
+
+    for (u64 run = 1; run <= 3; ++run) {
+        RunOffsetLoadStore(env, jit);
+        REQUIRE(reserved_faults == run * offset_faults_per_run);
+    }
+}
+
+TEST_CASE("A64: accesses with an offset recompiled to use the callbacks", "[a64][fastmem]") {
+    FaultingFastmem memory;
+    A64TestEnv env;
+    LoadOffsetProgram(env);
+    A64::Jit jit{FullAddressSpaceConfig(env, memory, true)};
+
+    for (u64 run = 1; run <= 3; ++run) {
+        RunOffsetLoadStore(env, jit);
+        REQUIRE(reserved_faults == offset_faults_per_run);
+    }
+}

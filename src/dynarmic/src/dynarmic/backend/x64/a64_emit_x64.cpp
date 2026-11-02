@@ -89,6 +89,7 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     }(), any_xmm};
 
     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
+    FindFoldedAddresses(ctx);
 
     // Start emitting.
     code.align();

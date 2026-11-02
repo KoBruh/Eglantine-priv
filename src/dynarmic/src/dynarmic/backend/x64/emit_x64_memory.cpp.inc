@@ -90,6 +90,7 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
 
     if (!conf.page_table && !fastmem_marker) {
         // Neither fastmem nor page table: Use callbacks
+        ASSERT(!ctx.FoldedAddressOffset(inst->GetArg(1)));
         if constexpr (bitsize == 128) {
             ctx.reg_alloc.HostCall(code, nullptr, {}, args[1]);
             if (ordered) code.mfence();
@@ -114,7 +115,15 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
         ctx.reg_alloc.ScratchGpr(code, HostLoc::RDX);
     }
 
-    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
+    // The address may be base + offset with base in the register (see FindFoldedAddresses).
+    const std::optional<s32> folded_offset = ctx.FoldedAddressOffset(inst->GetArg(1));
+    Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
+    const bool offset_in_operand = folded_offset && fastmem_marker && FastmemAddressIsPlain(ctx);
+    if (folded_offset && !offset_in_operand) {
+        const Xbyak::Reg64 address = ctx.reg_alloc.ScratchGpr(code);
+        code.lea(address, ptr[vaddr + *folded_offset]);
+        vaddr = address;
+    }
     const int value_idx = bitsize == 128 ? ctx.reg_alloc.ScratchXmm(code).getIdx() : ctx.reg_alloc.ScratchGpr(code).getIdx();
 
     const auto wrapped_fn = read_fallbacks[std::make_tuple(ordered, bitsize, vaddr.getIdx(), value_idx)];
@@ -124,15 +133,29 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
     if (fastmem_marker) {
         // Use fastmem
         bool require_abort_handling = false;
-        const auto src_ptr = EmitFastmemVAddr(code, ctx, *abort, vaddr, require_abort_handling);
+        auto src_ptr = EmitFastmemVAddr(code, ctx, *abort, vaddr, require_abort_handling);
+        if (offset_in_operand) {
+            ASSERT(!require_abort_handling);
+            src_ptr = src_ptr + *folded_offset;
+        }
 
         const auto location = EmitReadMemoryMov<bitsize>(code, value_idx, src_ptr, ordered);
 
         ctx.deferred_emits.emplace_back([=, this, &ctx] {
             code.L(*abort);
-            code.call(wrapped_fn);
-
-            AddFastmemPatch(location, code.getCurr(), wrapped_fn, *fastmem_marker, conf.recompile_on_fastmem_failure);
+            if (offset_in_operand) {
+                // A fault enters here as if called: the fallback takes the address in vaddr,
+                // which holds base, so the offset goes in for the call and back out after it.
+                const auto thunk = code.getCurr<void (*)()>();
+                code.lea(vaddr, ptr[vaddr + *folded_offset]);
+                code.jmp(reinterpret_cast<const void*>(wrapped_fn), code.T_NEAR);
+                const auto resume = code.getCurr();
+                code.lea(vaddr, ptr[vaddr - *folded_offset]);
+                AddFastmemPatch(location, resume, thunk, *fastmem_marker, conf.recompile_on_fastmem_failure);
+            } else {
+                code.call(wrapped_fn);
+                AddFastmemPatch(location, code.getCurr(), wrapped_fn, *fastmem_marker, conf.recompile_on_fastmem_failure);
+            }
 
             EmitCheckMemoryAbort(ctx, inst, end);
             code.jmp(*end, code.T_NEAR);
@@ -167,6 +190,7 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
 
     if (!conf.page_table && !fastmem_marker) {
         // Neither fastmem nor page table: Use callbacks
+        ASSERT(!ctx.FoldedAddressOffset(inst->GetArg(1)));
         if constexpr (bitsize == 128) {
             ctx.reg_alloc.Use(code, args[1], ABI_PARAM2);
             ctx.reg_alloc.Use(code, args[2], HostLoc::XMM1);
@@ -192,10 +216,20 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
         ctx.reg_alloc.ScratchGpr(code, HostLoc::RDX);
     }
 
-    const Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
+    // The address may be base + offset with base in the register (see FindFoldedAddresses).
+    const std::optional<s32> folded_offset = ctx.FoldedAddressOffset(inst->GetArg(1));
+    Xbyak::Reg64 vaddr = ctx.reg_alloc.UseGpr(code, args[1]);
     const int value_idx = bitsize == 128
                             ? ctx.reg_alloc.UseXmm(code, args[2]).getIdx()
                             : (ordered ? ctx.reg_alloc.UseScratchGpr(code, args[2]).getIdx() : ctx.reg_alloc.UseGpr(code, args[2]).getIdx());
+    // The fault path adjusts the address register, so it must not also hold the value.
+    const bool offset_in_operand = folded_offset && fastmem_marker && FastmemAddressIsPlain(ctx) &&
+                                   (bitsize == 128 || value_idx != vaddr.getIdx());
+    if (folded_offset && !offset_in_operand) {
+        const Xbyak::Reg64 address = ctx.reg_alloc.ScratchGpr(code);
+        code.lea(address, ptr[vaddr + *folded_offset]);
+        vaddr = address;
+    }
 
     const auto wrapped_fn = write_fallbacks[std::make_tuple(ordered, bitsize, vaddr.getIdx(), value_idx)];
 
@@ -204,15 +238,28 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
     if (fastmem_marker) {
         // Use fastmem
         bool require_abort_handling = false;
-        const auto dest_ptr = EmitFastmemVAddr(code, ctx, *abort, vaddr, require_abort_handling);
+        auto dest_ptr = EmitFastmemVAddr(code, ctx, *abort, vaddr, require_abort_handling);
+        if (offset_in_operand) {
+            ASSERT(!require_abort_handling);
+            dest_ptr = dest_ptr + *folded_offset;
+        }
 
         const auto location = EmitWriteMemoryMov<bitsize>(code, dest_ptr, value_idx, ordered);
 
         ctx.deferred_emits.emplace_back([=, this, &ctx] {
             code.L(*abort);
-            code.call(wrapped_fn);
-
-            AddFastmemPatch(location, code.getCurr(), wrapped_fn, *fastmem_marker, conf.recompile_on_fastmem_failure);
+            if (offset_in_operand) {
+                // As in EmitMemoryRead: the fallback takes base + offset in vaddr.
+                const auto thunk = code.getCurr<void (*)()>();
+                code.lea(vaddr, ptr[vaddr + *folded_offset]);
+                code.jmp(reinterpret_cast<const void*>(wrapped_fn), code.T_NEAR);
+                const auto resume = code.getCurr();
+                code.lea(vaddr, ptr[vaddr - *folded_offset]);
+                AddFastmemPatch(location, resume, thunk, *fastmem_marker, conf.recompile_on_fastmem_failure);
+            } else {
+                code.call(wrapped_fn);
+                AddFastmemPatch(location, code.getCurr(), wrapped_fn, *fastmem_marker, conf.recompile_on_fastmem_failure);
+            }
 
             EmitCheckMemoryAbort(ctx, inst, end);
             code.jmp(*end, code.T_NEAR);

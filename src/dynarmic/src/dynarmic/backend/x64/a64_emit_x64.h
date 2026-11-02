@@ -97,6 +97,7 @@ public:
     FakeCall FastmemCallback(u64 rip);
 
     // Memory access helpers
+    void FindFoldedAddresses(A64EmitContext& ctx);
     void EmitCheckMemoryAbort(A64EmitContext& ctx, IR::Inst* inst, Xbyak::Label* end = nullptr);
     template<std::size_t bitsize, auto callback>
     void EmitMemoryRead(A64EmitContext& ctx, IR::Inst* inst);

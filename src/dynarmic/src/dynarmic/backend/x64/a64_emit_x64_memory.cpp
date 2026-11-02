@@ -26,6 +26,8 @@
 #include "dynarmic/backend/x64/perf_map.h"
 #include "dynarmic/common/spin_lock_x64.h"
 #include "dynarmic/interface/exclusive_monitor.h"
+#include "dynarmic/ir/basic_block.h"
+#include "dynarmic/ir/opcodes.h"
 
 namespace Dynarmic::Backend::X64 {
 
@@ -286,6 +288,65 @@ void A64EmitX64::GenFastmemFallbacks() {
 #define Axx A64
 #include "dynarmic/backend/x64/emit_x64_memory.cpp.inc"
 #undef Axx
+
+// Finds the address computations Add64(base, imm) used only as the address of loads and stores
+// that take the fastmem or page table path (not callbacks): those put the offset in their address
+// operand, or add it with one lea, instead of copying base and adding to the copy.
+void A64EmitX64::FindFoldedAddresses(A64EmitContext& ctx) {
+    ctx.folded_addresses.clear();
+    if (!conf.page_table && !(conf.fastmem_pointer && exception_handler.SupportsFastmem())) {
+        return;
+    }
+    const auto is_foldable_add = [](const IR::Inst& add) {
+        if (add.GetOpcode() != IR::Opcode::Add64 || add.HasAssociatedPseudoOperation()) {
+            return false;
+        }
+        const IR::Value base = add.GetArg(0), offset = add.GetArg(1), carry = add.GetArg(2);
+        if (base.IsImmediate() || !offset.IsImmediate() || !carry.IsImmediate() || carry.GetU1()) {
+            return false;
+        }
+        const s64 imm = s64(offset.GetImmediateAsU64());
+        return imm > s64(INT32_MIN) && imm <= s64(INT32_MAX);  // the fault path also subtracts it
+    };
+    boost::container::small_vector<std::pair<IR::Inst*, size_t>, 16> address_uses;
+    for (auto& inst : ctx.block.instructions) {
+        switch (inst.GetOpcode()) {
+        case IR::Opcode::A64ReadMemory8:
+        case IR::Opcode::A64ReadMemory16:
+        case IR::Opcode::A64ReadMemory32:
+        case IR::Opcode::A64ReadMemory64:
+        case IR::Opcode::A64ReadMemory128:
+        case IR::Opcode::A64WriteMemory8:
+        case IR::Opcode::A64WriteMemory16:
+        case IR::Opcode::A64WriteMemory32:
+        case IR::Opcode::A64WriteMemory64:
+        case IR::Opcode::A64WriteMemory128: {
+            const IR::Value address = inst.GetArg(1);
+            if (address.IsImmediate() || !is_foldable_add(*address.GetInst())) {
+                break;
+            }
+            if (!conf.page_table && !ShouldFastmem(ctx, &inst)) {
+                break;  // a callback takes the address as an argument
+            }
+            IR::Inst* const add = address.GetInst();
+            auto it = std::find_if(address_uses.begin(), address_uses.end(), [add](const auto& e) { return e.first == add; });
+            if (it == address_uses.end()) {
+                address_uses.emplace_back(add, 1);
+            } else {
+                ++it->second;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    for (const auto& [add, uses] : address_uses) {
+        if (uses == add->UseCount()) {
+            ctx.folded_addresses.emplace_back(add, s32(s64(add->GetArg(1).GetImmediateAsU64())));
+        }
+    }
+}
 
 void A64EmitX64::EmitA64ReadMemory8(A64EmitContext& ctx, IR::Inst* inst) {
     EmitMemoryRead<8, &A64::UserCallbacks::MemoryRead>(ctx, inst);
