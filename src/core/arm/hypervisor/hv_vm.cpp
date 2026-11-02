@@ -832,6 +832,23 @@ void Vm::MarkCached(u64 vaddr, u64 size, bool cached, bool block_reads) {
     }
 }
 
+void Vm::AllowCachedReads(u64 vaddr, u64 size) {
+    const u64 begin = Common::AlignDown(vaddr, PageSize);
+    const u64 end = Common::AlignUp(vaddr + size, PageSize);
+    std::scoped_lock lk{mutex};
+    if (!ready.load(std::memory_order_relaxed)) {
+        return;
+    }
+    for (u64 page = begin; page < end; page += PageSize) {
+        u64* entry = TableFor(page, false);
+        if (entry == nullptr || (*entry & DescValid) != DescValid || !(*entry & SwCachedNoRead)) {
+            continue;
+        }
+        StoreEntry(entry, Descriptor(*entry & DescAddressMask, (*entry & SwMask) & ~SwCachedNoRead));
+    }
+    // Access is only gained: a vCPU still holding the old entry faults once and flushes it.
+}
+
 Vm::PageState Vm::Query(u64 vaddr) const {
     std::scoped_lock lk{mutex};
     PageState state{};
