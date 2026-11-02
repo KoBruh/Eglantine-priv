@@ -175,8 +175,12 @@ TEST_CASE("Ampere uniform LEA preserves arithmetic and rejects carry modes", "[a
     for (u32 x : {0U, 1U, 0x7fffffffU, 0xffffffffU})
         for (u32 y : {0U, 1U, 0x80000000U, 0xffffffffU})
             REQUIRE(static_cast<u32>((u64{x} << ((word >> 39) & 31)) + y) == (x * 2 + y));
-    instruction.words[2] ^= 1U << 16; // HI requires separate semantics.
-    REQUIRE_FALSE(Lower(instruction));
+    instruction.words[2] ^= 1U << 16; // LEA.HI: UR4 plus the high word of R61 << 1.
+    const auto high = Lower(instruction);
+    REQUIRE(high);
+    REQUIRE(high.instructions.size() == 3);
+    REQUIRE(high.instructions[0] == (0x3828000000070000ULL | 250 | (61ULL << 8) | (31ULL << 20)));
+    REQUIRE(high.instructions[1] == (0x5c10000000070000ULL | 58 | (250ULL << 8) | (220ULL << 20)));
     instruction.words[2] = 0x0f8e08ff;
     instruction.words[1] = 28; // Outside the supported uniform bank.
     REQUIRE_FALSE(Lower(instruction));
@@ -201,11 +205,12 @@ TEST_CASE("Ampere uniform LEA stores carry separately from GPR predicates", "[am
     REQUIRE(lowered);
     const auto& words = lowered.instructions;
     REQUIRE(words.size() == 7);
-    REQUIRE((words[0] & 255) == 253); // Save P6.
-    REQUIRE(((words[0] >> 20) & 0x7f) == 64);
-    REQUIRE(((words[1] >> 39) & 31) == 2);
-    REQUIRE(((words[1] >> 8) & 255) == 220);
-    REQUIRE(((words[1] >> 20) & 255) == 222);
+    REQUIRE((words[0] & 255) == 250); // The sum into scratch, before P6 is saved.
+    REQUIRE(((words[0] >> 39) & 31) == 2);
+    REQUIRE(((words[0] >> 8) & 255) == 220);
+    REQUIRE(((words[0] >> 20) & 255) == 222);
+    REQUIRE((words[1] & 255) == 253); // Save P6.
+    REQUIRE(((words[1] >> 20) & 0x7f) == 64);
     REQUIRE(((words[2] >> 3) & 7) == 6);
     REQUIRE((words[3] & 255) == 239); // Store UP0.
     REQUIRE(((words[4] >> 8) & 255) == 253); // Restore P6.
@@ -300,8 +305,17 @@ TEST_CASE("Ampere bindless sampling uses the actual uniform handle", "[ampere-bi
     REQUIRE(((words[3] >> 28) & 7) == 2); // 2D.
     REQUIRE(((words[3] >> 31) & 15) == 1);
     REQUIRE((words[4] & 255) == 28);
-    instruction.words[2] ^= 1U << 14; // Depth comparison is not this form.
-    REQUIRE_FALSE(Lower(instruction));
+    instruction.words[2] ^= 1U << 14; // Depth comparison: the reference follows the handle.
+    const auto compared = Lower(instruction);
+    REQUIRE(compared);
+    REQUIRE(compared.instructions.size() == 7);
+    REQUIRE((compared.instructions[2] & 255) == 246);
+    REQUIRE(((compared.instructions[2] >> 20) & 255) == 222);
+    REQUIRE((compared.instructions[3] & 255) == 247);
+    REQUIRE(((compared.instructions[3] >> 20) & 255) == 5); // reference from Rb
+    REQUIRE(((compared.instructions[4] >> 20) & 255) == 246);
+    REQUIRE(((compared.instructions[4] >> 50) & 1) == 1); // depth compare
+    REQUIRE((compared.instructions[5] & 255) == 28);
     instruction.words[2] = 0x0c1e01ff;
     instruction.words[1] = 0x30001f05; // Unknown uniform bank entry.
     REQUIRE_FALSE(Lower(instruction));
@@ -322,6 +336,13 @@ TEST_CASE("Ampere bindless zero-LOD sampling preserves split RGBA outputs", "[am
         REQUIRE((words[4 + i] & 255) == i);
         REQUIRE(((words[4 + i] >> 20) & 255) == 250 + i);
     }
+    // With the B/A destination RZ, components 2/3 are discarded: only the R/G pair is written.
     instruction.words[2] = 0x0c9e0fff;
-    REQUIRE_FALSE(Lower(instruction));
+    const auto discarded = Lower(instruction);
+    REQUIRE(discarded);
+    REQUIRE(discarded.instructions.size() == 7);
+    for (u32 i = 0; i < 2; ++i) {
+        REQUIRE((discarded.instructions[4 + i] & 255) == i);
+        REQUIRE(((discarded.instructions[4 + i] >> 20) & 255) == 250 + i);
+    }
 }
