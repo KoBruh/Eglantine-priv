@@ -24,7 +24,6 @@ add_executable(tests
     core/core_timing.cpp
     core/deconstructed_rom_directory.cpp
     core/dynarmic_code_memory.cpp
-    core/edenpack_writer.cpp
     core/nx2_gpu_memory.cpp
     core/nrr.cpp
     core/page_heap.cpp
@@ -35,6 +34,7 @@ add_executable(tests
     core/ncz_decompressor.cpp
     core/romfs_build_memory.cpp
     core/vfs_real_cache.cpp
+    core/nup_writer.cpp
     core/internal_network/network.cpp
     shader_recompiler/compilation_memory.cpp
     video_core/memory_tracker.cpp
