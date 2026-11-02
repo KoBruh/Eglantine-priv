@@ -13,6 +13,8 @@ add_library(dynarmic STATIC
     backend/block_range_information.h
     backend/exception_handler.h
     common/always_false.h
+    common/jit_map.cpp
+    common/jit_map.h
     common/cast_util.h
     common/crypto/aes.cpp
     common/crypto/aes.h
@@ -74,6 +76,7 @@ add_library(dynarmic STATIC
     interface/halt_reason.h
     interface/exclusive_monitor.h
     interface/optimization_flags.h
+    interface/jit_map.h
     ir/acc_type.h
     ir/basic_block.cpp
     ir/basic_block.h

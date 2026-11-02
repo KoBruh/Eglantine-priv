@@ -51,6 +51,11 @@ target_include_directories(yuzu-cmd PRIVATE ${RESOURCES_DIR})
 
 target_link_libraries(yuzu-cmd PRIVATE SDL3::SDL3)
 
+# The sampler names JIT code by guest address (Dynarmic::JitMapLookup).
+if (TARGET dynarmic::dynarmic)
+    target_link_libraries(yuzu-cmd PRIVATE dynarmic::dynarmic)
+endif()
+
 if(UNIX AND NOT APPLE)
     install(TARGETS yuzu-cmd)
 endif()

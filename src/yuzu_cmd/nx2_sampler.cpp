@@ -25,6 +25,11 @@
 #include <tlhelp32.h>
 #include <dbghelp.h>
 
+#include <fmt/format.h>
+#include <dynarmic/interface/jit_map.h>
+
+#include "core/core.h"
+
 namespace Nx2Sampler {
 namespace {
 
@@ -209,6 +214,16 @@ struct Symbolizer {
             GetModuleFileNameA(module, path, sizeof(path));
             const char* base = std::strrchr(path, '\\');
             it->second = std::string{base != nullptr ? base + 1 : path} + "!?";
+        } else if (const auto block = Dynarmic::JitMapLookup(reinterpret_cast<const void*>(address))) {
+            // DYNARMIC_JIT_MAP=1: the guest block this JIT code came from, as main+offset.
+            u64 pc{};
+            if (std::sscanf(block->c_str(), "a64_%llx", reinterpret_cast<unsigned long long*>(&pc)) == 1) {
+                const u64 main = Core::g_main_module_base.load(std::memory_order_relaxed);
+                it->second = main != 0 && pc >= main ? fmt::format("(jit) main+{:#x}", pc - main)
+                                                     : fmt::format("(jit) {:#x}", pc);
+            } else {
+                it->second = "(jit) " + *block;
+            }
         } else {
             it->second = "(jit)";
         }

@@ -12,6 +12,8 @@
 
 #include <bit>
 
+#include "dynarmic/common/jit_map.h"
+
 namespace Dynarmic::Backend::X64 {
 
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -24,8 +26,13 @@ void PerfMapRegister(T start, const void* end, std::string_view friendly_name) n
 }
 void PerfMapClear();
 #else
-// Resolve to no-op (compiler thinks fmt has side effects)
-template<typename T> inline void PerfMapRegister(T, const void*, std::string_view) noexcept {}
+// No perf map file here; DYNARMIC_JIT_MAP=1 keeps the same map in memory (Dynarmic::JitMapLookup).
+template<typename T>
+inline void PerfMapRegister(T start, const void* end, std::string_view friendly_name) noexcept {
+    if (::Dynarmic::Common::JitMapEnabled()) {
+        ::Dynarmic::Common::JitMapRegister(std::bit_cast<const void*>(start), end, friendly_name);
+    }
+}
 inline void PerfMapClear() noexcept {}
 #endif
 

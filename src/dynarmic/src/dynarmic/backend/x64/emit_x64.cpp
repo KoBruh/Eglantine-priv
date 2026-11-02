@@ -419,6 +419,9 @@ void EmitX64::ClearCache() {
     patch_information.clear();
 
     PerfMapClear();
+    if (::Dynarmic::Common::JitMapEnabled()) {
+        ::Dynarmic::Common::JitMapClear(code.getCode(), code.getCode() + code.GetTotalCodeSize());
+    }
 }
 
 void EmitX64::InvalidateBasicBlocks(const ::Common::unordered_set<IR::LocationDescriptor>& locations) {
