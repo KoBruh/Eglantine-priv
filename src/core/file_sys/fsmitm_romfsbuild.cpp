@@ -55,8 +55,9 @@ static_assert(sizeof(RomFSFileEntry) == 0x20, "RomFSFileEntry has incorrect size
 
 struct RomFSBuildFileContext;
 
-// The context's vectors own every node until Build finishes. Links only describe the
-// resulting RomFS tree; owning them would form parent/child reference cycles.
+// The context's directories and files own the nodes; the links between them don't, or every
+// parent and child would own each other and no build would ever be freed (title 1's loose RomFS:
+// 206k files, ~50 MiB per build).
 struct RomFSBuildDirectoryContext {
     std::string path;
     u32 cur_path_ofs = 0;
@@ -247,7 +248,7 @@ std::vector<std::pair<u64, VirtualFile>> RomFSBuildContext::Build() {
                              Common::AlignUp(cur_file->path_len - cur_file->cur_path_ofs, 4));
         prev_file = cur_file;
     }
-    // Assign deferred parent/sibling ownership.
+    // Assign deferred parent/sibling links.
     for (auto it = files.rbegin(); it != files.rend(); ++it) {
         auto& cur_file = *it;
         cur_file->sibling = cur_file->parent->file;
@@ -262,7 +263,7 @@ std::vector<std::pair<u64, VirtualFile>> RomFSBuildContext::Build() {
             static_cast<u32>(sizeof(RomFSDirectoryEntry) +
                              Common::AlignUp(cur_dir->path_len - cur_dir->cur_path_ofs, 4));
     }
-    // Assign deferred parent/sibling ownership.
+    // Assign deferred parent/sibling links.
     for (auto it = directories.rbegin(); (*it) != root; ++it) {
         auto& cur_dir = *it;
         cur_dir->sibling = cur_dir->parent->child;

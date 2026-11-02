@@ -19,22 +19,24 @@ TEST_CASE("Ampere geometry instructions require an explicit geometry stage",
              Final,
              Instruction{{0x030c7923, 0, 0, 0x000e2800}},
              Instruction{{0x00027919, 0, 0x1100, 0x000fe400}},
-             Instruction{{0x00027919, 0, 0x1d00, 0x000fe400}},
-             Instruction{{0x0000734e, 0, 0, 0x000fe400}}}) {
+             Instruction{{0x00027919, 0, 0x1d00, 0x000fe400}}}) {
         REQUIRE_FALSE(LowerToMaxwell(std::array{instruction, Exit}));
     }
+    // Only a geometry stage takes the LEPC exit envelope; elsewhere LEPC lowers as the zero
+    // address it reads in the lowered program.
+    const auto lepc = LowerToMaxwell(std::array{Instruction{{0x0000734e, 0, 0, 0x000fe400}}, Exit});
+    REQUIRE(lepc);
+    REQUIRE(lepc.instructions == std::vector<u64>{0x010000000007f000ULL, 0x010000000007f001ULL,
+                                                  0xe30000000007000fULL});
 }
 
-TEST_CASE("Ampere geometry finalization preserves its handle and does not emit or cut",
+TEST_CASE("Ampere geometry finalization neither emits nor cuts",
           "[video_core][ampere][geometry]") {
+    // OUT into RZ with neither emit nor cut has no effect: it lowers to nothing.
     const auto lowered = LowerToMaxwell(std::array{Final, Exit}, true);
     INFO(lowered.error);
     REQUIRE(lowered);
-    REQUIRE(lowered.instructions.size() == 2);
-    const u64 out = lowered.instructions.front();
-    REQUIRE((out & 0xff) == 255);
-    REQUIRE(((out >> 8) & 0xff) == 0);
-    REQUIRE(((out >> 39) & 3) == 0);
+    REQUIRE(lowered.instructions.size() == 1);
     REQUIRE(lowered.instructions.back() == 0xe30000000007000fULL);
 }
 
@@ -62,13 +64,19 @@ TEST_CASE("Ampere geometry emits and cuts with the original predicate and stream
 TEST_CASE("Ampere geometry rejects unrepresented finalization and stream modes",
           "[video_core][ampere][geometry]") {
     for (const Instruction out : std::array{
-             Instruction{{0x00ff7924, 0, 0, 0}},
              Instruction{{0x00007324, 255, 0, 0}},
-             Instruction{{0x00ff7324, 0, 0, 0}},
              Instruction{{0x00ff7324, 255, 1, 0}},
              Instruction{{0x00ff7324, 0x100, 0x4000, 0}},
              Instruction{{0x00ff7924, 0x80000, 0x4000, 0}}}) {
         REQUIRE_FALSE(LowerToMaxwell(std::array{out, Exit}, true));
+    }
+    // Any other stream with neither emit nor cut into RZ is the same no-op as the finalization.
+    for (const Instruction out : std::array{
+             Instruction{{0x00ff7924, 0, 0, 0}},
+             Instruction{{0x00ff7324, 0, 0, 0}}}) {
+        const auto lowered = LowerToMaxwell(std::array{out, Exit}, true);
+        REQUIRE(lowered);
+        REQUIRE(lowered.instructions == std::vector<u64>{0xe30000000007000fULL});
     }
 }
 

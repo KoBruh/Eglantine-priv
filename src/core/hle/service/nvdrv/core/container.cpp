@@ -11,6 +11,7 @@
 #include "core/hle/service/nvdrv/core/heap_mapper.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
+#include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
 #include "core/memory.h"
 #include "video_core/host1x/host1x.h"
 

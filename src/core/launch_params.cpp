@@ -26,7 +26,7 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
     int option_index = 0;
     static struct option long_options[] = {
         // clang-format off
-        {"debug", no_argument, 0, 'd'},
+        {"debug", required_argument, 0, 'd'},
         {"config", required_argument, 0, 'c'},
         {"fullscreen", no_argument, 0, 'f'},
         {"help", no_argument, 0, 'h'},
@@ -35,16 +35,17 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
         {"program", optional_argument, 0, 'p'},
         {"user", required_argument, 0, 'u'},
         {"version", no_argument, 0, 'v'},
-        {"input-profile", no_argument, 0, 'i'},
+        {"input-profile", required_argument, 0, 'i'},
         {"null-render", no_argument, 0, 'n'},
         {"singlecore", no_argument, 0, 's'},
         {"filter", no_argument, 0, 'x'},
+        {"pack-nup", required_argument, 0, 'N'},
         {0, 0, 0, 0},
         // clang-format on
     };
 
     while (optind < argc) {
-        if (int arg = getopt_long(argc, argv, "dc:fhg:m:p:u:vinsx", long_options, &option_index); arg != -1) {
+        if (int arg = getopt_long(argc, argv, "d:c:fhg:m:p:u:vi:nsx", long_options, &option_index); arg != -1) {
             switch (char(arg)) {
             case 'd':
                 p.override_gdb_port = uint16_t(atoi(optarg));
@@ -61,6 +62,9 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                 break;
             case 'g':
                 p.filepath = std::string(optarg);
+                break;
+            case 'N':
+                p.pack_nup_source = std::string(optarg);
                 break;
             case 'i': {
                 p.input_profile = std::string(optarg);
@@ -196,7 +200,9 @@ void ApplyLaunchParams(LaunchParams const& lp) noexcept {
             "-p, --program         Pass following string as arguments to executable\n"
             "-u, --user            Select a specific user profile from 0 to 7\n"
             "-d, --debug           Run the GDB stub on a port from 1 to 65535\n"
-            "-v, --version         Output version information and exit\n",
+            "-v, --version         Output version information and exit\n"
+            "--pack-nup <dump> [<out.nup>]"
+            " Pack a loose dump with all its updates and DLC into a NUP file and exit\n",
             lp.argv0
         );
     }

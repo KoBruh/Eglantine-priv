@@ -1469,13 +1469,13 @@ void MacroEngine::Execute(Core::System& system, Engines::Maxwell3D& maxwell3d, u
         const auto emit = [&](u32 address, u32 value) {
                 if (address >= 0xe00) return false;
                 if (address == 0x556) {
-                    // SET_RENDER_ENABLE_OVERRIDE: 0 use the render-enable condition, 1 always,
-                    // 2 never. Log a histogram every 20000 macro writes (pop-in diagnostics).
+                    // SET_RENDER_ENABLE_C (render_enable.mode): 0 false, 1 true, 2 conditional,
+                    // 3+ compare. Log a histogram every 20000 macro writes (pop-in diagnostics).
                     static std::array<u64, 4> modes{};
                     static u64 enable_writes{};
                     ++modes[value & 3];
                     if (++enable_writes % 20000 == 0) {
-                        LOG_INFO(HW_GPU, "Native MME render enable modes: use {} always {} never {} other {}",
+                        LOG_INFO(HW_GPU, "Native MME render enable modes: false {} true {} conditional {} compare {}",
                                  modes[0], modes[1], modes[2], modes[3]);
                     }
                 }

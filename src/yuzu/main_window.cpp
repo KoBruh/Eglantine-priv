@@ -43,6 +43,7 @@
 #include "set_play_time_dialog.h"
 #include "util/util.h"
 #include "yuzu/game/game_list.h"
+#include "yuzu/nup_dialogs.h"
 
 #include "applets/qt_amiibo_settings.h"
 #include "applets/qt_controller.h"
@@ -156,6 +157,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/common_funcs.h"
+#include "core/file_sys/nup_writer.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/savedata_factory.h"
 
@@ -558,13 +560,13 @@ MainWindow::MainWindow(bool has_broken_vulkan)
 }
 
 MainWindow::~MainWindow() {
+    if (nup_cancel) {
+        nup_cancel->store(true);
+    }
+    nup_watcher.waitForFinished();
 #ifdef __APPLE__
     AllowOSSleep();
 #endif
-    if (edenpack_cancel) {
-        edenpack_cancel->store(true);
-    }
-    edenpack_watcher.waitForFinished();
 
     // will get automatically deleted otherwise
     if (render_window->parent() == nullptr) {
@@ -1468,10 +1470,10 @@ void MainWindow::ConnectWidgetEvents() {
     connect(game_list, &GameList::DumpRomFSRequested, this, &MainWindow::OnGameListDumpRomFS);
     connect(game_list, &GameList::VerifyIntegrityRequested, this,
             &MainWindow::OnGameListVerifyIntegrity);
+    connect(game_list, &GameList::ConvertToNupRequested, this,
+            &MainWindow::OnGameListConvertToNup);
     connect(game_list, &GameList::CopyTIDRequested, this, &MainWindow::OnGameListCopyTID);
     connect(game_list, &GameList::CreateShortcut, this, &MainWindow::OnGameListCreateShortcut);
-    connect(game_list, &GameList::ConvertToEdenPackRequested, this,
-            &MainWindow::OnGameListConvertToEdenPack);
     connect(game_list, &GameList::AddDirectory, this, &MainWindow::OnGameListAddDirectory);
     connect(game_list_placeholder, &GameListPlaceholder::AddDirectory, this,
             &MainWindow::OnGameListAddDirectory);
@@ -1906,7 +1908,7 @@ bool MainWindow::SelectAndSetCurrentUser(
 
 void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletParameters params,
                           StartGameType type) {
-    if (edenpack_running && filename.toStdString() == edenpack_source_path) {
+    if (nup_running && filename.toStdString() == nup_source_path) {
         QMessageBox::information(this, tr("Conversion in Progress"),
                                  tr("This game cannot be started while its dump is being "
                                     "converted."));
@@ -4063,87 +4065,73 @@ void MainWindow::OnGameListRefresh() {
     SetFirmwareVersion();
 }
 
-void MainWindow::OnGameListConvertToEdenPack(const std::string& game_path) {
-    if (edenpack_running)
+void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
+    if (nup_running)
         return;
 
-    const auto root = FileSys::EdenPack::DumpRootFromMain(game_path);
+    const auto root = FileSys::Nup::DumpRootFromMain(game_path);
     if (!root)
         return;
-    const auto archive = FileSys::EdenPack::DefaultArchivePath(*root);
+    const QString convert_title = tr("Convert to NUP");
+    const auto archive = FileSys::Nup::DefaultArchivePath(*root);
     if (std::filesystem::exists(archive)) {
-        QMessageBox::information(this, tr("Convert to EdenPack"),
+        QMessageBox::information(this, convert_title,
                                  tr("The target archive already exists:\n%1")
                                      .arg(QString::fromStdString(Common::FS::PathToUTF8String(archive))));
         return;
     }
 
-    const bool resume = FileSys::EdenPack::HasResumableJournal(archive);
+    const bool resume = FileSys::Nup::HasResumableJournal(archive);
     bool delete_sources = resume;
+    FileSys::Nup::Metadata metadata;
+    QString progress_title;
+    QPixmap progress_icon;
     if (resume) {
         if (QMessageBox::question(this, tr("Resume Conversion"),
                                   tr("Resume the interrupted conversion?"),
                                   QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
             return;
     } else {
-        QCheckBox low_storage(tr("Low storage: delete the original files as they are packed "
-                                 "(cannot be undone)"));
-        QMessageBox prompt(QMessageBox::Question, tr("Convert to EdenPack"),
-                           tr("Source folder:\n%1\n\nTarget archive:\n%2")
-                               .arg(QString::fromStdString(Common::FS::PathToUTF8String(*root)),
-                                    QString::fromStdString(Common::FS::PathToUTF8String(archive))),
-                           QMessageBox::Yes | QMessageBox::No, this);
-        prompt.setCheckBox(&low_storage);
         u64 needed{};
-        if (const auto source = FileSys::EdenPack::ResolveDumpSource(*root)) {
-            for (const auto& directory : {source->exefs, source->romfs}) {
-                std::error_code ec;
-                for (std::filesystem::recursive_directory_iterator it(directory, ec), end;
-                     !ec && it != end; it.increment(ec)) {
-                    if (it->is_regular_file(ec))
-                        needed += it->file_size(ec);
-                }
+        {
+            std::error_code ec;
+            for (std::filesystem::recursive_directory_iterator it(*root, ec), end;
+                 !ec && it != end; it.increment(ec)) {
+                if (it->is_regular_file(ec))
+                    needed += it->file_size(ec);
             }
         }
         std::error_code space_error;
         const auto space = std::filesystem::space(archive.parent_path(), space_error);
-        const auto to_mb = [](u64 bytes) { return bytes / (1024 * 1024); };
-        const QString space_info = tr("\n\nApproximate space needed: %1 MB\nFree space on target "
-                                      "volume: %2 MB")
-                                       .arg(to_mb(needed))
-                                       .arg(space_error ? 0 : to_mb(space.available));
-        prompt.setInformativeText(space_info);
-        if (!space_error && space.available < needed) {
-            prompt.setText(prompt.text() + tr("\n\nWarning: free space is less than the "
-                                              "estimated space needed."));
-        }
-        if (prompt.exec() != QMessageBox::Yes)
+        NupMetadataDialog dialog(*root, archive, needed, space_error ? 0 : space.available, this);
+        if (dialog.exec() != QDialog::Accepted)
             return;
-        delete_sources = low_storage.isChecked();
+        delete_sources = dialog.DeleteSources();
+        metadata = dialog.Metadata();
+        progress_title = dialog.DisplayName();
+        progress_icon = dialog.CurrentIcon();
     }
 
-    edenpack_running = true;
-    edenpack_source_path = game_path;
-    game_list->SetEdenPackConversionRunning(true);
-    edenpack_cancel = std::make_shared<std::atomic_bool>(false);
-    edenpack_progress =
-        new QProgressDialog(tr("Preparing conversion..."), tr("Cancel"), 0, 1000, this);
-    edenpack_progress->setWindowTitle(tr("Converting to EdenPack"));
-    edenpack_progress->setMinimumDuration(0);
-    edenpack_progress->setAutoClose(false);
-    edenpack_progress->setAutoReset(false);
-    connect(edenpack_progress, &QProgressDialog::canceled, this,
-            [cancel = edenpack_cancel] { cancel->store(true); });
-    edenpack_progress->show();
+    nup_running = true;
+    nup_source_path = game_path;
+    game_list->SetNupConversionRunning(true);
+    nup_cancel = std::make_shared<std::atomic_bool>(false);
+    nup_progress = new NupProgressDialog(progress_title, progress_icon, this);
+    connect(nup_progress, &NupProgressDialog::CancelRequested, this,
+            [this, cancel = nup_cancel] {
+                cancel->store(true);
+                if (nup_progress)
+                    nup_progress->SetCancelling();
+            });
+    nup_progress->show();
 
-    const auto cancel = edenpack_cancel;
+    const auto cancel = nup_cancel;
     auto last_update = std::make_shared<std::chrono::steady_clock::time_point>();
-    edenpack_watcher.setFuture(QtConcurrent::run([this, root = *root, archive, delete_sources,
+    nup_watcher.setFuture(QtConcurrent::run([this, root = *root, archive, delete_sources, metadata,
                                                   cancel, last_update] {
         std::string error;
-        const auto result = FileSys::EdenPack::PackDump(
-            root, archive, {.delete_sources = delete_sources},
-            [this, last_update](const FileSys::EdenPack::PackProgress& progress) {
+        const auto on_progress = [this, last_update](
+                                     const FileSys::Nup::PackProgress& progress) {
                 const auto now = std::chrono::steady_clock::now();
                 if (now - *last_update < std::chrono::milliseconds(200))
                     return;
@@ -4151,53 +4139,45 @@ void MainWindow::OnGameListConvertToEdenPack(const std::string& game_path) {
                 QMetaObject::invokeMethod(
                     this,
                     [this, progress] {
-                        if (!edenpack_progress)
+                        if (!nup_progress)
                             return;
-                        const auto percent = progress.bytes_total == 0
-                                                 ? 0
-                                                 : static_cast<int>(progress.bytes_done * 1000 /
-                                                                    progress.bytes_total);
-                        edenpack_progress->setValue(percent);
-                        edenpack_progress->setLabelText(
-                            tr("%1 / %2 MB\n%3 / %4 files")
-                                .arg(progress.bytes_done / (1024 * 1024))
-                                .arg(progress.bytes_total / (1024 * 1024))
-                                .arg(progress.files_done)
-                                .arg(progress.files_total));
+                        nup_progress->SetProgress(progress);
                     },
                     Qt::QueuedConnection);
-            },
+        };
+        const auto result = FileSys::Nup::PackDump(
+            root, archive, {.delete_sources = delete_sources, .metadata = metadata}, on_progress,
             cancel.get(), &error);
         QMetaObject::invokeMethod(
             this,
             [this, result, delete_sources, error] {
-                edenpack_running = false;
-                edenpack_source_path.clear();
-                game_list->SetEdenPackConversionRunning(false);
-                if (edenpack_progress) {
-                    edenpack_progress->close();
-                    edenpack_progress->deleteLater();
-                    edenpack_progress = nullptr;
+                nup_running = false;
+                nup_source_path.clear();
+                game_list->SetNupConversionRunning(false);
+                if (nup_progress) {
+                    nup_progress->Finish();
+                    nup_progress->deleteLater();
+                    nup_progress = nullptr;
                 }
-                edenpack_cancel.reset();
+                nup_cancel.reset();
                 switch (result) {
-                case FileSys::EdenPack::PackResult::Success:
+                case FileSys::Nup::PackResult::Success:
                     QMessageBox::information(
                         this, tr("Conversion Complete"),
-                        delete_sources ? tr("The EdenPack was created and the loose folder was "
+                        delete_sources ? tr("The NUP was created and the loose folder was "
                                             "removed.")
-                                       : tr("The EdenPack was created. You can delete the loose "
+                                       : tr("The NUP was created. You can delete the loose "
                                             "folder if you no longer need it."));
                     OnGameListRefresh();
                     break;
-                case FileSys::EdenPack::PackResult::Cancelled:
+                case FileSys::Nup::PackResult::Cancelled:
                     if (delete_sources)
                         QMessageBox::information(this, tr("Conversion Cancelled"),
                                                  tr("The conversion can be resumed by choosing "
-                                                    "Convert to EdenPack again."));
+                                                    "Convert to NUP again."));
                     break;
-                case FileSys::EdenPack::PackResult::InvalidSource:
-                case FileSys::EdenPack::PackResult::IoError:
+                case FileSys::Nup::PackResult::InvalidSource:
+                case FileSys::Nup::PackResult::IoError:
                     QMessageBox::critical(this, tr("Conversion Failed"),
                                           QString::fromStdString(error));
                     break;

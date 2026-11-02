@@ -230,14 +230,11 @@ TEST_CASE("Ampere geometry exit lowering branches body exits to the handler",
     }
     REQUIRE(offsets[12] == offsets[11] + 1);
 
-    REQUIRE(offsets[14] == handler + 1);
-    const u64 final_output = code[handler];
-    REQUIRE((final_output & 0xfff8000000000000ULL) == 0xfbe0000000000000ULL);
-    REQUIRE((final_output & 0xff) == 0xff);
-    REQUIRE(((final_output >> 8) & 0xff) == 0);
-    REQUIRE(((final_output >> 16) & 0xf) == 7);
-    REQUIRE(((final_output >> 20) & 0xff) == 0xff);
-    REQUIRE(((final_output >> 39) & 3) == 0);
+    // The handler's OUT neither emits nor cuts into RZ, which lowers to nothing (the translated
+    // program ends its primitive itself), so the body exits branch to the final EXIT.
+    REQUIRE(offsets[14] == handler);
+    REQUIRE(handler + 1 == code.size());
+    REQUIRE(code[handler] == 0xe30000000007000fULL);
 
     REQUIRE(code.back() == 0xe30000000007000fULL);
     REQUIRE(std::count_if(code.begin(), code.end(), [](u64 word) {

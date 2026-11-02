@@ -206,18 +206,19 @@ void IPlatformServiceManager::GetBuiltInFontSharedMemory(HLERequestContext& ctx)
     rb.PushCopyObjects(ctx, impl->builtin_font_mem);
 }
 
-// nn::pl::GetBuiltInFontData(BuiltInFontDataOunce*, BuiltInFontTypeOunce, bool): returns a
-// bool that says whether the font exists and a 12-byte descriptor (u32 flags,
-// u32 offset into the font shared memory, u32 size). The client expects plain TrueType/OpenType data
-// there. The type numbering is unknown, so types map onto Eden's shared fonts in order.
+// nn::pl::GetBuiltInFontData(BuiltInFontDataOunce*, BuiltInFontTypeOunce, bool): the request is
+// {u8 type, u8 flag}. The reply is a bool followed by a 12-byte descriptor at offset 4 (u8 flags,
+// u8 flag bit, u16, u32 offset into the font shared memory, u32 size). The client expects plain
+// TrueType/OpenType data there. Types are SharedFontType values: the SDK's
+// nn::pl::GetSharedFontAddress(SharedFontType) passes its argument straight through, and
+// nn::pl::GetSharedFont requests types {0, 1, 2, 3, 4, 5}, the order of Eden's shared fonts.
 void IPlatformServiceManager::GetBuiltInFontData(HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
-    const u32 arguments = rp.Pop<u32>();
-    const u8 type = static_cast<u8>(arguments);
-    const bool flag = ((arguments >> 8) & 0xff) != 0;
+    const u8 type = rp.Pop<u8>();
+    const bool flag = rp.Pop<u8>() != 0;
     const auto& regions = impl->builtin_font_regions;
-    const bool found = !regions.empty();
-    const FontRegion region = found ? regions[std::min<size_t>(type, regions.size() - 1)] : EMPTY_REGION;
+    const bool found = type < regions.size();
+    const FontRegion region = found ? regions[type] : EMPTY_REGION;
     LOG_WARNING(Service_NS, "(STUBBED) Switch 2 GetBuiltInFontData type={} flag={} -> offset={:#x} size={:#x}",
                 type, flag, region.offset, region.size);
     // Raw reply: the bool at offset 0, the descriptor at offset 4.

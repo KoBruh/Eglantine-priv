@@ -45,7 +45,8 @@ TEST_CASE("Native GPU kind jobs require a mapped range and committed listener", 
     REQUIRE_FALSE(registry.ModifyKind(0x10000, 0x1000, 6));
     u32 calls{};
     bool commit = true;
-    registry.AddListener(&calls, [](u64, u64, u64) {}, [](u64, u64) {}, {},
+    // No release, sparse, back or reserve listeners; the last lambda is the kind listener.
+    registry.AddListener(&calls, [](u64, u64, u64) {}, [](u64, u64) {}, {}, {}, {}, {},
                          [&](u64 address, u64 size, u8 kind) {
                              ++calls;
                              REQUIRE(address == 0x12000);
@@ -72,7 +73,8 @@ TEST_CASE("Native GPU depth fallbacks commit without changing backing", "[nx2-gp
     u32 calls{};
     bool commit = true;
     u8 selected_kind = 1;
-    registry.AddListener(&calls, [](u64, u64, u64) {}, [](u64, u64) {}, {},
+    // No release, sparse, back or reserve listeners; the last lambda is the kind listener.
+    registry.AddListener(&calls, [](u64, u64, u64) {}, [](u64, u64) {}, {}, {}, {}, {},
                          [&](u64 address, u64 size, u8 kind) {
                              ++calls;
                              REQUIRE(address == 0x8104b20000);

@@ -588,8 +588,11 @@ Result IApplicationFunctions::GetScreenShotAndContinuousRecordingInitiallyEnable
     R_SUCCEED();
 }
 
-Result IApplicationFunctions::Unknown321(u32 in_val) {
+Result IApplicationFunctions::Unknown321(Out<u8> out, u32 in_val) {
+    // Switch 2 titles call it right after 320 during nn::oe::Initialize. It replies with one byte
+    // (meaning unknown); without it the caller read a stale message word.
     LOG_WARNING(Service_AM, "(STUBBED) called, in_val={}", in_val);
+    *out = 0;
     R_SUCCEED();
 }
 

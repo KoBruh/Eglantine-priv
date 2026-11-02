@@ -89,6 +89,9 @@ public:
     /// Pages the GPU caches track: writes (and reads, with reactive flushing) fault so the
     /// caches see them, as fastmem's protections do.
     void MarkCached(u64 vaddr, u64 size, bool cached, bool block_reads);
+    /// Lets the guest read cached pages whose reads MarkCached blocked, still trapping writes.
+    /// Pages that are not cached (or already readable) are left as they are.
+    void AllowCachedReads(u64 vaddr, u64 size);
 
     struct PageState {
         bool mapped;

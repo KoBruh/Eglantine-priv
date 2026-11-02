@@ -36,7 +36,9 @@ TEST_CASE("Ampere byte F2I clamps before converting and preserves predicates",
                     0x0100000000000000ULL | guard | 252 | (15ULL << 12) | (u64{upper} << 20),
                     0x5c60000000000000ULL | guard | 250 | (250ULL << 8) | (252ULL << 20) |
                         (7ULL << 39),
-                    0x5cb0000000000000ULL | guard | 21 | (2ULL << 8) | (2ULL << 10) |
+                    // The clamped value converts with Maxwell's byte destination size (0 at bits
+                    // 8-9), which yields the same register as a 32-bit conversion after the clamp.
+                    0x5cb0000000000000ULL | guard | 21 | (2ULL << 10) |
                         (u64{is_signed} << 12) | (250ULL << 20) | (3ULL << 39) |
                         (u64{ftz != 0} << 44),
                 };
@@ -376,11 +378,18 @@ TEST_CASE("Ampere formatted buffer stores retain strict mode and operand bounds"
         {{0x00007b9b, 0x20c00004, 0x00100f00, 0x000fe200}},
         {{0x0000794d, 0, 0x03800000, 0}},
     }};
-    for (const u32 dimension : {0U, 2U, 6U, 7U}) {
+    for (const u32 dimension : {2U, 6U, 7U}) {
         auto invalid = code;
         invalid[0].words[1] = 0x00c00004U | (dimension << 29);
         REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
     }
+    // 1D (dimension 0) shares Maxwell's numbering and lowers like the other dimensions.
+    auto one_dimensional = code;
+    one_dimensional[0].words[1] = 0x00c00004U;
+    const auto one_dimensional_store = LowerToMaxwell(one_dimensional);
+    REQUIRE(static_cast<bool>(one_dimensional_store));
+    REQUIRE(one_dimensional_store.instructions.front() ==
+            (0xeb20000000070000ULL | 4 | (15ULL << 20) | (1ULL << 51)));
     for (const u32 bit : {59U, 60U, 72U, 80U, 84U, 91U}) {
         auto invalid = code;
         invalid[0].words[bit / 32] ^= 1U << (bit % 32);
@@ -417,11 +426,10 @@ TEST_CASE("Ampere per-tap gathers preserve XY offsets split destinations and pre
                     return 0x5c98000000000000ULL | pred | target | (15ULL << 39) |
                            (u64{source} << 20);
                 };
+                // The two packed offset words are forwarded from Rb/Rb+1 into the meta registers.
                 const std::array<u64, 9> expected{
-                    0x010000000007f000ULL | 248 | (u64{packed} << 20),
-                    0x010000000007f000ULL | 249 | (0x01000001ULL << 20),
-                    copy(250, 4), copy(251, 5),
-                    0xc800000000000000ULL | pred | 250 | (250ULL << 8) | (248ULL << 20) |
+                    copy(250, 4), copy(251, 5), copy(246, 8), copy(247, 9),
+                    0xc800000000000000ULL | pred | 250 | (250ULL << 8) | (246ULL << 20) |
                         (2ULL << 28) | (15ULL << 31) | (4ULL << 36) | (1ULL << 49) |
                         (7ULL << 51) | (2ULL << 54) | (u64{component} << 56),
                     copy(10, 250), copy(11, 251), copy(8, 252), copy(9, 253),
@@ -434,7 +442,7 @@ TEST_CASE("Ampere per-tap gathers preserve XY offsets split destinations and pre
     }
 }
 
-TEST_CASE("Ampere per-tap gathers prove constants across unrelated arithmetic and gathers",
+TEST_CASE("Ampere per-tap gathers forward run-time offsets across arithmetic and gathers",
           "[video_core][ampere]") {
     const std::array<Instruction, 6> code{{
         {{0x00067802, 0x01ff0002, 0x00000f00, 0x000fe400}},
@@ -444,22 +452,33 @@ TEST_CASE("Ampere per-tap gathers prove constants across unrelated arithmetic an
         {{0x04007b63, 0x33800406, 0x041e2f06, 0x000f4400}},
         {{0x0000794d, 0, 0x03800000, 0}},
     }};
-    REQUIRE(static_cast<bool>(LowerToMaxwell(code)));
+    // The offsets are not proven constant: the gather reads R6/R7 as they are when it runs,
+    // so a prior write to them (arithmetic, another gather) or a branch does not reject it.
+    const auto forwards_offsets = [](std::span<const Instruction> program) {
+        const auto lowered = LowerToMaxwell(program);
+        REQUIRE(static_cast<bool>(lowered));
+        const u32 gather = lowered.source_instruction_offsets[4];
+        REQUIRE(lowered.instructions[gather + 2] ==
+                (0x5c98000000070000ULL | 246 | (15ULL << 39) | (6ULL << 20)));
+        REQUIRE(lowered.instructions[gather + 3] ==
+                (0x5c98000000070000ULL | 247 | (15ULL << 39) | (7ULL << 20)));
+    };
+    forwards_offsets(code);
     auto clobber = code;
     clobber[2].words[0] = 0x00067421;
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(clobber)));
+    forwards_offsets(clobber);
     clobber = code;
     clobber[3].words[0] = 0x04067b63;
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(clobber)));
+    forwards_offsets(clobber);
     clobber = code;
     clobber[3].words[2] = 0x041e0f06;
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(clobber)));
+    forwards_offsets(clobber);
     auto branch = code;
     branch[2].words = {0x00007947, 0, 0x03800000, 0};
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(branch)));
+    forwards_offsets(branch);
 }
 
-TEST_CASE("Ampere per-tap gathers reject unknown offsets precision and register aliases",
+TEST_CASE("Ampere per-tap gathers reject unknown modes and register aliases",
           "[video_core][ampere]") {
     const std::array<Instruction, 4> code{{
         {{0x00087802, 0xff00ff00, 0x00000f00, 0x000fe400}},
@@ -467,24 +486,30 @@ TEST_CASE("Ampere per-tap gathers reject unknown offsets precision and register 
         {{0x040a7b63, 0x33800408, 0x041e2f08, 0x100fc200}},
         {{0x0000794d, 0, 0x03800000, 0}},
     }};
+    // Offset words are forwarded as registers, not proven constants: Maxwell TLD4.PTP reads
+    // each byte's low six bits as a signed offset, so any packed value lowers.
     for (const u32 value : {32U, 127U, 128U, 223U}) {
         for (u32 shift = 0; shift < 32; shift += 8) {
-            auto invalid = code;
-            invalid[0].words[1] = (0xff00ff00U & ~(255U << shift)) | (value << shift);
-            REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
+            auto wide = code;
+            wide[0].words[1] = (0xff00ff00U & ~(255U << shift)) | (value << shift);
+            REQUIRE(static_cast<bool>(LowerToMaxwell(wide)));
         }
     }
-    for (const u32 bit : {60U, 72U, 76U, 78U, 79U, 80U, 81U, 89U, 91U}) {
+    for (const u32 bit : {76U, 78U, 79U, 81U, 89U}) {
         auto invalid = code;
         invalid[2].words[bit / 32] ^= 1U << (bit % 32);
         REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
     }
+    auto partial = code;
+    partial[2].words[2] ^= 1U << (72 - 64); // A three-component mask is a supported gather.
+    REQUIRE(static_cast<bool>(LowerToMaxwell(partial)));
+    auto predicated = code;
+    predicated[0].words[0] = 0x00081802;
+    REQUIRE(static_cast<bool>(LowerToMaxwell(predicated)));
+    auto other_register = code;
+    other_register[1].words[0] = 0x000a7802;
+    REQUIRE(static_cast<bool>(LowerToMaxwell(other_register)));
     auto invalid = code;
-    invalid[0].words[0] = 0x00081802;
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
-    invalid = code;
-    invalid[1].words[0] = 0x000a7802;
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
     for (const u32 target : {0xf50a7b63U, 0x04f57b63U}) {
         invalid = code;
         invalid[2].words[0] = target;
@@ -496,12 +521,32 @@ TEST_CASE("Ampere per-tap gathers reject unknown offsets precision and register 
     invalid = code;
     invalid[2].words[2] = 0x041e2ff5;
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
+    // Without a constant proof, branches around the gather need no control-flow proof either.
     const Instruction branch{{0x00007947, 0, 0x03800000, 0}};
     const std::array<Instruction, 5> prefix_branch{branch, code[0], code[1], code[2], code[3]};
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(prefix_branch)));
+    REQUIRE(static_cast<bool>(LowerToMaxwell(prefix_branch)));
     const std::array<Instruction, 5> suffix_branch{code[0], code[1], code[2], branch, code[3]};
-    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(suffix_branch)));
+    REQUIRE(static_cast<bool>(LowerToMaxwell(suffix_branch)));
 }
+
+// Expected to fail: the TLD4 lowering never checks bit 60 (.SCR operand packing), bit 80 or
+// bit 91, so these encodings lower as if the bits were clear. Whether they change the
+// operation is unknown; decide before relaxing or fixing.
+TEST_CASE("Ampere per-tap gathers reject unvalidated control bits", "[video_core][ampere]") {
+    const std::array<Instruction, 4> code{{
+        {{0x00087802, 0xff00ff00, 0x00000f00, 0x000fe400}},
+        {{0x00097802, 0x01000001, 0x00000f00, 0x000fe400}},
+        {{0x040a7b63, 0x33800408, 0x041e2f08, 0x100fc200}},
+        {{0x0000794d, 0, 0x03800000, 0}},
+    }};
+    for (const u32 bit : {60U, 80U, 91U}) {
+        CAPTURE(bit);
+        auto invalid = code;
+        invalid[2].words[bit / 32] ^= 1U << (bit % 32);
+        CHECK_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
+    }
+}
+
 TEST_CASE("Ampere mixed texture bindings materialize only the secondary descriptor handle",
           "[video_core][ampere]") {
     const std::array<Instruction, 3> code{{
@@ -516,11 +561,12 @@ TEST_CASE("Ampere mixed texture bindings materialize only the secondary descript
     const auto copy = [](u32 target, u32 source) {
         return 0x5c98000000070000ULL | target | (15ULL << 39) | (u64{source} << 20);
     };
-    const std::array<u64, 8> expected{
-        copy(250, 0), copy(251, 1),
-        0x4c98000000070000ULL | 246 | (15ULL << 39) | (11ULL << 34),
-        copy(247, 14),
-        0xde80000000070000ULL | 250 | (250ULL << 8) | (246ULL << 20) |
+    // The bias sample from bank 11 loads its handle into R248 and the bias into R249, the
+    // meta registers after the coordinates, which TEX.B reads in place from R0/R1.
+    const std::array<u64, 6> expected{
+        0x4c98000000070000ULL | 248 | (15ULL << 39) | (11ULL << 34),
+        copy(249, 14),
+        0xde80000000070000ULL | 250 | (0ULL << 8) | (248ULL << 20) |
             (2ULL << 28) | (7ULL << 31) | (1ULL << 49) | (7ULL << 51) | (2ULL << 37),
         copy(0, 250), copy(1, 251), copy(14, 252),
     };
@@ -537,14 +583,16 @@ TEST_CASE("Ampere array depth comparisons support nonlegacy descriptor bindings"
     const auto lowered = LowerToMaxwell(code);
     REQUIRE(static_cast<bool>(lowered));
     REQUIRE(lowered.required_texture_buffer == 4);
-    const std::array<u32, 4> sources{8, 9, 0, 1};
+    // Layer, x and y are gathered into R250-R252; the depth reference stays in R1, and the
+    // single-component result is written straight to R5.
+    const std::array<u32, 3> sources{8, 9, 0};
     for (u32 i = 0; i < sources.size(); ++i) {
-        const u32 target = i < 3 ? 250 + i : 246;
-        REQUIRE(lowered.instructions[i] == (0x5c98000000070000ULL | target |
+        REQUIRE(lowered.instructions[i] == (0x5c98000000070000ULL | (250 + i) |
                                             (15ULL << 39) | (u64{sources[i]} << 20)));
     }
-    REQUIRE(lowered.instructions[4] ==
-            (0xc000000000070000ULL | 250 | (250ULL << 8) | (246ULL << 20) |
+    REQUIRE(lowered.instructions.size() == 5);
+    REQUIRE(lowered.instructions[3] ==
+            (0xc000000000070000ULL | 5 | (250ULL << 8) | (1ULL << 20) |
              (3ULL << 28) | (1ULL << 31) | (0x124ULL << 36) | (1ULL << 49) |
              (1ULL << 50) | (7ULL << 51)));
 }
@@ -557,27 +605,57 @@ TEST_CASE("Ampere register bindless textures preserve scalar and vector operand 
         {{0x0c0d7361, 0xa800001e, 0x041e41ff, 0x001f4400}},
         {{0x0000794d, 0, 0x03800000, 0}},
     }};
-    const std::array<std::array<u32, 5>, 3> sources{{
-        {22, 23, 24, 25, 255}, {0, 1, 39, 255, 255}, {12, 13, 14, 30, 31},
+    // {target, source} copies before TEX.B. The scalar cube takes x, y from Ra/Ra+1 and z and the
+    // handle from Rb/Rb+1, coordinates into R252-R254 and the handle into R250. The per-lane 2D
+    // form reads `d, u, v, handle` (bits 64, 16, 24, 32), the order Kirby Air Riders renders with.
+    const std::array<std::array<std::array<u32, 2>, 4>, 2> copies{{
+        {{{252, 22}, {253, 23}, {254, 24}, {250, 25}}},
+        {{{250, 0}, {251, 0}, {246, 39}, {255, 255}}},
     }};
-    for (u32 i = 0; i < 3; ++i) {
+    for (u32 i = 0; i < 2; ++i) {
         const std::array<Instruction, 2> code{samples[i], samples[3]};
         const auto lowered = LowerToMaxwell(code);
         REQUIRE(static_cast<bool>(lowered));
         REQUIRE(lowered.required_texture_buffer == ~0U);
-        const u32 coordinates = i == 1 ? 2 : 3;
-        const u32 inputs = coordinates + 1 + (i == 2 ? 1 : 0);
+        const u32 inputs = i == 0 ? 4 : 3;
         for (u32 j = 0; j < inputs; ++j) {
-            const u32 target = j < coordinates ? 250 + j : 246 + j - coordinates;
             REQUIRE(lowered.instructions[j] ==
-                    (0x5c98000000070000ULL | target | (15ULL << 39) | (u64{sources[i][j]} << 20)));
+                    (0x5c98000000070000ULL | copies[i][j][0] | (15ULL << 39) |
+                     (u64{copies[i][j][1]} << 20)));
         }
         const u64 texture = lowered.instructions[inputs];
-        REQUIRE(((texture >> 20) & 255) == 246);
-        REQUIRE(((texture >> 28) & 7) == (i == 0 ? 6U : i == 1 ? 2U : 3U));
-        REQUIRE(((texture >> 50) & 1) == (i == 2 ? 1U : 0U));
+        REQUIRE(((texture >> 8) & 255) == (i == 0 ? 252U : 250U));
+        REQUIRE(((texture >> 20) & 255) == (i == 0 ? 250U : 246U));
+        REQUIRE(((texture >> 28) & 7) == (i == 0 ? 6U : 2U));
+        REQUIRE(((texture >> 50) & 1) == 0);
         REQUIRE((texture >> 56) == 0xde);
     }
+}
+
+// Expected to fail: before merge 79f5354b1a, 0x361 shared the 0xb60 case and its general path
+// lowered this vector-packed (no .SCR, bit 60 clear) array depth-compare TEX.B, coordinates
+// from Ra..Ra+2, handle and reference from Rb/Rb+1. The merge kept a separate 0x361 case whose
+// fallback requires .SCR, so it is rejected now and 0xb60's native_bindless handling is dead.
+TEST_CASE("Ampere register bindless textures lower vector-packed operands",
+          "[video_core][ampere]") {
+    const std::array<Instruction, 2> code{{
+        {{0x0c0d7361, 0xa800001e, 0x041e41ff, 0x001f4400}},
+        {{0x0000794d, 0, 0x03800000, 0}},
+    }};
+    const auto lowered = LowerToMaxwell(code);
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(lowered.required_texture_buffer == ~0U);
+    const std::array<u32, 5> sources{12, 13, 14, 30, 31};
+    for (u32 j = 0; j < sources.size(); ++j) {
+        const u32 target = j < 3 ? 250 + j : 246 + j - 3;
+        REQUIRE(lowered.instructions[j] ==
+                (0x5c98000000070000ULL | target | (15ULL << 39) | (u64{sources[j]} << 20)));
+    }
+    const u64 texture = lowered.instructions[sources.size()];
+    REQUIRE(((texture >> 20) & 255) == 246);
+    REQUIRE(((texture >> 28) & 7) == 3U);
+    REQUIRE(((texture >> 50) & 1) == 1U);
+    REQUIRE((texture >> 56) == 0xde);
 }
 
 TEST_CASE("Ampere register bindless textures reject unsupported modifiers and scratch spans",
@@ -586,7 +664,7 @@ TEST_CASE("Ampere register bindless textures reject unsupported modifiers and sc
         {{0x16167361, 0x78000018, 0x041e0718, 0x108f4400}},
         {{0x0000794d, 0, 0x03800000, 0}},
     }};
-    for (const u32 bit : {40U, 58U, 59U, 77U, 80U, 81U, 91U}) {
+    for (const u32 bit : {40U, 58U, 59U, 77U, 81U}) {
         auto invalid = code;
         invalid[0].words[bit / 32] ^= 1U << (bit % 32);
         REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
@@ -599,6 +677,23 @@ TEST_CASE("Ampere register bindless textures reject unsupported modifiers and sc
     auto invalid = code;
     invalid[0].words[1] = 0x780000f5;
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
+}
+
+// Expected to fail: the cube form rejects bits 80 and 91 and falls through to the generic
+// uniform/bindless TEX lowering, which never checks either bit and lowers the instruction as
+// if they were clear. Their meaning is unknown; decide before relaxing or fixing.
+TEST_CASE("Ampere register bindless textures reject unvalidated control bits",
+          "[video_core][ampere]") {
+    const std::array<Instruction, 2> code{{
+        {{0x16167361, 0x78000018, 0x041e0718, 0x108f4400}},
+        {{0x0000794d, 0, 0x03800000, 0}},
+    }};
+    for (const u32 bit : {80U, 91U}) {
+        CAPTURE(bit);
+        auto invalid = code;
+        invalid[0].words[bit / 32] ^= 1U << (bit % 32);
+        CHECK_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
+    }
 }
 
 TEST_CASE("Ampere half explicit texel fetches retain LOD and pack RGB into split registers",
@@ -672,6 +767,14 @@ TEST_CASE("Ampere half texture results keep the first component in the low lane"
                         registers[dest] = (registers[(word >> 8) & 255] << ((word >> 39) & 31)) +
                                           registers[(word >> 20) & 255];
                         ++packed_registers;
+                    } else if ((word >> 56) == 0xd0) {
+                        // TEXS.F16 (split RGB/RGBA): Maxwell packs the first two components into
+                        // Rd, the first in the low lane, and the rest into Rb (bits 28-35).
+                        REQUIRE(((word >> 50) & 7) == (rgba ? 4U : 0U)); // RGBA or RGB swizzle
+                        registers[dest] = (converted_components[251] << 16) | converted_components[250];
+                        registers[(word >> 28) & 255] =
+                            (rgba ? converted_components[253] << 16 : 0U) | converted_components[252];
+                        packed_registers += 2;
                     }
                 }
                 REQUIRE(packed_registers == 2);

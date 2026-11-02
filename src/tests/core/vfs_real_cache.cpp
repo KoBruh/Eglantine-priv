@@ -25,7 +25,7 @@ namespace FileSys {
 
 struct RealVfsCacheTestAccess {
     static VirtualFile OpenKnownSize(RealVfsFilesystem& fs, const std::string& path) {
-        return fs.OpenFileFromEntry(path, u64{0}, std::string{"vfs-cache-test"}, OpenMode::Read);
+        return fs.OpenFileFromEntry(path, u64{0}, OpenMode::Read);
     }
 
     static size_t CacheSize(RealVfsFilesystem& fs) {

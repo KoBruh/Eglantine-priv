@@ -372,8 +372,13 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code, Lowering
                     active_link = call_links[call];
                 }
             }
-            // RET has no destination GPR; bits 16..23 are reserved, not a write to R0.
-            if (active_link && opcode != 0x950 && insn.Bits(16, 8) == *active_link)
+            // RET, BRA, NOP and ISETP/FSETP (predicate outputs) have no destination GPR; bits 16..23
+            // are not a write to R0. IMAD.WIDE writes a register pair.
+            const bool no_destination = opcode == 0x950 || opcode == 0x947 || opcode == 0x918 ||
+                                        (opcode & 0x1ff) == 0x00c || (opcode & 0x1ff) == 0x00b;
+            const bool pair = opcode == 0x225 || opcode == 0x625 || opcode == 0x825;
+            if (active_link && !no_destination &&
+                (insn.Bits(16, 8) == *active_link || (pair && insn.Bits(16, 8) + 1 == *active_link)))
                 return fail(index, "native callee overwrites link register");
         }
         // Scratch values and emulated uniform state occupy reserved high GPRs.
@@ -2172,8 +2177,8 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 (insn.words[2] & ~0x04800fffU) != 0x081e0000U || handle == ~0U || handle == 255 ||
                 (a != 255 && a >= 216) || (b != 255 && b >= 216) || count == 0 ||
                 (dest != 255 && (dest + first > 216 || (first > 1 && (dest & 1)))) ||
-                (count > 2 && (second == 255 || second + count - 2 > 216 ||
-                               (count == 4 && (second & 1)))))
+                (count > 2 && second != 255 && (second + count - 2 > 216 ||
+                                                (count == 4 && (second & 1)))))
                 goto native_texture_operand_list;
             const auto copy = [&](u32 target, u32 source) {
                 emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) |
@@ -2185,9 +2190,10 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             emit(0xde80000000000000ULL | predicate | 250 | (u64{250} << 8) | (u64{246} << 20) |
                  (u64{2} << 28) | (u64{mask} << 31) | (u64{lod} << 37) |
                  (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51));
+            // Components 0/1 go to the first destination, 2/3 to the second; RZ discards them.
             for (u32 i = 0; i < count; ++i) {
-                const u32 target =
-                    i < 2 ? (dest == 255 ? 255U : static_cast<u32>(dest) + i) : second + i - 2;
+                const u32 target = i < 2 ? (dest == 255 ? 255U : static_cast<u32>(dest) + i)
+                                         : (second == 255 ? 255U : second + i - 2);
                 if (target != 255) copy(target, 250 + i);
             }
             break;
@@ -2715,10 +2721,14 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 if (i < in_a) return source_a == 255 ? 255U : source_a + i;
                 return source_b == 255 ? 255U : source_b + (i - in_a);
             };
+            const u32 components = static_cast<u32>(std::popcount(mask));
+            // Every written component must stay below the uniform/scratch registers, not only the first.
+            const u32 low_count = split ? std::min(components, 2U) : components;
+            const u32 high_count = components > 2 ? components - 2 : 1U;
             if ((source_a != 255 && source_a + in_a > reg_limit) ||
                 (count > in_a && source_b != 255 && source_b + (count - in_a) > reg_limit) ||
-                (dest != 255 && dest >= reg_limit) ||
-                (split && second_dest >= reg_limit))
+                (dest != 255 && dest + low_count > reg_limit) ||
+                (split && second_dest + high_count > reg_limit))
                 return fail(index, opcode == 0x361 ? "native texture mode or descriptor binding" : "native uniform texture register overflow");
             const auto copy = [&](u32 target, u32 source) {
                 emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
@@ -2734,7 +2744,6 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                  (u64{246} << 20) | (u64{maxwell_type[dimension]} << 28) |
                  (u64{mask} << 31) | (u64{offsets} << 36) | (u64{lod} << 37) |
                  (u64{insn.Bits(90, 1)} << 49) | (u64{depth_compare} << 50) | (u64{7} << 51));
-            const u32 components = static_cast<u32>(std::popcount(mask));
             for (u32 i = 0; i < components; ++i) {
                 u32 target = 255;
                 if (!split) target = dest == 255 ? 255U : static_cast<u32>(dest) + i;
@@ -3085,24 +3094,19 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             mov_imm(static_cast<u32>(dest) + 1, 0);
             break;
         }
-        case 0x306: case 0xd06: { // I2F.F32.U8 / U16 (0xd06: uniform source)
+        case 0x306: case 0xd06: { // I2F.F32.{U,S}{8,16} Rd, Rs.B<n>/.H<n>, round-to-nearest
+            // 0xd06 takes a uniform source (bit 91). Bit 74 signed, bit 84 16-bit source,
+            // bits 60-61 byte or half selector: Maxwell I2F's bit 13, bits 10-11 and 41-42.
             const u32 source = opcode == 0xd06 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
-            if ((insn.words[2] & ~0x400U) == (opcode == 0xd06 ? 0x08101000U : 0x00101000U) &&
-                !(insn.words[1] & 0xcfffff00U) && source != ~0U) {
-                // I2F.U16/S16 Rd, Rs(.H1): Maxwell's 16-bit source format, byte selector 0 or 2.
-                // Bit 74 is the signed source, as in I2FP (Mario Tennis Fever uses S16).
-                emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{1} << 10) |
-                     (u64{insn.Bits(74, 1)} << 13) | (u64{source} << 20) |
-                     (u64{insn.Bits(60, 2) * 2} << 41));
-                break;
-            }
-            // Bits 60-61 pick the source byte (B0-B3), Maxwell's byte selector at bit 41.
-            if (insn.words[2] != (opcode == 0xd06 ? 0x08001000U : 0x1000U) ||
+            const u32 format = insn.words[2] & ~(0x400U | (opcode == 0xd06 ? 0x08000000U : 0U));
+            const u32 selector = insn.Bits(60, 2);
+            const bool half = format == 0x00101000;
+            if ((format != 0x1000 && !half) || (half && selector > 1) ||
                 (insn.words[1] & 0xcfffff00U) || source == ~0U)
                 return fail(index, "native byte-to-float conversion mode");
-            // Bits 60-61 pick the source byte (B0-B3), Maxwell I2F's selector in bits 41-42.
-            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{source} << 20) |
-                 (u64{insn.Bits(60, 2)} << 41));
+            emit(base(0x5cb8000000000000ULL) | (u64{2} << 8) | (u64{half ? 1U : 0U} << 10) |
+                 (u64{insn.Bits(74, 1)} << 13) | (u64{source} << 20) |
+                 (u64{half ? selector * 2 : selector} << 41));
             break;
         }
         case 0x245: case 0xa45: case 0xc45: { // I2FP.F32.U32

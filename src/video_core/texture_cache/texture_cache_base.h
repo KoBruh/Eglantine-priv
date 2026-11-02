@@ -136,6 +136,10 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 native_critical_memory{};
     u64 native_expected_memory{};
     u64 budget_check_frames{};
+    u32 seen_pressure_events{};   ///< Allocator pressure events already answered
+    u64 pressure_margin{};        ///< Extra room under the budget after images did not fit
+    u64 pressure_quiet_frames{};  ///< Frames since the last such image
+    u64 slack_margin{};           ///< Extra room for allocator block space the driver counts as used
     u64 astc_opaque_images{};
     u64 astc_alpha_images{};
     std::vector<u8> astc_scan_buffer;
@@ -145,6 +149,9 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
 
     static constexpr s64 DEFAULT_EXPECTED_MEMORY = 1_GiB + 125_MiB;
     static constexpr s64 DEFAULT_CRITICAL_MEMORY = 1_GiB + 625_MiB;
+    /// The most device memory the collector lets the cache fill before it collects in earnest,
+    /// on every GPU (ApplyThresholdOverrides).
+    static constexpr u64 MaxCriticalMemory = 5_GiB;
     static constexpr size_t GC_EMERGENCY_COUNTS = 2;
     /// Switch 2 titles: images unused this long (frames) are dropped before memory gets tight.
     static constexpr u64 STALE_IMAGE_FRAMES = 3 * 60 * 60;
@@ -282,6 +289,13 @@ public:
     bool BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
                    const Tegra::Engines::Fermi2D::Surface& src,
                    const Tegra::Engines::Fermi2D::Config& copy);
+
+    /// Stand-in for a DLSS evaluation: temporal upscale of src into dst (see the runtime's
+    /// TemporalUpscale). False when the images cannot take it; the caller then blits.
+    bool TemporalUpscale(const Tegra::Engines::Fermi2D::Surface& dst,
+                         const Tegra::Engines::Fermi2D::Surface& src,
+                         const Tegra::Engines::Fermi2D::Surface& motion_vectors,
+                         std::array<f32, 2> jitter, std::array<f32, 2> motion_scale);
 
     /// Try to find a cached image view in the given CPU address
     [[nodiscard]] std::pair<ImageView*, bool> TryFindFramebufferImageView(
@@ -595,6 +609,25 @@ private:
     static constexpr size_t TICKS_TO_DESTROY = 8;
 #endif
     DelayedDestructionRing<Image, TICKS_TO_DESTROY> sentenced_images;
+    /// Device memory of the images in each slot of sentenced_images (same index): deleted, but
+    /// counted in the driver's usage until the ring destroys them.
+    std::array<u64, TICKS_TO_DESTROY> sentenced_image_bytes{};
+    size_t sentenced_image_index = 0;
+    /// Deleted images on runtimes that report GPU progress (CurrentTick, IsFree): destroyed, with
+    /// their device memory, as soon as the GPU is past them rather than TICKS_TO_DESTROY frames
+    /// later. While the collector deletes dozens a frame, eight frames of them held 1-1.5 GB of
+    /// VRAM above its threshold (title 1 on an 8 GB card: 6.6-7.0 GB in use against 5 GiB).
+    struct GpuSentencedImage {
+        u64 tick;
+        u64 bytes;
+        Image image;
+    };
+    std::deque<GpuSentencedImage> gpu_sentenced_images;
+    u64 gpu_sentenced_bytes{};
+
+    /// Bytes of images per device memory block, for the collector (refreshed every 60 frames).
+    std::unordered_map<u64, u64> block_image_bytes;
+    u64 block_image_bytes_frame{~0ULL};
     DelayedDestructionRing<ImageView, TICKS_TO_DESTROY> sentenced_image_view;
     DelayedDestructionRing<Framebuffer, TICKS_TO_DESTROY> sentenced_framebuffers;
 
@@ -609,6 +642,8 @@ private:
     Common::ThreadWorker texture_decode_worker{1, "TextureDecoder", {},
                                                Common::ThreadPlacement::Efficiency};
     std::vector<std::unique_ptr<AsyncDecodeContext>> async_decodes;
+    /// Guest memory images were uploaded from since the last cold hint (device address, size).
+    std::vector<std::pair<DAddr, u64>> uploaded_ranges;
 
     std::deque<PendingUnswizzle> unswizzle_queue;
     u8 current_unswizzle_frame;

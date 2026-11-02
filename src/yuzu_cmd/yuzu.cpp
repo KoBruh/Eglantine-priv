@@ -13,8 +13,11 @@
 #include <vector>
 #include <cstdlib>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
+#include <exception>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -38,6 +41,7 @@
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/crypto/key_manager.h"
+#include "core/file_sys/nup_writer.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/vfs/vfs_real.h"
 #include "core/hle/service/am/applet_manager.h"
@@ -354,6 +358,41 @@ static void StartHangWatchdog() {
         }
     }).detach();
 }
+
+// abort() and std::terminate end the process with a fail-fast that skips the exception filter:
+// with EDEN_NX2_CRASH_DUMP set, print the uncaught exception (if any) and the stack first.
+static void PrintAbortStack(const char* reason) {
+    std::fprintf(stderr, "%s on thread %lu\n", reason, GetCurrentThreadId());
+    void* frames[48];
+    const USHORT count = RtlCaptureStackBackTrace(0, 48, frames, nullptr);
+    for (USHORT i = 0; i < count; ++i) {
+        PrintCodeAddress("frame", frames[i]);
+    }
+    std::fflush(stderr);
+}
+
+static void InstallAbortReporting() {
+    if (std::getenv("EDEN_NX2_CRASH_DUMP") == nullptr) {
+        return;
+    }
+    std::set_terminate([] {
+        if (const std::exception_ptr current = std::current_exception()) {
+            try {
+                std::rethrow_exception(current);
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "Uncaught exception: %s\n", e.what());
+            } catch (...) {
+                std::fprintf(stderr, "Uncaught non-standard exception\n");
+            }
+        }
+        PrintAbortStack("std::terminate");
+        std::_Exit(3);
+    });
+    std::signal(SIGABRT, [](int) {
+        PrintAbortStack("abort()");
+        std::_Exit(3);
+    });
+}
 #endif
 
 static void OnStateChanged(const Network::RoomMember::State& state) {
@@ -459,6 +498,49 @@ struct SdlState {
     bool network_initialized{};
 };
 
+static std::atomic_bool pack_nup_cancel{false};
+
+// eden-cli --pack-nup <dump> [<out.nup>]; the output defaults to <dump>.nup next to the dump.
+static bool PackNup(const std::string& source, const std::string& output) {
+    const auto to_path = [](const std::string& utf8) {
+        return std::filesystem::path{std::u8string{utf8.begin(), utf8.end()}};
+    };
+    const auto dump_root = to_path(source);
+    const auto archive =
+        output.empty() ? FileSys::Nup::DefaultArchivePath(dump_root) : to_path(output);
+    std::signal(SIGINT, [](int) { pack_nup_cancel = true; });
+
+    const auto start = std::chrono::steady_clock::now();
+    auto last_report = start;
+    std::string error;
+    const auto result = FileSys::Nup::PackDump(
+        dump_root, archive, {},
+        [&](const FileSys::Nup::PackProgress& p) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_report < std::chrono::seconds(1) && p.files_done != p.files_total) {
+                return;
+            }
+            last_report = now;
+            fmt::print(stderr, "\r{} / {} MiB, {} / {} files", p.bytes_done >> 20,
+                       p.bytes_total >> 20, p.files_done, p.files_total);
+        },
+        &pack_nup_cancel, &error);
+    const auto seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    fmt::print(stderr, "\n");
+    switch (result) {
+    case FileSys::Nup::PackResult::Success:
+        fmt::print(stderr, "Wrote {} in {:.1f} s\n", archive.string(), seconds);
+        return true;
+    case FileSys::Nup::PackResult::Cancelled:
+        fmt::print(stderr, "Cancelled\n");
+        return false;
+    default:
+        fmt::print(stderr, "Packing failed: {}\n", error);
+        return false;
+    }
+}
+
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 #ifdef _WIN32
     SetUnhandledExceptionFilter(WriteCrashDump);
@@ -466,6 +548,7 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         AddVectoredExceptionHandler(1, ReportCxxThrow);
     }
     StartHangWatchdog();
+    InstallAbortReporting();
 #endif
     Nx2Sampler::StartFromEnvironment();
     // SDL calls SDL_AppIterate back to back by default, which kept a host core at 100% polling
@@ -512,6 +595,10 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     SdlConfig config{lp.config_path};
 
     Core::ApplyLaunchParams(lp);
+
+    if (lp.pack_nup_source) {
+        return PackNup(*lp.pack_nup_source, lp.filepath) ? SDL_APP_SUCCESS : SDL_APP_FAILURE;
+    }
 
     if (lp.filepath.empty()) {
         LOG_CRITICAL(Frontend, "Failed to load ROM: No ROM specified");

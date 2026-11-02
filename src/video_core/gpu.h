@@ -249,9 +249,9 @@ public:
     [[nodiscard]] VideoCore::RasterizerDownloadArea OnCPURead(DAddr addr, u64 size);
 
     /// While set on the calling thread, OnCPURead always waits for the GPU and copies the area
-    /// back, even when it is copied at every fence. The fault handlers of native execution
-    /// (Hypervisor, NCE) set it: they invalidate the area right after the read, and an area still
-    /// marked GPU-modified then costs a whole GPU sync to preserve.
+    /// back, even when it is copied at every fence. NCE's fault handler sets it: it invalidates
+    /// the area right after the read, and an area still marked GPU-modified then costs a whole GPU
+    /// sync to preserve. (The Hypervisor's handler keeps the area cached and does not need it.)
     static void SetOrderedReadsOnThisThread(bool ordered);
 
     u64 ReadbackGeneration() const;

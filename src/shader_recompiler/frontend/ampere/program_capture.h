@@ -13,7 +13,12 @@ public:
     Result Observe(const Instruction& instruction, u32 index) {
         if (index < prefix.size()) {
             prefix[index] = instruction;
-            if (index + 1 == prefix.size()) atexit_target = StaticAtexitTarget(prefix);
+            // Extended instruction modes make it another instruction, as for the exit setup below.
+            if (index + 1 == prefix.size() &&
+                std::all_of(prefix.begin(), prefix.end(), [](const Instruction& setup) {
+                    return (setup.words[3] & 0xc00001ffU) == 0;
+                }))
+                atexit_target = StaticAtexitTarget(prefix);
         }
         const u32 opcode = instruction.Bits(0, 12);
         if (index < exit_setup.size()) {
