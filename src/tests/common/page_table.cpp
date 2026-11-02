@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <bit>
+#include <limits>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -45,5 +46,24 @@ TEST_CASE("Marked page table entries stay marked for the JIT", "[common]") {
     REQUIRE((RawOf(entry) & 1) != 0); // page_table_marked_bit 0: the JIT takes the slow path
     REQUIRE(entry.Pointer() == 0);
     REQUIRE(entry.Pointer(true) == 0xfffffff2956ac000ULL);
+}
+
+TEST_CASE("Page table block ids do not wrap", "[common]") {
+    using Entry = PageTable::PageEntryData;
+
+    REQUIRE(Entry::BlockIdForMapping(0) == 0);
+    REQUIRE(Entry::BlockIdForMapping(65534) == 65534);
+    REQUIRE(Entry::BlockIdForMapping(65535) == Entry::INVALID_BLOCK_ID);
+    REQUIRE(Entry::BlockIdForMapping(65536) == Entry::INVALID_BLOCK_ID);
+    REQUIRE(Entry::BlockIdForMapping((std::numeric_limits<u64>::max)()) ==
+            Entry::INVALID_BLOCK_ID);
+}
+
+TEST_CASE("Page table fast spans reject exhausted block ids", "[common]") {
+    using Entry = PageTable::PageEntryData;
+
+    REQUIRE(Entry::CanFastSpan(7, 7));
+    REQUIRE_FALSE(Entry::CanFastSpan(7, 8));
+    REQUIRE_FALSE(Entry::CanFastSpan(Entry::INVALID_BLOCK_ID, Entry::INVALID_BLOCK_ID));
 }
 } // namespace
