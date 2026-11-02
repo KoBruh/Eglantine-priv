@@ -246,6 +246,12 @@ void ShaderCache::Register(std::unique_ptr<ShaderInfo> data, VAddr addr, size_t 
     device_memory.UpdatePagesCachedCount(addr, size, 1);
 }
 
+size_t ShaderCache::EntriesOnPage(VAddr addr) {
+    std::scoped_lock lock{invalidation_mutex};
+    const auto it = invalidation_cache.find(addr >> YUZU_PAGEBITS);
+    return it == invalidation_cache.end() ? 0 : it->second.size();
+}
+
 void ShaderCache::InvalidatePagesInRegion(VAddr addr, size_t size) {
     const VAddr addr_end = addr + size;
     // Rejected programs are few and in a few places: look at them only for writes that can

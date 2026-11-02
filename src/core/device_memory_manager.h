@@ -123,6 +123,12 @@ public:
 
     void UpdatePagesCachedCount(DAddr addr, size_t size, s32 delta);
 
+    /// How many caches hold the page (it traps guest writes while this is not zero).
+    [[nodiscard]] u32 PageCachedCount(DAddr addr) const {
+        const size_t page = addr >> DEVICE_PAGEBITS;
+        return cached_pages->at(page >> subentries_shift).Count(page).load(std::memory_order_relaxed);
+    }
+
     // New batch API to update multiple ranges with a single lock acquisition.
     void UpdatePagesCachedBatch(std::span<const std::pair<DAddr, size_t>> ranges, s32 delta);
 

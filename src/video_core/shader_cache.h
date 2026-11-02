@@ -67,6 +67,9 @@ public:
     /// @param size Number of bytes of the invalidation
     void InvalidateRegion(VAddr addr, size_t size);
 
+    /// Shader programs registered on the page holding addr (EDEN_NX2_WRITE_STATS).
+    size_t EntriesOnPage(VAddr addr);
+
     /// @brief Unmarks a memory region as cached and marks it for removal
     /// @param addr Start address of the CPU write operation
     /// @param size Number of bytes of the CPU write operation

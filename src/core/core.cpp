@@ -84,6 +84,7 @@ Nx2Experiment Nx2AbExperiment() {
         return name == "spin"        ? Nx2Experiment::Spin
                : name == "hostcores" ? Nx2Experiment::HostCores
                : name == "poke"      ? Nx2Experiment::Poke
+               : name == "split"     ? Nx2Experiment::Split
                                      : Nx2Experiment::None;
     }();
     return experiment;

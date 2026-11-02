@@ -780,27 +780,54 @@ FramebufferId TextureCache<P>::GetFramebufferId(const RenderTargets& key) {
 
 template <class P>
 void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
-    ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size](ImageId image_id, Image& image) {
+    bool any = false;
+    ForEachImageInRegion(cpu_addr, size, [this, cpu_addr, size, &any](ImageId image_id, Image& image) {
+        any = true;
         if (True(image.flags & ImageFlagBits::UnwrittenSparse)) {
             // Written at last: a backed image replaces it where it is used next.
+            Tegra::Nx2CountWritePath(Tegra::Nx2WritePath::ImageSparse);
             image.flags |= ImageFlagBits::CpuModified | ImageFlagBits::Remapped;
             return;
         }
         if (UploadsByLayer(image)) {
+            Tegra::Nx2CountWritePath(Tegra::Nx2WritePath::ImageByLayer);
             MarkLayersWritten(image, cpu_addr, size);
             return;
         }
         if (MarkPartialWrite(image, cpu_addr, size)) {
+            Tegra::Nx2CountWritePath(Tegra::Nx2WritePath::ImagePartial);
             return;
         }
         if (True(image.flags & ImageFlagBits::CpuModified)) {
+            Tegra::Nx2CountWritePath(Tegra::Nx2WritePath::ImageAlreadyModified);
             return;
         }
+        Tegra::Nx2CountWritePath(Tegra::Nx2WritePath::ImageUntracked);
         image.flags |= ImageFlagBits::CpuModified;
         if (True(image.flags & ImageFlagBits::Tracked)) {
             UntrackImage(image, image_id);
         }
     });
+    if (!any) {
+        Tegra::Nx2CountWritePath(Tegra::Nx2WritePath::ImageNone);
+    }
+}
+
+template <class P>
+std::string TextureCache<P>::DescribeRegion(DAddr cpu_addr, size_t size) {
+    std::string text;
+    ForEachImageInRegion(cpu_addr, size, [&](ImageId image_id, Image& image) {
+        text += fmt::format(" image {} {:#x}+{:#x} {}x{}x{} type {} pitch {} format {} flags {:#x}{}{}{}",
+                            image_id.index, image.cpu_addr, image.guest_size_bytes,
+                            image.info.size.width, image.info.size.height,
+                            image.info.resources.layers, static_cast<int>(image.info.type),
+                            image.info.pitch, static_cast<int>(image.info.format),
+                            static_cast<u32>(image.flags),
+                            True(image.flags & ImageFlagBits::Tracked) ? " tracked" : "",
+                            True(image.flags & ImageFlagBits::CpuModified) ? " cpu-modified" : "",
+                            image.partial_dirty_pages.empty() ? "" : " partial");
+    });
+    return text.empty() ? std::string{" no images"} : text;
 }
 
 template <class P>

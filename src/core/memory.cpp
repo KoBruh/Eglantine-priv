@@ -6,14 +6,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <chrono>
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
 #include <set>
 #include <span>
+#include <string>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -37,6 +40,9 @@
 #include "core/hle/kernel/k_process.h"
 #include "core/memory.h"
 #include "video_core/gpu.h"
+#include "video_core/nx2.h"
+#include "video_core/rasterizer_interface.h"
+#include "video_core/renderer_base.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/rasterizer_download_area.h"
@@ -848,7 +854,82 @@ struct Memory::Impl {
         });
     }
 
+    // EDEN_NX2_WRITE_STATS: guest writes to pages the GPU caches track leave the JIT's fast path
+    // (one call through here each). Every 10 s, log how many there were, how many the caches
+    // collected (GPU-modified regions, so the page stays trapped) and the busiest pages.
+    struct WriteStats {
+        std::atomic<u64> writes{};
+        std::atomic<u64> on_cpu_write{};
+        std::atomic<u64> collected{};
+        std::mutex mutex;
+        std::unordered_map<u64, u64> pages;
+        std::chrono::steady_clock::time_point since{std::chrono::steady_clock::now()};
+    };
+    WriteStats write_stats;
+
+    static bool WriteStatsEnabled() {
+        static const bool enabled = std::getenv("EDEN_NX2_WRITE_STATS") != nullptr;
+        return enabled;
+    }
+
+    void CountTrappedWrite(VAddr v_address) {
+        if ((write_stats.writes.fetch_add(1, std::memory_order_relaxed) & 63) != 0) {
+            return;
+        }
+        std::scoped_lock lock{write_stats.mutex};
+        ++write_stats.pages[v_address >> YUZU_PAGEBITS];
+        const auto now = std::chrono::steady_clock::now();
+        if (now - write_stats.since < std::chrono::seconds{10}) {
+            return;
+        }
+        const double seconds = std::chrono::duration<double>(now - write_stats.since).count();
+        std::vector<std::pair<u64, u64>> top(write_stats.pages.begin(), write_stats.pages.end());
+        std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::string pages;
+        for (size_t i = 0; i < std::min<size_t>(top.size(), 8); ++i) {
+            pages += fmt::format(" {:#x}:{}", top[i].first << YUZU_PAGEBITS, top[i].second * 64);
+        }
+        static constexpr std::array<const char*, static_cast<size_t>(Tegra::Nx2WritePath::Count)> path_names{
+            "buffer:not registered", "buffer:GPU modified", "buffer:marked CPU modified",
+            "image:sparse", "image:by layer", "image:partial", "image:already modified",
+            "image:untracked", "no image"};
+        std::string paths;
+        for (size_t i = 0; i < path_names.size(); ++i) {
+            if (const u64 count = Tegra::g_nx2_write_paths[i].exchange(0); count != 0) {
+                paths += fmt::format(" {} {:.0f}/s", path_names[i], count / seconds);
+            }
+        }
+        // What holds the busiest pages trapped.
+        std::string holders;
+        for (size_t i = 0; i < std::min<size_t>(top.size(), 3); ++i) {
+            const u64 vaddr = top[i].first << YUZU_PAGEBITS;
+            const auto* pointer = GetPointerImpl(vaddr, []() {}, []() {});
+            if (pointer == nullptr || gpu_device_memory == nullptr) {
+                continue;
+            }
+            Common::ScratchBuffer<u32> scratch;
+            gpu_device_memory->ApplyOpOnPointer(pointer, scratch, [&](DAddr address) {
+                holders += fmt::format(" [{:#x} device {:#x}: held by {}, {}]", vaddr, address,
+                                       gpu_device_memory->PageCachedCount(address),
+                                       system.GPU().Renderer().ReadRasterizer()->DescribeTracking(
+                                           address, YUZU_PAGESIZE));
+            });
+        }
+        LOG_INFO(HW_Memory, "trapped guest writes, busiest pages:{}", holders);
+        LOG_INFO(HW_Memory,
+                 "trapped guest writes: {:.0f}/s ({} pages), {:.0f}/s reached the caches, {:.0f}/s "
+                 "collected; busiest pages (writes):{}; cache paths:{}",
+                 write_stats.writes.exchange(0) / seconds, write_stats.pages.size(),
+                 write_stats.on_cpu_write.exchange(0) / seconds, write_stats.collected.exchange(0) / seconds,
+                 pages, paths);
+        write_stats.pages.clear();
+        write_stats.since = now;
+    }
+
     void HandleRasterizerWrite(VAddr v_address, size_t size) {
+        if (WriteStatsEnabled()) [[unlikely]] {
+            CountTrappedWrite(v_address);
+        }
         const auto* p = GetPointerImpl(
             v_address, []() {}, []() {});
         constexpr size_t sys_core = Core::Hardware::NUM_CPU_CORES - 1;
@@ -877,6 +958,10 @@ struct Memory::Impl {
                 // Short circuit the need to check for address/size
                 auto const do_collection = (address != 0 && size != 0)
                     && system.GPU().OnCPUWrite(address, size);
+                if (WriteStatsEnabled()) [[unlikely]] {
+                    write_stats.on_cpu_write.fetch_add(1, std::memory_order_relaxed);
+                    write_stats.collected.fetch_add(do_collection ? 1 : 0, std::memory_order_relaxed);
+                }
                 if (do_collection) {
                     current_area.last_address = subaddress;
                 } else {

@@ -133,6 +133,11 @@ public:
 
     virtual bool OnCPUWrite(PAddr addr, u64 size) = 0;
 
+    /// What the caches hold on a region (EDEN_NX2_WRITE_STATS).
+    [[nodiscard]] virtual std::string DescribeTracking(DAddr addr, u64 size) {
+        return {};
+    }
+
     /// Sync memory between guest and host.
     virtual void InvalidateGPUCache() = 0;
 

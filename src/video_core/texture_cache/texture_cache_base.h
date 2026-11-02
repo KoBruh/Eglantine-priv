@@ -248,6 +248,9 @@ public:
     /// Mark images in a range as modified from the CPU
     void WriteMemory(DAddr cpu_addr, size_t size);
 
+    /// The images on a region and their tracking flags (EDEN_NX2_WRITE_STATS).
+    std::string DescribeRegion(DAddr cpu_addr, size_t size);
+
     /// Download contents of host images to guest memory in a region
     void DownloadMemory(DAddr cpu_addr, size_t size);
 

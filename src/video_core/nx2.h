@@ -6,12 +6,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <vector>
 
 #include "common/common_types.h"
+#include "common/settings.h"
 
 namespace Tegra {
 
@@ -21,6 +23,37 @@ inline std::atomic<bool> g_nx2_ampere{false};
 
 // The running title, for the few places that must behave differently per game.
 inline std::atomic<u64> g_nx2_program_id{0};
+
+// Whether syncpoint and semaphore releases wait until the host GPU has finished the work before
+// them ("delayed" fences). Accurate GPU mode delays them by default; Switch 2 titles release at
+// once by default, as fast GPU mode does: they synchronize their channels through semaphores
+// thousands of times a second, and every delayed release the GPU thread waits on idles it (and
+// the host GPU after it) until the host GPU has drained. Pokopia at night: 17-24 ms frames with
+// delayed fences, 8.5 ms without. An explicit GPU fence behavior setting still applies.
+inline bool Nx2DelayFences() {
+    if (Settings::IsGPUFenceBehaviorDefault()) {
+        return Settings::IsGPULevelHigh() && !g_nx2_ampere.load(std::memory_order_relaxed);
+    }
+    return Settings::IsGPUFenceBehaviorBalanced() || Settings::IsGPUFenceBehaviorAccurate();
+}
+
+// EDEN_NX2_WRITE_STATS: what the caches did with guest writes to pages they track (counted by
+// RasterizerVulkan::OnCPUWrite and TextureCache::WriteMemory, logged by core/memory.cpp).
+enum class Nx2WritePath : size_t {
+    BufferNotRegistered, BufferGpuModified, BufferCpuModified,
+    ImageSparse, ImageByLayer, ImagePartial, ImageAlreadyModified, ImageUntracked, ImageNone,
+    Count,
+};
+inline std::array<std::atomic<u64>, static_cast<size_t>(Nx2WritePath::Count)> g_nx2_write_paths{};
+inline bool Nx2WriteStatsEnabled() {
+    static const bool enabled = std::getenv("EDEN_NX2_WRITE_STATS") != nullptr;
+    return enabled;
+}
+inline void Nx2CountWritePath(Nx2WritePath path) {
+    if (Nx2WriteStatsEnabled()) [[unlikely]] {
+        g_nx2_write_paths[static_cast<size_t>(path)].fetch_add(1, std::memory_order_relaxed);
+    }
+}
 
 // Device pages the GPU has written through the buffer cache (shader stores, copies), ever. Title 1
 // runs command lists the GPU writes each frame (20-byte entries its culling fills in); read

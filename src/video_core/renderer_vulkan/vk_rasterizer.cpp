@@ -1230,6 +1230,22 @@ bool RasterizerVulkan::OnCPUWrite(DAddr addr, u64 size) {
     return false;
 }
 
+std::string RasterizerVulkan::DescribeTracking(DAddr addr, u64 size) {
+    std::string text;
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        text += fmt::format("buffer {}{}{};", buffer_cache.IsRegionRegistered(addr, size) ? "registered" : "none",
+                            buffer_cache.IsRegionCpuModified(addr, size) ? " cpu-modified" : "",
+                            buffer_cache.IsRegionGpuModified(addr, size) ? " gpu-modified" : "");
+    }
+    {
+        std::scoped_lock lock{texture_cache.mutex};
+        text += texture_cache.DescribeRegion(addr, size) + ";";
+    }
+    text += fmt::format(" shaders on page {}", pipeline_cache.EntriesOnPage(addr));
+    return text;
+}
+
 void RasterizerVulkan::OnCacheInvalidation(DAddr addr, u64 size) {
     if (addr == 0 || size == 0) {
         return;

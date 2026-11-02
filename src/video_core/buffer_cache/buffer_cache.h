@@ -197,11 +197,14 @@ template <class P>
 bool BufferCache<P>::OnCPUWrite(DAddr device_addr, u64 size) {
     const bool is_dirty = IsRegionRegistered(device_addr, size);
     if (!is_dirty) {
+        Tegra::Nx2CountWritePath(Tegra::Nx2WritePath::BufferNotRegistered);
         return false;
     }
     if (memory_tracker.IsRegionGpuModified(device_addr, size)) {
+        Tegra::Nx2CountWritePath(Tegra::Nx2WritePath::BufferGpuModified);
         return true;
     }
+    Tegra::Nx2CountWritePath(Tegra::Nx2WritePath::BufferCpuModified);
     WriteMemory(device_addr, size);
     return false;
 }

@@ -94,16 +94,20 @@ void GpuSplit::MaybeStart(Core::System& system_) {
         return;
     }
     // The front reads command lists straight from guest memory; a read that flushes the caches
-    // first (safe DMA, accurate GPU) would touch back-owned state. The settings can change
+    // first would touch back-owned state. Accurate GPU mode reads every command list that way to
+    // catch lists the GPU wrote; with the split, the front drains the back and flushes just the
+    // lists on GPU-written pages (DmaPusher::FlushGpuWrittenCommands), so it runs in both modes.
+    // Only an explicit "safe" DMA setting keeps everything on one thread. The settings can change
     // mid-game: hand the engines back to the front (and start again when they allow it).
-    const bool safe_reads = Settings::IsDMALevelDefault() ? Settings::IsGPULevelHigh()
-                                                          : Settings::IsDMALevelSafe();
-    const bool allowed = !safe_reads && !Settings::IsGPULevelHigh() &&
+    // EDEN_NX2_AB=split: off in the B windows, to compare in one run.
+    const bool ab_off = Core::Nx2AbExperiment() == Core::Nx2Experiment::Split &&
+                        Core::g_nx2_ab_variant_b.load(std::memory_order_relaxed);
+    const bool allowed = !Settings::IsDMALevelSafe() && !ab_off &&
                          Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan;
     if (active && !allowed) {
         Drain();
         Stop();
-        LOG_INFO(HW_GPU, "GPU thread split: stopped, the accuracy settings need the caches on the front");
+        LOG_INFO(HW_GPU, "GPU thread split: stopped ({})", ab_off ? "A/B window" : "safe DMA or not Vulkan");
         return;
     }
     if (active || !allowed) {
