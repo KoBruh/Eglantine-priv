@@ -21,7 +21,6 @@
 
 #include "common/common_types.h"
 #include "common/settings_enums.h"
-#include "core/file_sys/edenpack_writer.h"
 #include "core/file_sys/nup_writer.h"
 #include "frontend_common/content_manager.h"
 #include "input_common/drivers/tas_input.h"
@@ -355,7 +354,6 @@ private slots:
     void OnGameListSetPlayTime(u64 program_id);
     void OnGameListDumpRomFS(u64 program_id, const std::string& game_path, DumpRomFSTarget target);
     void OnGameListVerifyIntegrity(const std::string& game_path);
-    void OnGameListConvertToEdenPack(const std::string& game_path);
     void OnGameListConvertToNup(const std::string& game_path);
     void OnGameListCopyTID(u64 program_id);
     void OnGameListCreateShortcut(u64 program_id, const std::string& game_path,
@@ -576,11 +574,6 @@ private:
 
     // Install progress dialog
     QProgressDialog* install_progress = nullptr;
-    QProgressDialog* edenpack_progress = nullptr;
-    QFutureWatcher<FileSys::EdenPack::PackResult> edenpack_watcher;
-    std::shared_ptr<std::atomic_bool> edenpack_cancel;
-    bool edenpack_running{};
-    std::string edenpack_source_path;
     QProgressDialog* nup_progress = nullptr;
     QFutureWatcher<FileSys::Nup::PackResult> nup_watcher;
     std::shared_ptr<std::atomic_bool> nup_cancel;

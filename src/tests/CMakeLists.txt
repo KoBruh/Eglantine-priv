@@ -23,7 +23,6 @@ add_executable(tests
     core/core_timing.cpp
     core/deconstructed_rom_directory.cpp
     core/dynarmic_code_memory.cpp
-    core/edenpack_writer.cpp
     core/nx2_gpu_memory.cpp
     core/nrr.cpp
     core/page_heap.cpp

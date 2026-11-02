@@ -25,7 +25,6 @@
 
 #include "common/common_types.h"
 #include "core/core.h"
-#include "core/file_sys/edenpack_writer.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/registered_cache.h"
@@ -100,10 +99,6 @@ GameList::GameList(FileSys::VirtualFilesystem vfs_, FileSys::ManualContentProvid
     qRegisterMetaType<QList<QStandardItem*>>("QList<QStandardItem*>");
 
     ResetViewMode();
-}
-
-void GameList::SetEdenPackConversionRunning(bool running) {
-    edenpack_conversion_running = running;
 }
 
 void GameList::SetNupConversionRunning(bool running) {
@@ -495,11 +490,6 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* dump_romfs_sdmc = dump_romfs_menu->addAction(tr("Dump RomFS to SDMC"));
     QAction* verify_integrity = context_menu.addAction(tr("Verify Integrity"));
     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
-    QAction* convert_edenpack = nullptr;
-    if (FileSys::EdenPack::DumpRootFromMain(path)) {
-        convert_edenpack = context_menu.addAction(tr("Convert to EdenPack..."));
-        convert_edenpack->setEnabled(!edenpack_conversion_running);
-    }
     QAction* convert_nup = nullptr;
     if (FileSys::Nup::DumpRootFromMain(path)) {
         convert_nup = context_menu.addAction(tr("Convert to NUP..."));
@@ -585,10 +575,6 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
             [this, path]() { emit VerifyIntegrityRequested(path); });
     connect(copy_tid, &QAction::triggered, this,
             [this, program_id]() { emit CopyTIDRequested(program_id); });
-    if (convert_edenpack) {
-        connect(convert_edenpack, &QAction::triggered, this,
-                [this, path]() { emit ConvertToEdenPackRequested(path); });
-    }
     if (convert_nup) {
         connect(convert_nup, &QAction::triggered, this,
                 [this, path]() { emit ConvertToNupRequested(path); });
