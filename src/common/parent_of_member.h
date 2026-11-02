@@ -116,6 +116,13 @@ struct OffsetOfCalculator {
     }
 };
 
+template <auto MemberPtr, typename RealParentType, typename MemberType>
+std::ptrdiff_t CachedOffsetOf() {
+    static const std::ptrdiff_t offset =
+        OffsetOfCalculator<RealParentType, MemberType>::OffsetOf(MemberPtr);
+    return offset;
+}
+
 template <typename T>
 struct GetMemberPointerTraits;
 
@@ -138,6 +145,14 @@ constexpr std::ptrdiff_t OffsetOf() {
     static_assert(std::is_base_of<DeducedParentType, RealParentType>::value ||
                   std::is_same<RealParentType, DeducedParentType>::value);
 
+#ifdef _MSC_VER
+    // MSVC cannot evaluate the search as a constant, and called from ordinary code it ran it on
+    // every intrusive tree step (1.4% of the emulated cores' time in Pokemon Pokopia's world):
+    // outside constant evaluation, search once per member and keep the result.
+    if (!std::is_constant_evaluated()) {
+        return CachedOffsetOf<MemberPtr, RealParentType, MemberType>();
+    }
+#endif
     return OffsetOfCalculator<RealParentType, MemberType>::OffsetOf(MemberPtr);
 };
 
