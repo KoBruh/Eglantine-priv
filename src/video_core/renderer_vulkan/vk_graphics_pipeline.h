@@ -133,9 +133,10 @@ public:
                                            : nullptr;
     }
 
-    /// The frame the pipeline cache last handed this pipeline out (evicts long unused ones).
-    void MarkUsed(u64 frame) noexcept {
-        last_use_frame = frame;
+    /// When the pipeline cache last handed this pipeline out, in its use clock's seconds (evicts
+    /// long unused ones).
+    void MarkUsed(u64 seconds) noexcept {
+        last_use_frame = seconds;
     }
 
     [[nodiscard]] u64 LastUse() const noexcept {

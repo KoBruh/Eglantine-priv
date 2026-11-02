@@ -852,7 +852,7 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
         GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
         if (next) {
             current_pipeline = next;
-            current_pipeline->MarkUsed(frame_count);
+            current_pipeline->MarkUsed(use_seconds);
             return BuiltPipeline(current_pipeline);
         }
     }
@@ -1157,12 +1157,15 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
         current_pipeline->AddTransition(pipeline.get());
     }
     current_pipeline = pipeline.get();
-    current_pipeline->MarkUsed(frame_count);
+    current_pipeline->MarkUsed(use_seconds);
     return BuiltPipeline(current_pipeline);
 }
 
 void PipelineCache::TickFrame() {
     ++frame_count;
+    use_seconds = static_cast<u64>(std::chrono::duration_cast<std::chrono::seconds>(
+                                       std::chrono::steady_clock::now() - use_clock_start)
+                                       .count());
     while (!evicted_pipelines.empty() && scheduler.IsFree(evicted_pipelines.front().first)) {
         evicted_pipelines.pop_front();
     }
@@ -1175,12 +1178,16 @@ void PipelineCache::TickFrame() {
 void PipelineCache::EvictUnusedPipelines() {
     // Each built pipeline holds ~0.45 MB of driver memory and none was ever destroyed, so it grew
     // with every place a session went (title 1: 1,500 on its title screen alone). One unused for
-    // this long is destroyed; it takes 2-3 ms to build again from the driver's pipeline cache.
-    constexpr u64 EvictAfterFrames = 9000;
-    if (frame_count <= EvictAfterFrames) {
+    // this long is destroyed; building it again takes 3-6 ms of the GPU thread (translation) plus
+    // the driver's build, a hitch where it reappears. Counted in seconds, not frames: 9000 frames
+    // were 75 s at 120 fps, and Pokemon Pokopia rebuilt ~150 evicted pipelines in a 4-minute
+    // session. A cache this small isn't worth any rebuild (~0.45 MB each).
+    constexpr u64 EvictAfterSeconds = 600;
+    constexpr size_t MinPipelinesToEvict = 1500;
+    if (use_seconds <= EvictAfterSeconds || graphics_cache.size() < MinPipelinesToEvict) {
         return;
     }
-    const u64 cutoff = frame_count - EvictAfterFrames;
+    const u64 cutoff = use_seconds - EvictAfterSeconds;
     const u64 tick = scheduler.CurrentTick();
     size_t evicted = 0;
     for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
@@ -1205,8 +1212,8 @@ void PipelineCache::EvictUnusedPipelines() {
             pipeline->ClearTransitions();
         }
     }
-    LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} frames, {} left", evicted,
-             EvictAfterFrames, graphics_cache.size());
+    LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} s, {} left", evicted,
+             EvictAfterSeconds, graphics_cache.size());
 }
 
 GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {
