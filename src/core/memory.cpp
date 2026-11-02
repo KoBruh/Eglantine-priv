@@ -844,6 +844,8 @@ struct Memory::Impl {
             // reads the bytes then and keeps the page protected, so an earlier report can lose them.
             if (cached) [[unlikely]] {
                 HandleRasterizerWrite(addr, sizeof(T));
+            } else if (WriteStatsEnabled()) [[unlikely]] {
+                CountUntrappedWrite(addr);
             }
         }
     }
@@ -1148,6 +1150,73 @@ struct Memory::Impl {
                  pages, paths);
         write_stats.pages.clear();
         write_stats.since = now;
+    }
+
+    // Writes through here to pages no cache traps: the JIT recompiles an access that faulted in
+    // fastmem to call here for good, so a page the caches protect once a frame keeps every later
+    // write of that instruction off the fast path. Every 10 s, the busiest pages and who tracks them.
+    struct UntrappedWriteStats {
+        std::atomic<u64> writes{};
+        std::mutex mutex;
+        std::unordered_map<u64, u64> pages;
+        std::chrono::steady_clock::time_point since{std::chrono::steady_clock::now()};
+    };
+    UntrappedWriteStats untrapped_stats;
+
+    void CountUntrappedWrite(VAddr v_address) {
+        if ((untrapped_stats.writes.fetch_add(1, std::memory_order_relaxed) & 63) != 0) {
+            return;
+        }
+        std::scoped_lock lock{untrapped_stats.mutex};
+        ++untrapped_stats.pages[v_address >> YUZU_PAGEBITS];
+        const auto now = std::chrono::steady_clock::now();
+        if (now - untrapped_stats.since < std::chrono::seconds{10}) {
+            return;
+        }
+        const double seconds = std::chrono::duration<double>(now - untrapped_stats.since).count();
+        std::vector<std::pair<u64, u64>> top(untrapped_stats.pages.begin(), untrapped_stats.pages.end());
+        std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        // Group the pages into 1 MiB regions: a streamed texture or buffer spans many.
+        std::unordered_map<u64, u64> regions;
+        for (const auto& [page, count] : top) {
+            regions[page >> 8] += count;
+        }
+        std::vector<std::pair<u64, u64>> top_regions(regions.begin(), regions.end());
+        std::sort(top_regions.begin(), top_regions.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        std::string text;
+        for (size_t i = 0; i < std::min<size_t>(top_regions.size(), 6); ++i) {
+            const u64 vaddr = top_regions[i].first << 20;
+            text += fmt::format(" [{:#x} MiB region: {:.0f}/s", vaddr, top_regions[i].second * 64 / seconds);
+            // Who tracks the busiest page of the region.
+            u64 best_page = 0, best = 0;
+            for (const auto& [page, count] : top) {
+                if ((page >> 8) == top_regions[i].first && count > best) {
+                    best = count;
+                    best_page = page;
+                }
+            }
+            {
+                const auto raw = current_page_table->entries[best_page].Raw();
+                text += fmt::format(", entry marked {} type {} pointer {:#x}", u64{raw.marked},
+                                    u64{raw.type},
+                                    current_page_table->entries[best_page].Pointer());
+            }
+            if (const auto* pointer = GetPointerImpl(best_page << YUZU_PAGEBITS, []() {}, []() {})) {
+                auto& device_memory = system.Host1x().MemoryManager();
+                Common::ScratchBuffer<u32> scratch;
+                device_memory.ApplyOpOnPointer(pointer, scratch, [&](DAddr address) {
+                    text += fmt::format(", page {:#x}: {}", best_page << YUZU_PAGEBITS,
+                                        system.GPU().Renderer().ReadRasterizer()->DescribeTracking(
+                                            address, YUZU_PAGESIZE));
+                });
+            }
+            text += "]";
+        }
+        LOG_INFO(HW_Memory, "untrapped slow-path guest writes: {:.0f}/s ({} pages); busiest:{}",
+                 untrapped_stats.writes.exchange(0) / seconds, untrapped_stats.pages.size(), text);
+        untrapped_stats.pages.clear();
+        untrapped_stats.since = now;
     }
 
     void HandleRasterizerWrite(VAddr v_address, size_t size) {

@@ -1682,6 +1682,30 @@ private:
                              frame);
                 }
             }
+            // EDEN_NX2_FRAME_LOG=<file>: one CSV line per present, to see which frames miss a
+            // vblank and why: the game's own time since the last present returned (work), then
+            // the GPU fence wait, compositing and vblank pacing inside this present.
+            if (static std::FILE* const frame_log = [] {
+                    const char* path = std::getenv("EDEN_NX2_FRAME_LOG");
+                    std::FILE* file = path != nullptr ? std::fopen(path, "w") : nullptr;
+                    if (file != nullptr) {
+                        std::setvbuf(file, nullptr, _IOFBF, 1 << 16);
+                        std::fputs("present,frame_us,work_us,fence_us,composite_us,pace_us\n", file);
+                    }
+                    return file;
+                }();
+                frame_log != nullptr && m_stats.last_present != std::chrono::steady_clock::time_point{} &&
+                m_last_return != std::chrono::steady_clock::time_point{}) {
+                std::fprintf(frame_log, "%llu,%lld,%lld,%lld,%lld,%lld\n",
+                             static_cast<unsigned long long>(m_presents),
+                             to_us(entered - m_stats.last_present), to_us(entered - m_last_return),
+                             to_us(waited - entered), to_us(composited - waited),
+                             to_us(paced - composited));
+                if ((m_presents % 600) == 0) {
+                    std::fflush(frame_log);
+                }
+            }
+            m_last_return = paced;
             m_stats.last_present = entered;
             m_last_fence_wait = waited - entered;
             // Game time: each present advances the game by its interval in vblanks (MKW counts
@@ -1731,6 +1755,7 @@ private:
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     std::chrono::steady_clock::duration m_last_fence_wait{};
+    std::chrono::steady_clock::time_point m_last_return{}; // when the last present was paced
     u32 m_smooth_cooldown{}; // presents left at one frame ahead after a long two-ahead wait
     u32 m_hitch_logs{};
     // Fences of the last presents, indexed by present number (WaitForFrame ignores ids >= 192).

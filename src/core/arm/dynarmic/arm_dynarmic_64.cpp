@@ -292,6 +292,13 @@ void ArmDynarmic64::MakeJit(Common::PageTable* page_table, std::size_t address_s
 
         config.fastmem_exclusive_access = config.fastmem_pointer != std::nullopt;
         config.recompile_on_exclusive_fastmem_failure = true;
+        // EDEN_NX2_FASTMEM_RECOMPILE=0: an access that faults in fastmem (a page the GPU caches
+        // protect) takes the slow path that once, instead of recompiling its instruction to take it
+        // for good.
+        if (const char* recompile = std::getenv("EDEN_NX2_FASTMEM_RECOMPILE");
+            recompile != nullptr && recompile[0] == '0') {
+            config.recompile_on_fastmem_failure = false;
+        }
 
         if (reinterpret_cast<u64>(m_system.DeviceMemory().buffer.BackingBasePointer() +
             Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize()) < (1ULL << 39)) {
