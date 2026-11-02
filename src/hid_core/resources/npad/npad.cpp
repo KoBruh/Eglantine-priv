@@ -24,6 +24,7 @@
 #include "hid_core/resources/applet_resource.h"
 #include "hid_core/resources/npad/npad.h"
 #include "hid_core/resources/npad/npad_vibration.h"
+#include "hid_core/resources/npad/nx2_input_tape.h"
 #include "hid_core/resources/shared_memory_format.h"
 
 namespace Service::HID {
@@ -439,8 +440,9 @@ void NPad::RequestPadStateUpdate(Kernel::KernelCore& kernel, u64 aruid, Core::HI
 
     auto& pad_entry = controller.npad_pad_state;
     auto& trigger_entry = controller.npad_trigger_state;
-    const auto button_state = controller.device->GetNpadButtons();
-    const auto stick_state = controller.device->GetSticks();
+    auto button_state = controller.device->GetNpadButtons();
+    auto stick_state = controller.device->GetSticks();
+    Nx2InputTape::Process(static_cast<u32>(npad_id), button_state, stick_state);
     {
         static const bool input_trace = std::getenv("EDEN_NX2_INPUT_TRACE") != nullptr;
         static u64 last_buttons{};

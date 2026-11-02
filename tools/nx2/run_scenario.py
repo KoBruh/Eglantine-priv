@@ -273,6 +273,8 @@ def main():
     parser.add_argument("--foreground", action="store_true",
                         help="show the game window normally (by default it renders off-screen and "
                              "never takes focus)")
+    parser.add_argument("--fullscreen", action="store_true",
+                        help="start the game fullscreen (with --foreground: screen recordings)")
     args = parser.parse_args()
 
     config = args.config or default_config()
@@ -320,7 +322,10 @@ def main():
         flags = 0
         if os.name == "nt" and not args.foreground:
             flags = subprocess.CREATE_NO_WINDOW
-        process = subprocess.Popen([str(args.exe), "-c", str(out / "sdl2-config.ini"), "-g", settings["game"]],
+        command = [str(args.exe), "-c", str(out / "sdl2-config.ini"), "-g", settings["game"]]
+        if args.fullscreen:
+            command.append("-f")
+        process = subprocess.Popen(command,
                                    env=env, stdout=log, stderr=err, creationflags=flags)
         exit_code, crashed = None, False
         sampler = thread_cpu.Sampler(process.pid, out / "threads.csv")

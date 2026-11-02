@@ -85,6 +85,7 @@ add_library(hid_core STATIC
     resources/npad/npad_types.h
     resources/npad/npad_vibration.cpp
     resources/npad/npad_vibration.h
+    resources/npad/nx2_input_tape.h
     resources/palma/palma.cpp
     resources/palma/palma.h
     resources/six_axis/console_six_axis.cpp
