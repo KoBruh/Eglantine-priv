@@ -161,6 +161,9 @@ public:
     size_t cond_failed_cycle_count = 0;
     /// Number of cycles this block takes to execute.
     size_t cycle_count = 0;
+    /// No code reached from this block's exits reads NZCV before writing it (A64 frontend): the
+    /// value the block leaves need not reach the guest state.
+    bool nzcv_dead_at_exit = false;
 };
 static_assert(sizeof(Block) == 4096);
 

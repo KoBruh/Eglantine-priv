@@ -39,6 +39,19 @@ namespace Dynarmic::Backend::X64 {
 
 using namespace Xbyak::util;
 
+// The operations that set the host flags for a GetNZCVFromOp of theirs (EmitAdd, EmitSub).
+static bool IsAddOrSub(IR::Opcode opcode) {
+    switch (opcode) {
+    case IR::Opcode::Add32:
+    case IR::Opcode::Add64:
+    case IR::Opcode::Sub32:
+    case IR::Opcode::Sub64:
+        return true;
+    default:
+        return false;
+    }
+}
+
 A64EmitContext::A64EmitContext(const A64::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block, boost::container::stable_vector<Xbyak::Label>& shared_labels)
     : EmitContext(reg_alloc, block, shared_labels)
     , conf(conf)
@@ -88,8 +101,10 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
         return gprs;
     }(), any_xmm};
 
+    DropDeadNZCVStore(block);
     A64EmitContext ctx{conf, reg_alloc, block, shared_labels};
     FindFoldedAddresses(ctx);
+    host_carry_is_borrow = false;
     scalars_stay_in_xmm = true;
 
     // Start emitting.
@@ -136,11 +151,14 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     };
 
     // Whether the host flags hold the guest NZCV last stored: an add or subtract materializes them
-    // (GetNZCVFromOp right after it), SetNZCV stores that value, and only register writes (plain
-    // movs) follow until the terminal.
+    // (GetNZCVFromOp right after it) or GetNZCVFromOp tests a value itself (logical operations, C
+    // and V clear), SetNZCV stores that value, and only register writes (plain movs) follow until
+    // the terminal.
     const IR::Inst* previous_inst = nullptr;
     const IR::Inst* flags_from = nullptr;
     bool flags_hold_nzcv = false;
+    // The host flags hold the compare fp_compare_for_terminal set them to, for the terminal.
+    bool flags_hold_fp_compare = false;
     bool fpcr_may_change = false;
     // Nothing between the last instruction and a CheckBit terminal changes the host flags (cycle
     // counting would subtract).
@@ -154,8 +172,12 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
         auto const opcode = inst.GetOpcode();
         ctx.previous_inst = previous_inst;
         ctx.check_bit_terminal_next = &inst == check_bit_from_flags_at;
-        const bool nzcv_from_op = opcode == IR::Opcode::GetNZCVFromOp && ctx.reg_alloc.IsValueLive(&inst) &&
-                                  inst.GetArg(0).GetInst() == previous_inst;
+        // An add or subtract sets the flags of its GetNZCVFromOp itself (they hold only right
+        // after it); otherwise GetNZCVFromOp tests the value (EmitGetNZCVFromOp).
+        const bool nzcv_from_add_sub = opcode == IR::Opcode::GetNZCVFromOp && !inst.GetArg(0).IsImmediate() &&
+                                       IsAddOrSub(inst.GetArg(0).GetInst()->GetOpcode());
+        const bool nzcv_from_op = opcode == IR::Opcode::GetNZCVFromOp &&
+                                  (!nzcv_from_add_sub || inst.GetArg(0).GetInst() == previous_inst);
         // A select on the guest flags tests the host flags directly while they hold them.
         const bool select_on_host_flags = flags_hold_nzcv && (opcode == IR::Opcode::ConditionalSelect32 ||
                                                               opcode == IR::Opcode::ConditionalSelect64 ||
@@ -183,11 +205,22 @@ finish_this_inst:
         switch (opcode) {
         case IR::Opcode::GetNZCVFromOp:
             flags_from = nzcv_from_op ? &inst : nullptr;
-            flags_hold_nzcv = false;
+            // Left without uses by DropDeadNZCVStore, it stands for the SetNZCV that went: the
+            // host flags hold the NZCV (in them only) from here.
+            flags_hold_nzcv = nzcv_from_op && !inst.HasUses();
             break;
         case IR::Opcode::A64SetNZCV:
             flags_hold_nzcv = flags_from != nullptr && !inst.GetArg(0).IsImmediate() &&
                               inst.GetArg(0).GetInst() == flags_from;
+            flags_hold_fp_compare = fp_compare_for_terminal != nullptr && !inst.GetArg(0).IsImmediate() &&
+                                    inst.GetArg(0).GetInst() == fp_compare_for_terminal && previous_inst == fp_compare_for_terminal;
+            break;
+        case IR::Opcode::FPCompare32:
+        case IR::Opcode::FPCompare64:
+            flags_from = nullptr;
+            flags_hold_nzcv = false;
+            // Without uses its SetNZCV went (DropDeadNZCVStore): the flags are for the terminal.
+            flags_hold_fp_compare = &inst == fp_compare_for_terminal && !inst.HasUses();
             break;
         case IR::Opcode::A64SetW:
         case IR::Opcode::A64SetX:
@@ -215,6 +248,20 @@ finish_this_inst:
             flags_hold_nzcv = false;
             break;
         }
+        switch (opcode) {
+        case IR::Opcode::A64SetNZCV:
+        case IR::Opcode::FPCompare32:
+        case IR::Opcode::FPCompare64:
+        case IR::Opcode::A64SetW:
+        case IR::Opcode::A64SetX:
+        case IR::Opcode::A64SetSP:
+        case IR::Opcode::A64GetW:
+        case IR::Opcode::A64GetX:
+            break;
+        default:
+            flags_hold_fp_compare = false;
+            break;
+        }
         previous_inst = &inst;
 #ifndef NDEBUG
         if (conf.very_verbose_debugging_output)
@@ -227,9 +274,14 @@ finish_this_inst:
     if (conf.enable_cycle_counting)
         EmitAddCycles(block.CycleCount());
     nzcv_in_host_flags = flags_hold_nzcv && !conf.enable_cycle_counting;
+    fp_compare_in_host_flags = flags_hold_fp_compare && !conf.enable_cycle_counting;
+    // The guest NZCV was not stored: the terminal must find it in the host flags.
+    ASSERT(!dropped_nzcv_store || nzcv_in_host_flags || fp_compare_in_host_flags);
     fpcr_is_block_fpcr = !fpcr_may_change;
     EmitTerminal(block.terminal, ctx.Location().SetSingleStepping(false), ctx.IsSingleStep());
     nzcv_in_host_flags = false;
+    fp_compare_in_host_flags = false;
+    fp_compare_for_terminal = nullptr;
     fpcr_is_block_fpcr = false;
     scalars_stay_in_xmm = false;
     code.int3();
@@ -252,6 +304,75 @@ finish_this_inst:
     code.DisableWriting();
     shared_labels.clear();
     return bdesc;
+}
+
+// A block whose NZCV no successor reads (IR::Block::nzcv_dead_at_exit) and whose conditional
+// branch tests it in the host flags need not store it: its last SetNZCV goes, so that the
+// GetNZCVFromOp it stored is left without uses and the flags are computed in the host flags only.
+// Only plain register moves may follow (as for the host-flag test in Emit), and an add or subtract
+// must set the flags right before their GetNZCVFromOp.
+// When a float compare right before the SetNZCV sets them, the terminal tests that compare's flags
+// (fp_compare_for_terminal), and a dead SetNZCV goes too.
+void A64EmitX64::DropDeadNZCVStore(IR::Block& block) {
+    fp_compare_for_terminal = nullptr;
+    dropped_nzcv_store = false;
+    if (conf.enable_cycle_counting || conf.very_verbose_debugging_output ||
+        !std::holds_alternative<IR::Term::If>(block.terminal) || block.instructions.empty()) {
+        return;
+    }
+    const IR::Cond cond = std::get<IR::Term::If>(block.terminal).if_;
+    auto set_nzcv = block.instructions.end();
+    do {
+        --set_nzcv;
+        switch (set_nzcv->GetOpcode()) {
+        case IR::Opcode::A64SetW:
+        case IR::Opcode::A64SetX:
+        case IR::Opcode::A64SetSP:
+        case IR::Opcode::A64GetW:
+        case IR::Opcode::A64GetX:
+            continue;
+        case IR::Opcode::A64SetNZCV:
+            break;
+        default:
+            return;
+        }
+        break;
+    } while (set_nzcv != block.instructions.begin());
+    if (set_nzcv->GetOpcode() != IR::Opcode::A64SetNZCV || set_nzcv == block.instructions.begin() ||
+        set_nzcv->GetArg(0).IsImmediate()) {
+        return;
+    }
+    const auto from_op = std::prev(set_nzcv);
+    if ((from_op->GetOpcode() == IR::Opcode::FPCompare32 || from_op->GetOpcode() == IR::Opcode::FPCompare64) &&
+        set_nzcv->GetArg(0).GetInst() == &*from_op && cond != IR::Cond::AL && cond != IR::Cond::NV) {
+        fp_compare_for_terminal = &*from_op;
+        fp_compare_cond = cond;
+        if (block.nzcv_dead_at_exit) {
+            set_nzcv->Invalidate();
+            block.instructions.erase(set_nzcv);
+            dropped_nzcv_store = true;
+        }
+        return;
+    }
+    if (!block.nzcv_dead_at_exit) {
+        return;
+    }
+    if (set_nzcv->GetArg(0).GetInst() != &*from_op || from_op->GetOpcode() != IR::Opcode::GetNZCVFromOp ||
+        from_op->UseCount() != 1) {
+        return;
+    }
+    const IR::Value operand = from_op->GetArg(0);
+    if (!operand.IsImmediate() && IsAddOrSub(operand.GetInst()->GetOpcode())) {
+        IR::Inst* const op = operand.GetInst();
+        if (from_op == block.instructions.begin() || op != &*std::prev(from_op) ||
+            op->GetAssociatedPseudoOperation(IR::Opcode::GetCarryFromOp) ||
+            op->GetAssociatedPseudoOperation(IR::Opcode::GetOverflowFromOp)) {
+            return;
+        }
+    }
+    set_nzcv->Invalidate();
+    block.instructions.erase(set_nzcv);
+    dropped_nzcv_store = true;
 }
 
 void A64EmitX64::ClearCache() {

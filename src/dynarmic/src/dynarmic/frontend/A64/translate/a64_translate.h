@@ -38,6 +38,10 @@ struct TranslationOptions {
     /// If this is false, we treat the instruction as a NOP.
     /// If this is true, we emit an ExceptionRaised instruction.
     bool hook_hint_instructions = true;
+
+    /// Look at the code each exit of the block leads to and set IR::Block::nzcv_dead_at_exit
+    /// when all of it writes NZCV before reading it.
+    bool analyze_nzcv_at_exit = false;
 };
 
 /**

@@ -1417,36 +1417,42 @@ static Xbyak::Reg64 SetFpscrNzcvFromFlags(BlockOfCode& code, EmitContext& ctx) {
     return nzcv;
 }
 
-void EmitX64::EmitFPCompare32(EmitContext& ctx, IR::Inst* inst) {
+template<size_t fsize>
+static void EmitFPCompare(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, bool for_terminal, IR::Cond cond) {
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
     const Xbyak::Xmm reg_a = ctx.reg_alloc.UseXmm(code, args[0]);
     const Xbyak::Xmm reg_b = ctx.reg_alloc.UseXmm(code, args[1]);
     const bool exc_on_qnan = args[2].GetImmediateU1();
 
-    if (exc_on_qnan) {
-        code.comiss(reg_a, reg_b);
-    } else {
-        code.ucomiss(reg_a, reg_b);
-    }
+    const auto compare = [&](const Xbyak::Xmm& a, const Xbyak::Xmm& b) {
+        if constexpr (fsize == 32) {
+            exc_on_qnan ? code.comiss(a, b) : code.ucomiss(a, b);
+        } else {
+            exc_on_qnan ? code.comisd(a, b) : code.ucomisd(a, b);
+        }
+    };
 
-    const Xbyak::Reg64 nzcv = SetFpscrNzcvFromFlags(code, ctx);
-    ctx.reg_alloc.DefineValue(code, inst, nzcv);
+    if (!for_terminal || inst->HasUses()) {
+        compare(reg_a, reg_b);
+        const Xbyak::Reg64 nzcv = SetFpscrNzcvFromFlags(code, ctx);
+        ctx.reg_alloc.DefineValue(code, inst, nzcv);
+    }
+    if (for_terminal) {
+        // Again for the terminal's condition, which tests these flags (EmitCond).
+        if (FPCompareSwapsOperands(cond)) {
+            compare(reg_b, reg_a);
+        } else {
+            compare(reg_a, reg_b);
+        }
+    }
+}
+
+void EmitX64::EmitFPCompare32(EmitContext& ctx, IR::Inst* inst) {
+    EmitFPCompare<32>(code, ctx, inst, inst == fp_compare_for_terminal, fp_compare_cond);
 }
 
 void EmitX64::EmitFPCompare64(EmitContext& ctx, IR::Inst* inst) {
-    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
-    const Xbyak::Xmm reg_a = ctx.reg_alloc.UseXmm(code, args[0]);
-    const Xbyak::Xmm reg_b = ctx.reg_alloc.UseXmm(code, args[1]);
-    const bool exc_on_qnan = args[2].GetImmediateU1();
-
-    if (exc_on_qnan) {
-        code.comisd(reg_a, reg_b);
-    } else {
-        code.ucomisd(reg_a, reg_b);
-    }
-
-    const Xbyak::Reg64 nzcv = SetFpscrNzcvFromFlags(code, ctx);
-    ctx.reg_alloc.DefineValue(code, inst, nzcv);
+    EmitFPCompare<64>(code, ctx, inst, inst == fp_compare_for_terminal, fp_compare_cond);
 }
 
 void EmitX64::EmitFPHalfToDouble(EmitContext& ctx, IR::Inst* inst) {

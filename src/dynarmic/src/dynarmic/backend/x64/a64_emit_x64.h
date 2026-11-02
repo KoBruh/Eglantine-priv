@@ -103,6 +103,7 @@ public:
 
     // Memory access helpers
     void FindFoldedAddresses(A64EmitContext& ctx);
+    void DropDeadNZCVStore(IR::Block& block);
     void EmitCheckMemoryAbort(A64EmitContext& ctx, IR::Inst* inst, Xbyak::Label* end = nullptr);
     template<std::size_t bitsize, auto callback>
     void EmitMemoryRead(A64EmitContext& ctx, IR::Inst* inst);
@@ -161,6 +162,8 @@ public:
     /// While emitting a terminal: the block has nothing that changes the FPCR (MSR FPCR, a
     /// supervisor call or an exception), so the FPCR at its end is the one in its location.
     bool fpcr_is_block_fpcr = false;
+    /// DropDeadNZCVStore removed the block's last SetNZCV.
+    bool dropped_nzcv_store = false;
     FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
     A64::Jit* jit_interface = nullptr;
     void (*memory_read_128)() = nullptr;

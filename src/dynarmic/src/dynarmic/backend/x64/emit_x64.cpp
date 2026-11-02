@@ -215,6 +215,22 @@ void EmitX64::EmitGetNZCVFromOp(EmitContext& ctx, IR::Inst* inst) {
         return;
     }
 
+    // Without uses only the host flags are wanted (the A64 emitter dropped a dead NZCV store): an
+    // add or subtract set them already (EmitAdd, EmitSub), anything else gets a test.
+    const bool flags_only = !inst->HasUses();
+    if (flags_only && !inst->GetArg(0).IsImmediate()) {
+        switch (inst->GetArg(0).GetInst()->GetOpcode()) {
+        case IR::Opcode::Add32:
+        case IR::Opcode::Add64:
+        case IR::Opcode::Sub32:
+        case IR::Opcode::Sub64:
+            ctx.reg_alloc.RegisterPseudoOperation(inst);
+            return;
+        default:
+            break;
+        }
+    }
+
     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
 
     const int bitsize = [&] {
@@ -232,11 +248,16 @@ void EmitX64::EmitGetNZCVFromOp(EmitContext& ctx, IR::Inst* inst) {
         }
     }();
 
+    if (flags_only) {
+        const Xbyak::Reg value = ctx.reg_alloc.UseGpr(code, args[0]).changeBit(bitsize);
+        code.test(value, value);
+        return;
+    }
     const Xbyak::Reg64 nzcv = ctx.reg_alloc.ScratchGpr(code, HostLoc::RAX);
     const Xbyak::Reg value = ctx.reg_alloc.UseGpr(code, args[0]).changeBit(bitsize);
     code.test(value, value);
     code.lahf();
-    code.xor_(al, al);
+    code.mov(al, 0);  // V clear; the flags of the test stay the NZCV (C and V clear)
     ctx.reg_alloc.DefineValue(code, inst, nzcv);
 }
 
@@ -292,17 +313,100 @@ void EmitX64::EmitAddCycles(size_t cycles) {
     code.sub(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], static_cast<u32>(cycles));
 }
 
+// After a float compare a, b the guest NZCV is 0110 (equal), 1000 (less), 0010 (greater) or 0011
+// (unordered), while ucomis sets ZF, PF, CF = 1, 0, 0 / 0, 0, 1 / 0, 0, 0 / 1, 1, 1. With the
+// operands as given, GE, LT, GT, LE, VS, VC, EQ and NE map onto those flags; MI, PL, CC, CS, HI and
+// LS need them compared the other way round (b, a).
+bool FPCompareSwapsOperands(IR::Cond cond) {
+    switch (cond) {
+    case IR::Cond::MI:
+    case IR::Cond::PL:
+    case IR::Cond::CC:
+    case IR::Cond::CS:
+    case IR::Cond::HI:
+    case IR::Cond::LS:
+        return true;
+    default:
+        return false;
+    }
+}
+
 Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
     Xbyak::Label pass;
+
+    if (std::exchange(fp_compare_in_host_flags, false)) {
+        nzcv_in_host_flags = false;
+        host_carry_is_borrow = false;
+        ASSERT(cond == fp_compare_cond);
+        switch (cond) {
+        case IR::Cond::EQ: {  // equal and ordered
+            Xbyak::Label unordered;
+            code.jp(unordered);
+            code.je(pass, code.T_NEAR);
+            code.L(unordered);
+            break;
+        }
+        case IR::Cond::NE:  // not equal, or unordered
+            code.jp(pass, code.T_NEAR);
+            code.jne(pass, code.T_NEAR);
+            break;
+        case IR::Cond::GE:  // greater or equal
+            code.jae(pass, code.T_NEAR);
+            break;
+        case IR::Cond::LT:  // less, or unordered
+            code.jb(pass, code.T_NEAR);
+            break;
+        case IR::Cond::GT:  // greater
+            code.ja(pass, code.T_NEAR);
+            break;
+        case IR::Cond::LE:  // less or equal, or unordered
+            code.jbe(pass, code.T_NEAR);
+            break;
+        case IR::Cond::VS:  // unordered
+            code.jp(pass, code.T_NEAR);
+            break;
+        case IR::Cond::VC:
+            code.jnp(pass, code.T_NEAR);
+            break;
+        case IR::Cond::MI:  // less: b, a compared greater
+        case IR::Cond::CC:
+            code.ja(pass, code.T_NEAR);
+            break;
+        case IR::Cond::PL:
+        case IR::Cond::CS:
+            code.jbe(pass, code.T_NEAR);
+            break;
+        case IR::Cond::HI:  // greater, or unordered: b, a compared less or unordered
+            code.jb(pass, code.T_NEAR);
+            break;
+        case IR::Cond::LS:  // less or equal: b, a compared greater or equal
+            code.jae(pass, code.T_NEAR);
+            break;
+        default:
+            UNREACHABLE();
+        }
+        return pass;
+    }
 
     if (nzcv_in_host_flags) {
         // SF, ZF and OF are the operation's and CF is already the guest's carry (what
         // LoadRequiredFlagsForCondFromRax restores); HI and LS test it inverted, as after sahf.
+        // When CF is still a subtraction's borrow, HI and LS test it as is, CS and CC inverted.
         nzcv_in_host_flags = false;
-        if (cond == IR::Cond::HI || cond == IR::Cond::LS) {
+        if (std::exchange(host_carry_is_borrow, false)) {
+            if (cond == IR::Cond::CS) {
+                code.jnc(pass);
+                return pass;
+            }
+            if (cond == IR::Cond::CC) {
+                code.jc(pass);
+                return pass;
+            }
+        } else if (cond == IR::Cond::HI || cond == IR::Cond::LS) {
             code.cmc();
         }
     } else {
+        host_carry_is_borrow = false;
         code.mov(eax, dword[code.ABI_JIT_PTR + code.GetJitStateInfo().offsetof_cpsr_nzcv]);
         code.LoadRequiredFlagsForCondFromRax(cond);
     }

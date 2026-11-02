@@ -985,7 +985,9 @@ static void EmitAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, size_t 
         return;
     }
 
-    const Xbyak::Reg64 nzcv = DoNZCV(code, ctx.reg_alloc, nzcv_inst);
+    // A GetNZCVFromOp without uses wants the NZCV in the host flags only (see EmitGetNZCVFromOp).
+    const bool nzcv_flags_only = nzcv_inst && !nzcv_inst->HasUses();
+    const Xbyak::Reg64 nzcv = DoNZCV(code, ctx.reg_alloc, nzcv_flags_only ? nullptr : nzcv_inst);
     const Xbyak::Reg result = ctx.reg_alloc.UseScratchGpr(code, args[0]).changeBit(bitsize);
     const Xbyak::Reg8 carry = DoCarry(code, ctx.reg_alloc, carry_in, carry_inst);
     const Xbyak::Reg8 overflow = overflow_inst ? ctx.reg_alloc.ScratchGpr(code).cvt8() : Xbyak::Reg8{-1};
@@ -1026,7 +1028,7 @@ static void EmitAdd(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, size_t 
         }
     }
 
-    if (nzcv_inst) {
+    if (nzcv_inst && !nzcv_flags_only) {
         code.lahf();
         code.seto(code.al);
         ctx.reg_alloc.DefineValue(code, nzcv_inst, nzcv);
@@ -1050,7 +1052,9 @@ void EmitX64::EmitAdd64(EmitContext& ctx, IR::Inst* inst) {
     EmitAdd(code, ctx, inst, 64);
 }
 
-static void EmitSub(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bitsize) {
+// Returns whether the host flags are left with CF the borrow (the guest's C inverted) for a
+// GetNZCVFromOp that wants the host flags only.
+static bool EmitSub(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bitsize) {
     const auto carry_inst = inst->GetAssociatedPseudoOperation(IR::Opcode::GetCarryFromOp);
     const auto overflow_inst = inst->GetAssociatedPseudoOperation(IR::Opcode::GetOverflowFromOp);
     const auto nzcv_inst = inst->GetAssociatedPseudoOperation(IR::Opcode::GetNZCVFromOp);
@@ -1067,10 +1071,12 @@ static void EmitSub(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bit
         code.lea(result, code.ptr[op1 - args[1].GetImmediateS32()]);
 
         ctx.reg_alloc.DefineValue(code, inst, result);
-        return;
+        return false;
     }
 
-    const Xbyak::Reg64 nzcv = DoNZCV(code, ctx.reg_alloc, nzcv_inst);
+    // A GetNZCVFromOp without uses wants the NZCV in the host flags only (see EmitGetNZCVFromOp).
+    const bool nzcv_flags_only = nzcv_inst && !nzcv_inst->HasUses() && !carry_inst && !overflow_inst;
+    const Xbyak::Reg64 nzcv = DoNZCV(code, ctx.reg_alloc, nzcv_flags_only ? nullptr : nzcv_inst);
     const Xbyak::Reg result = (is_cmp ? ctx.reg_alloc.UseGpr(code, args[0]) : ctx.reg_alloc.UseScratchGpr(code, args[0])).changeBit(bitsize);
     const Xbyak::Reg8 carry = DoCarry(code, ctx.reg_alloc, carry_in, carry_inst);
     const Xbyak::Reg8 overflow = overflow_inst ? ctx.reg_alloc.ScratchGpr(code).cvt8() : Xbyak::Reg8{-1};
@@ -1121,7 +1127,7 @@ static void EmitSub(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bit
         }
     }
 
-    if (nzcv_inst) {
+    if (nzcv_inst && !nzcv_flags_only) {
         if (invert_output_carry) {
             code.cmc();
         }
@@ -1144,14 +1150,15 @@ static void EmitSub(BlockOfCode& code, EmitContext& ctx, IR::Inst* inst, int bit
     if (!is_cmp) {
         ctx.reg_alloc.DefineValue(code, inst, result);
     }
+    return nzcv_flags_only && invert_output_carry;
 }
 
 void EmitX64::EmitSub32(EmitContext& ctx, IR::Inst* inst) {
-    EmitSub(code, ctx, inst, 32);
+    host_carry_is_borrow = EmitSub(code, ctx, inst, 32);
 }
 
 void EmitX64::EmitSub64(EmitContext& ctx, IR::Inst* inst) {
-    EmitSub(code, ctx, inst, 64);
+    host_carry_is_borrow = EmitSub(code, ctx, inst, 64);
 }
 
 void EmitX64::EmitMul32(EmitContext& ctx, IR::Inst* inst) {

@@ -83,6 +83,8 @@ using SharedLabel = Xbyak::Label*;
     }
 }
 
+bool FPCompareSwapsOperands(IR::Cond cond);
+
 struct EmitContext {
     EmitContext(RegAlloc& reg_alloc, IR::Block& block, boost::container::stable_vector<Xbyak::Label>& shared_labels);
     virtual ~EmitContext();
@@ -154,10 +156,20 @@ public:
     // stored (an add or subtract materialized them and only register writes followed): EmitCond
     // then tests them directly instead of reloading cpsr_nzcv. EmitCond clears it.
     bool nzcv_in_host_flags = false;
+    // With nzcv_in_host_flags: CF is the borrow of the subtraction that set the flags (the
+    // inverse of the guest's C) instead of the guest's C. EmitCond clears it.
+    bool host_carry_is_borrow = false;
     // Element 0 of a vector and the zero-extension of a scalar held in an XMM register stay in
     // XMM registers (their other lanes cleared), so that float operations do not take them through
     // general registers. Set by the A64 emitter for its blocks.
     bool scalars_stay_in_xmm = false;
+    // A64: the FPCompare whose result the block's If terminal tests, with that condition.
+    // EmitFPCompare compares again after storing the NZCV (or only compares when nothing uses
+    // it), with the operands in the order the condition needs (FPCompareSwapsOperands), and
+    // EmitCond tests those host flags when fp_compare_in_host_flags is set before the terminal.
+    const IR::Inst* fp_compare_for_terminal = nullptr;
+    IR::Cond fp_compare_cond = IR::Cond::AL;
+    bool fp_compare_in_host_flags = false;
     BlockDescriptor RegisterBlock(const IR::LocationDescriptor& location_descriptor, CodePtr entrypoint, size_t size);
     void PushRSBHelper(Xbyak::Reg64 loc_desc_reg, Xbyak::Reg64 index_reg, IR::LocationDescriptor target);
 

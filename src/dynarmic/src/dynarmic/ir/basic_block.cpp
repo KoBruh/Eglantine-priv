@@ -69,6 +69,7 @@ void Block::Reset(LocationDescriptor location_) noexcept {
     terminal = std::monostate{};
     cond_failed_cycle_count = 0;
     cycle_count = 0;
+    nzcv_dead_at_exit = false;
     ASSERT(instructions.size() == 0);
 }
 

@@ -8,16 +8,137 @@
 
 #include "dynarmic/frontend/A64/translate/a64_translate.h"
 
+#include <memory>
+
 #include "dynarmic/frontend/A64/a64_location_descriptor.h"
 #include "dynarmic/frontend/A64/decoder/a64.h"
 #include "dynarmic/frontend/A64/translate/impl/impl.h"
 #include "dynarmic/ir/basic_block.h"
+#include "dynarmic/ir/opcodes.h"
 #include "dynarmic/ir/terminal.h"
 
 namespace Dynarmic::A64 {
 
+namespace {
+
+// NZCV liveness at the exits of a block: the code at each successor is translated one
+// instruction at a time, a few instructions and direct branches deep. NZCV is dead there when
+// every path writes it before anything reads it; whatever cannot be followed (an indirect branch,
+// a return, an exception, unreadable code, the limits) counts as a read.
+constexpr size_t nzcv_scan_instructions = 16;
+constexpr int nzcv_scan_branches = 2;
+
+bool ReadsNZCV(const IR::Inst& inst) {
+    if (IR::ReadsFromCPSR(inst.GetOpcode())) {
+        return true;
+    }
+    for (size_t i = 0; i < inst.NumArgs(); ++i) {
+        if (inst.GetArg(i).GetType() == IR::Type::Cond) {
+            return true;
+        }
+    }
+    switch (inst.GetOpcode()) {
+    case IR::Opcode::A64CallSupervisor:
+    case IR::Opcode::A64ExceptionRaised:
+        return true;  // leaves to the kernel or the host, which may look at PSTATE
+    default:
+        return false;
+    }
+}
+
+struct NZCVScan {
+    const MemoryReadCodeFuncType& memory_read_code;
+    std::unique_ptr<IR::Block> scratch;
+
+    bool MayRead(const IR::Term::LeafTerminal& leaf, int branches) {
+        if (const auto* link = std::get_if<IR::Term::LinkBlock>(&leaf)) {
+            return MayReadFrom(LocationDescriptor{link->next}, branches);
+        }
+        if (const auto* link = std::get_if<IR::Term::LinkBlockFast>(&leaf)) {
+            return MayReadFrom(LocationDescriptor{link->next}, branches);
+        }
+        return true;
+    }
+
+    /// The terminal of a translated instruction; an If reads the flags itself.
+    bool MayReadAfter(const IR::Term::Terminal& terminal, int branches) {
+        if (const auto* leaf = std::get_if<IR::Term::LeafTerminal>(&terminal)) {
+            return MayRead(*leaf, branches);
+        }
+        if (const auto* check_bit = std::get_if<IR::Term::CheckBit>(&terminal)) {
+            return MayRead(check_bit->then_, branches) || MayRead(check_bit->else_, branches);
+        }
+        return true;
+    }
+
+    bool MayReadFrom(LocationDescriptor location, int branches) {
+        if (branches <= 0) {
+            return true;
+        }
+        for (size_t i = 0; i < nzcv_scan_instructions; ++i) {
+            const auto instruction = memory_read_code(location.PC());
+            if (!instruction) {
+                return true;
+            }
+            if (!scratch) {
+                scratch = std::make_unique<IR::Block>(location);
+            }
+            scratch->Reset(location);
+            const bool should_continue = TranslateSingleInstruction(*scratch, location, *instruction);
+            for (const auto& inst : scratch->instructions) {
+                if (ReadsNZCV(inst)) {
+                    return true;
+                }
+                if (inst.GetOpcode() == IR::Opcode::A64SetNZCV || inst.GetOpcode() == IR::Opcode::A64SetNZCVRaw) {
+                    return false;
+                }
+            }
+            if (should_continue) {
+                location = location.AdvancePC(4);
+                continue;
+            }
+            if (!scratch->HasTerminal()) {
+                return true;
+            }
+            const IR::Term::Terminal terminal = scratch->terminal;
+            return MayReadAfter(terminal, branches - 1);
+        }
+        return true;
+    }
+};
+
+bool WritesNZCV(const IR::Block& block) {
+    for (const auto& inst : block.instructions) {
+        if (inst.GetOpcode() == IR::Opcode::A64SetNZCV || inst.GetOpcode() == IR::Opcode::A64SetNZCVRaw) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Whether nothing after the block's exits reads NZCV before writing it.
+bool NZCVDeadAtExit(const IR::Block& block, const MemoryReadCodeFuncType& memory_read_code) {
+    NZCVScan scan{memory_read_code, nullptr};
+    const auto& terminal = block.terminal;
+    if (const auto* leaf = std::get_if<IR::Term::LeafTerminal>(&terminal)) {
+        return !scan.MayRead(*leaf, nzcv_scan_branches + 1);
+    }
+    if (const auto* if_ = std::get_if<IR::Term::If>(&terminal)) {
+        return !scan.MayRead(if_->then_, nzcv_scan_branches + 1) && !scan.MayRead(if_->else_, nzcv_scan_branches + 1);
+    }
+    if (const auto* check_bit = std::get_if<IR::Term::CheckBit>(&terminal)) {
+        return !scan.MayRead(check_bit->then_, nzcv_scan_branches + 1) &&
+               !scan.MayRead(check_bit->else_, nzcv_scan_branches + 1);
+    }
+    return false;
+}
+
+}  // namespace
+
 void Translate(IR::Block& block, LocationDescriptor descriptor, MemoryReadCodeFuncType memory_read_code, TranslationOptions options) {
     const bool single_step = descriptor.SingleStepping();
+    // Not when single-stepping: the state after each step must be complete.
+    const bool analyze_nzcv_at_exit = options.analyze_nzcv_at_exit && !single_step;
     TranslatorVisitor visitor{block, descriptor, std::move(options)};
 
     bool should_continue = true;
@@ -41,6 +162,9 @@ void Translate(IR::Block& block, LocationDescriptor descriptor, MemoryReadCodeFu
     }
     ASSERT(block.HasTerminal() && "Terminal has not been set");
     block.SetEndLocation(*visitor.ir.current_location);
+    if (analyze_nzcv_at_exit && WritesNZCV(block)) {
+        block.nzcv_dead_at_exit = NZCVDeadAtExit(block, memory_read_code);
+    }
 }
 
 bool TranslateSingleInstruction(IR::Block& block, LocationDescriptor descriptor, u32 instruction) {

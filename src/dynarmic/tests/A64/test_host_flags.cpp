@@ -6,6 +6,8 @@
 // blocks that way (a BRK at the end halts) and check the results against the architecture.
 
 #include <array>
+#include <bit>
+#include <limits>
 #include <cstdint>
 #include <utility>
 
@@ -83,6 +85,16 @@ constexpr std::array<std::pair<u64, u64>, 8> operands{{
     {0x80000000, 0x7fffffff},
 }};
 
+// Results zero, positive and negative in both widths.
+constexpr std::array<std::pair<u64, u64>, 6> logical_operands{{
+    {5, 7},
+    {5, 2},
+    {0xffffffffffffffff, 0x8000000080000000},
+    {0x8000000000000000, 0xffffffff00000000},
+    {0x00000000ffffffff, 0x0000000080000001},
+    {0x7fffffff7fffffff, 0xffffffffffffffff},
+}};
+
 A64::UserConfig NoCycleCountingConfig(HaltingEnv& env) {
     A64::UserConfig conf{};
     conf.callbacks = &env;
@@ -137,6 +149,234 @@ TEST_CASE("A64: selects and a branch on the flags of a compare", "[a64]") {
                 CHECK(jit.GetRegister(7) == (holds ? 1 : 2));
                 const u32 nzcv = (flags.n << 31) | (flags.z << 30) | (flags.c << 29) | (flags.v << 28);
                 CHECK(jit.GetPstate() == nzcv);
+            }
+        }
+    }
+}
+
+TEST_CASE("A64: selects and a branch on the flags of tst and ands", "[a64]") {
+    // A logical operation's NZCV comes from a test of its result, with C and V clear: the host
+    // flags of that test serve the selects and the branch.
+    for (const bool is_64 : {true, false}) {
+        for (const bool use_ands : {false, true}) {
+            for (const auto cond : conds) {
+                HaltingEnv env;
+                A64::Jit jit{NoCycleCountingConfig(env)};
+                env.jit = &jit;
+
+                oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+                oaknut::Label taken;
+                if (is_64) {
+                    if (use_ands) {
+                        code.ANDS(X8, X0, X1);
+                    } else {
+                        code.TST(X0, X1);
+                    }
+                    code.CSEL(X2, X3, X4, cond);
+                    code.CSINC(X5, XZR, XZR, cond);
+                } else {
+                    if (use_ands) {
+                        code.ANDS(W8, W0, W1);
+                    } else {
+                        code.TST(W0, W1);
+                    }
+                    code.CSEL(W2, W3, W4, cond);
+                    code.CSINC(W5, WZR, WZR, cond);
+                }
+                code.B(cond, taken);
+                code.MOVZ(X7, 2);
+                code.BRK(0);
+                code.l(taken);
+                code.MOVZ(X7, 1);
+                code.BRK(0);
+
+                for (const auto& [a, b] : logical_operands) {
+                    const u64 result = is_64 ? (a & b) : u64(u32(a) & u32(b));
+                    const Flags flags{bool(result >> (is_64 ? 63 : 31)), result == 0, false, false};
+                    const bool holds = Holds(cond, flags);
+                    jit.SetPC(0);
+                    jit.SetPstate(0xF0000000);  // C and V set before: the tst clears them
+                    jit.SetRegister(0, a);
+                    jit.SetRegister(1, b);
+                    jit.SetRegister(3, 0x1111222233334444);
+                    jit.SetRegister(4, 0x5555666677778888);
+                    CheckedRun([&]() { jit.Run(); });
+
+                    INFO("cond " << int(cond) << " a " << a << " b " << b << " 64-bit " << is_64 << " ands " << use_ands);
+                    const u64 mask = is_64 ? ~u64(0) : 0xffffffff;
+                    CHECK(jit.GetRegister(2) == ((holds ? 0x1111222233334444 : 0x5555666677778888) & mask));
+                    CHECK(jit.GetRegister(5) == (holds ? 0 : 1));
+                    CHECK(jit.GetRegister(7) == (holds ? 1 : 2));
+                    if (use_ands) {
+                        CHECK(jit.GetRegister(8) == result);
+                    }
+                    const u32 nzcv = (flags.n << 31) | (flags.z << 30);
+                    CHECK(jit.GetPstate() == nzcv);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("A64: a conditional branch on flags no successor reads", "[a64]") {
+    // Both successors overwrite NZCV (with flags of 3 - 1) before reading it: the block need not
+    // store its NZCV and computes it in the host flags only. With successors that read it, it does.
+    enum class Op { Cmp64, Cmp32, Subs64, Cmn64, Tst64 };
+    for (const Op op : {Op::Cmp64, Op::Cmp32, Op::Subs64, Op::Cmn64, Op::Tst64}) {
+        for (const bool successors_read : {false, true}) {
+            for (const auto cond : conds) {
+                HaltingEnv env;
+                A64::Jit jit{NoCycleCountingConfig(env)};
+                env.jit = &jit;
+
+                oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+                oaknut::Label taken;
+                switch (op) {
+                case Op::Cmp64: code.CMP(X0, X1); break;
+                case Op::Cmp32: code.CMP(W0, W1); break;
+                case Op::Subs64: code.SUBS(X8, X0, X1); break;
+                case Op::Cmn64: code.CMN(X0, X1); break;
+                case Op::Tst64: code.TST(X0, X1); break;
+                }
+                code.MOV(X9, X0);  // a register move between
+                code.B(cond, taken);
+                if (successors_read) {
+                    code.CSINC(X5, XZR, XZR, cond);
+                } else {
+                    code.CMP(X10, X11);
+                }
+                code.MOVZ(X7, 2);
+                code.BRK(0);
+                code.l(taken);
+                if (successors_read) {
+                    code.CSINC(X5, XZR, XZR, cond);
+                } else {
+                    code.CMP(X10, X11);
+                }
+                code.MOVZ(X7, 1);
+                code.BRK(0);
+
+                for (const auto& [a, b] : operands) {
+                    Flags flags{};
+                    switch (op) {
+                    case Op::Cmp64:
+                    case Op::Subs64:
+                        flags = SubFlags64(a, b);
+                        break;
+                    case Op::Cmp32:
+                        flags = SubFlags32(u32(a), u32(b));
+                        break;
+                    case Op::Cmn64: {
+                        const u64 sum = a + b;
+                        flags = {bool(sum >> 63), sum == 0, sum < a, bool(((a ^ sum) & (b ^ sum)) >> 63)};
+                        break;
+                    }
+                    case Op::Tst64:
+                        flags = {bool((a & b) >> 63), (a & b) == 0, false, false};
+                        break;
+                    }
+                    const bool holds = Holds(cond, flags);
+                    jit.SetPC(0);
+                    jit.SetRegister(0, a);
+                    jit.SetRegister(1, b);
+                    jit.SetRegister(10, 3);
+                    jit.SetRegister(11, 1);
+                    CheckedRun([&]() { jit.Run(); });
+
+                    INFO("op " << int(op) << " cond " << int(cond) << " a " << a << " b " << b << " read " << successors_read);
+                    CHECK(jit.GetRegister(7) == (holds ? 1 : 2));
+                    CHECK(jit.GetRegister(9) == a);
+                    if (op == Op::Subs64) {
+                        CHECK(jit.GetRegister(8) == a - b);
+                    }
+                    if (successors_read) {
+                        CHECK(jit.GetRegister(5) == (holds ? 0 : 1));
+                        const u32 nzcv = (flags.n << 31) | (flags.z << 30) | (flags.c << 29) | (flags.v << 28);
+                        CHECK(jit.GetPstate() == nzcv);
+                    } else {
+                        CHECK(jit.GetPstate() == 0x20000000);  // 3 - 1: C only
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("A64: a conditional branch on the flags of a float compare", "[a64]") {
+    // The terminal tests the host flags of the compare (operands swapped for some conditions);
+    // with successors that do not read NZCV it is not stored at all.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const std::array<std::pair<double, double>, 7> fp_operands{{
+        {1.0, 2.0}, {2.0, 1.0}, {1.5, 1.5}, {-0.0, 0.0}, {nan, 1.0}, {1.0, nan}, {nan, nan},
+    }};
+    for (const bool is_double : {false, true}) {
+        for (const bool signaling : {false, true}) {
+            for (const bool successors_read : {false, true}) {
+                for (const auto cond : conds) {
+                    HaltingEnv env;
+                    A64::Jit jit{NoCycleCountingConfig(env)};
+                    env.jit = &jit;
+
+                    oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+                    oaknut::Label taken;
+                    if (is_double) {
+                        signaling ? code.FCMPE(D0, D1) : code.FCMP(D0, D1);
+                    } else {
+                        signaling ? code.FCMPE(S0, S1) : code.FCMP(S0, S1);
+                    }
+                    code.MOV(X9, X2);
+                    code.B(cond, taken);
+                    if (successors_read) {
+                        code.CSINC(X5, XZR, XZR, cond);
+                    } else {
+                        code.CMP(X10, X11);
+                    }
+                    code.MOVZ(X7, 2);
+                    code.BRK(0);
+                    code.l(taken);
+                    if (successors_read) {
+                        code.CSINC(X5, XZR, XZR, cond);
+                    } else {
+                        code.CMP(X10, X11);
+                    }
+                    code.MOVZ(X7, 1);
+                    code.BRK(0);
+
+                    for (const auto& [a, b] : fp_operands) {
+                        Flags flags{};
+                        if (a != a || b != b) {
+                            flags = {false, false, true, true};
+                        } else if (a == b) {
+                            flags = {false, true, true, false};
+                        } else if (a < b) {
+                            flags = {true, false, false, false};
+                        } else {
+                            flags = {false, false, true, false};
+                        }
+                        const bool holds = Holds(cond, flags);
+                        const auto bits = [&](double value) -> u64 {
+                            return is_double ? std::bit_cast<u64>(value) : u64(std::bit_cast<u32>(float(value)));
+                        };
+                        jit.SetPC(0);
+                        jit.SetVector(0, {bits(a), 0});
+                        jit.SetVector(1, {bits(b), 0});
+                        jit.SetRegister(2, 0x1234);
+                        jit.SetRegister(10, 3);
+                        jit.SetRegister(11, 1);
+                        CheckedRun([&]() { jit.Run(); });
+
+                        INFO("cond " << int(cond) << " a " << a << " b " << b << " double " << is_double << " read " << successors_read);
+                        CHECK(jit.GetRegister(7) == (holds ? 1 : 2));
+                        CHECK(jit.GetRegister(9) == 0x1234);
+                        if (successors_read) {
+                            CHECK(jit.GetRegister(5) == (holds ? 0 : 1));
+                            const u32 nzcv = (flags.n << 31) | (flags.z << 30) | (flags.c << 29) | (flags.v << 28);
+                            CHECK(jit.GetPstate() == nzcv);
+                        } else {
+                            CHECK(jit.GetPstate() == 0x20000000);  // 3 - 1: C only
+                        }
+                    }
+                }
             }
         }
     }
