@@ -13,4 +13,8 @@ void JitMapRegister(const void* start, const void* end, std::string_view name);
 // Forgets the blocks emitted in [code_begin, code_end): one JIT's code buffer, on a cache clear.
 void JitMapClear(const void* code_begin, const void* code_end);
 
+// DYNARMIC_BLOCK_COUNTS=1: a counter for a new block, incremented by its emitted code on entry.
+bool BlockCountsEnabled();
+unsigned long long* BlockCountsRegister(unsigned long long pc, unsigned long long end, unsigned terminal);
+
 }  // namespace Dynarmic::Common

@@ -320,6 +320,9 @@ void Run(std::vector<std::string> patterns, double start, double seconds, std::s
     samples.reserve(static_cast<size_t>((slice > 0 ? slice : seconds) * 1100.0) *
                         (std::max)(targets.size(), patterns.size()) +
                     16);
+    // DYNARMIC_BLOCK_COUNTS=1: count JIT block executions over the same window.
+    Dynarmic::ResetBlockCounts();
+    const auto window_start = std::chrono::steady_clock::now();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
     auto slice_end = std::chrono::steady_clock::now() + std::chrono::duration<double>(slice);
     unsigned slice_index = 0;
@@ -361,6 +364,23 @@ void Run(std::vector<std::string> patterns, double start, double seconds, std::s
     }
     Report(targets, samples, out.c_str());
     std::fprintf(stderr, "nx2 sampler: %zu samples written to %s\n", samples.size(), out.c_str());
+    // <out>.blocks.csv: each JIT block's executions in the window, with the main module's base.
+    if (const auto counts = Dynarmic::BlockCountsSnapshot(); !counts.empty()) {
+        if (std::FILE* const file = std::fopen((out + ".blocks.csv").c_str(), "w")) {
+            const double window =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - window_start).count();
+            std::fprintf(file, "# main %#llx, %.3f s\npc,end,terminal,count\n",
+                         static_cast<unsigned long long>(
+                             Core::g_main_module_base.load(std::memory_order_relaxed)),
+                         window);
+            for (const auto& block : counts) {
+                std::fprintf(file, "%#llx,%#llx,%u,%llu\n", static_cast<unsigned long long>(block.pc),
+                             static_cast<unsigned long long>(block.end), block.terminal,
+                             static_cast<unsigned long long>(block.count));
+            }
+            std::fclose(file);
+        }
+    }
     for (const auto& target : targets) {
         CloseHandle(target.handle);
     }

@@ -23,6 +23,7 @@
 #include "dynarmic/backend/x64/emit_x64.h"
 #include "dynarmic/backend/x64/nzcv_util.h"
 #include "dynarmic/backend/x64/perf_map.h"
+#include "dynarmic/common/jit_map.h"
 #include "dynarmic/backend/x64/stack_layout.h"
 #include "dynarmic/frontend/A64/a64_location_descriptor.h"
 #include "dynarmic/frontend/A64/a64_types.h"
@@ -94,6 +95,21 @@ A64EmitX64::BlockDescriptor A64EmitX64::Emit(IR::Block& block) noexcept {
     const auto* const entrypoint = code.getCurr();
     code.mov(code.qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer)], rbp);
     code.lea(rbp, code.ptr[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, abi_base_pointer) - 8]);
+    // DYNARMIC_BLOCK_COUNTS=1: count this block's executions (no host register is live at entry).
+    if (::Dynarmic::Common::BlockCountsEnabled()) [[unlikely]] {
+        auto* const counter = ::Dynarmic::Common::BlockCountsRegister(
+            A64::LocationDescriptor{block.Location()}.PC(), A64::LocationDescriptor{block.EndLocation()}.PC(),
+            [&] {
+                // Leaf terminals as 10 + their index (none, ReturnToDispatch, LinkBlock,
+                // LinkBlockFast, PopRSBHint, FastDispatchHint); If, CheckBit and CheckHalt as 2-4.
+                if (const auto* leaf = std::get_if<IR::Term::LeafTerminal>(&block.terminal)) {
+                    return static_cast<unsigned>(10 + leaf->index());
+                }
+                return static_cast<unsigned>(block.terminal.index());
+            }());
+        code.mov(rax, reinterpret_cast<u64>(counter));
+        code.inc(code.qword[rax]);
+    }
 
     DEBUG_ASSERT(block.GetCondition() == IR::Cond::AL);
     typedef void (EmitX64::*EmitHandlerFn)(EmitContext& context, IR::Inst* inst);
