@@ -12,9 +12,6 @@ std::vector<Instruction> GeometryProgram() {
             {{{0x00007918, 0, 0, 0}}},          {{{0x00ff7324, 255, 0, 0}}},
             {{{0x00007957, 0, 0, 0}}},          {{{0x0000794d, 0, 0x03800000, 0}}}};
 }
-u32 Address(u32 index) {
-    return 0x50 + index * 8 + ((index + 1) / 3) * 8;
-}
 } // namespace
 
 TEST_CASE("Native capture retains ATEXIT finalization", "[ampere-geometry]") {
@@ -28,24 +25,22 @@ TEST_CASE("Native capture retains ATEXIT finalization", "[ampere-geometry]") {
     }
 }
 
-TEST_CASE("Native exits branch through real geometry finalization", "[ampere-geometry]") {
+TEST_CASE("Native geometry finalization needs a geometry stage and a verified exit envelope",
+          "[ampere-geometry]") {
+    // The single-invocation lowering this program was written for (LEPC materializing
+    // code_address, OUT.FINAL as EndPrimitive) was dropped; those options are unused. Outside a
+    // geometry stage the static ATEXIT path routes the EXIT into the handler and stops at its OUT.
+    // A geometry stage takes the exit envelope, which needs an EXIT right before the handler.
     const auto code = GeometryProgram();
     const auto lowered = Shader::Ampere::LowerToMaxwell(
         code, {.code_address = 0x11fffffff0ULL, .single_invocation_geometry = true});
-    REQUIRE(lowered);
-    REQUIRE(static_cast<u32>(lowered.instructions[0] >> 20) == 0xfffffff0U);
-    REQUIRE(static_cast<u32>(lowered.instructions[1] >> 20) == 0x11);
-    const u32 branch = lowered.source_instruction_offsets[5];
-    const u64 word = lowered.instructions[branch];
-    REQUIRE((word >> 48) == 0xe240);
-    const s32 relative = static_cast<s32>((word >> 20) & 0xffffff) << 8 >> 8;
-    REQUIRE(static_cast<s64>(Address(branch)) + 8 + relative ==
-            Address(lowered.source_instruction_offsets[7]));
-    const u64 final = lowered.instructions[lowered.source_instruction_offsets[7]];
-    REQUIRE((final >> 48) == 0xfbe0);
-    REQUIRE(((final >> 40) & 1) == 1); // EndPrimitive, not a skipped OUT.FINAL.
-    REQUIRE(((final >> 39) & 1) == 0);
-    REQUIRE((lowered.instructions.back() >> 48) == 0xe300);
+    REQUIRE_FALSE(lowered);
+    REQUIRE(lowered.error_offset == 7 * 16);
+    REQUIRE(lowered.error == "native geometry output outside geometry stage");
+    const auto geometry = Shader::Ampere::LowerToMaxwell(code, {.geometry_stage = true});
+    REQUIRE_FALSE(geometry);
+    REQUIRE(geometry.error_offset == 6 * 16);
+    REQUIRE(geometry.error == "native exit handler reached by fallthrough");
 }
 
 TEST_CASE("Native ATEXIT requires a complete verified epilogue", "[ampere-geometry]") {
@@ -57,22 +52,37 @@ TEST_CASE("Native ATEXIT requires a complete verified epilogue", "[ampere-geomet
     REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(code, {.single_invocation_geometry = true}));
     code = GeometryProgram();
     code[1].words[1] = 0x71;
-    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(code, {.single_invocation_geometry = true}));
+    // An unaligned handler is no static ATEXIT registration: outside a geometry stage the prologue
+    // lowers as ordinary code and the program ends at its first EXIT. The geometry exit envelope
+    // rejects the handler location.
+    const auto unaligned = Shader::Ampere::LowerToMaxwell(code, {.single_invocation_geometry = true});
+    REQUIRE(unaligned);
+    REQUIRE(unaligned.source_size == 6 * 16);
+    const auto geometry = Shader::Ampere::LowerToMaxwell(code, {.geometry_stage = true});
+    REQUIRE_FALSE(geometry);
+    REQUIRE(geometry.error_offset == 0x10);
+    REQUIRE(geometry.error == "native exit handler location");
 }
 
-TEST_CASE("Native input entry zero requires a single-invocation proof", "[ampere-geometry]") {
+TEST_CASE("Native input entry reads lower as moves only in a geometry stage", "[ampere-geometry]") {
     std::vector<Instruction> code{{{0x00007919, 0, 0x1d00, 0}},
                                   {{0x00007816, 0x7770, 255, 0}},
                                   {{0x01007224, 0, 0x078e02ff, 0}},
                                   {{0x00077923, 0, 0, 0}},
                                   {{0x0000794d, 0, 0x03800000, 0}}};
-    REQUIRE(Shader::Ampere::LowerToMaxwell(code, {.single_invocation_geometry = true}));
+    // The single-invocation proof was dropped (the option is unused): a geometry stage lowers
+    // ISBERD as a move of its index, for any input entry; outside one the invocation read rejects.
+    const auto lowered = Shader::Ampere::LowerToMaxwell(code, {.geometry_stage = true});
+    REQUIRE(lowered);
+    REQUIRE(lowered.instructions[lowered.source_instruction_offsets[3]] ==
+            (0x5c98000000070000ULL | 7ULL | (15ULL << 39)));
     REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(code));
+    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(code, {.single_invocation_geometry = true}));
     auto with_zero_pair = code;
     with_zero_pair.insert(with_zero_pair.begin() + 1, Instruction{{0x00287805, 0, 0x0001ff00, 0}});
-    REQUIRE(Shader::Ampere::LowerToMaxwell(with_zero_pair, {.single_invocation_geometry = true}));
+    REQUIRE(Shader::Ampere::LowerToMaxwell(with_zero_pair, {.geometry_stage = true}));
     code[1].words[1] = 0x7772;
-    REQUIRE_FALSE(Shader::Ampere::LowerToMaxwell(code, {.single_invocation_geometry = true}));
+    REQUIRE(Shader::Ampere::LowerToMaxwell(code, {.geometry_stage = true}));
 }
 
 TEST_CASE("Geometry local-memory uniforms retain real addresses", "[ampere-geometry]") {
@@ -260,10 +270,17 @@ TEST_CASE("Ampere IMAD exit capture ignores scheduling fields", "[video_core][am
 
 TEST_CASE("Ampere IMAD exit capture does not bypass unsupported lowering",
           "[video_core][ampere]") {
+    // A geometry stage takes the exit envelope, which rejects the unmodeled NOP the body reaches
+    // while the exit setup state is still live.
+    const auto geometry = Shader::Ampere::LowerToMaxwell(BananzaExitHandlerProgram, true);
+    REQUIRE_FALSE(static_cast<bool>(geometry));
+    REQUIRE(geometry.instructions.empty());
+    REQUIRE(geometry.error_offset == 0x50);
+    // Outside a geometry stage LEPC lowers as ordinary code (the envelope is gated on the stage)
+    // and the IMAD form is no static ATEXIT registration, so the program ends at its first EXIT.
     const auto lowered = Shader::Ampere::LowerToMaxwell(BananzaExitHandlerProgram);
-    REQUIRE_FALSE(static_cast<bool>(lowered));
-    REQUIRE(lowered.instructions.empty());
-    REQUIRE(lowered.error_offset == 0);
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(lowered.source_size == 0x6f0);
 }
 
 TEST_CASE("Ampere capture includes the static geometry exit handler", "[video_core][ampere]") {
@@ -299,10 +316,13 @@ TEST_CASE("Ampere capture does not guess other exit setup forms", "[video_core][
 }
 
 TEST_CASE("Ampere static exit capture does not bypass unsupported lowering", "[video_core][ampere]") {
+    // Outside a geometry stage the static ATEXIT path routes the exits into the handler, whose
+    // OUT is rejected there.
     const auto lowered = Shader::Ampere::LowerToMaxwell(ExitHandlerProgram);
     REQUIRE_FALSE(static_cast<bool>(lowered));
     REQUIRE(lowered.instructions.empty());
-    REQUIRE(lowered.error_offset == 0);
+    REQUIRE(lowered.error_offset == 7 * 16);
+    REQUIRE(lowered.error == "native geometry output outside geometry stage");
 }
 
 TEST_CASE("Ampere static exit capture validates extended instruction modes", "[video_core][ampere]") {
