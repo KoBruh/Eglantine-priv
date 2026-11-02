@@ -61,6 +61,8 @@ struct ChannelState {
 
     s32 bind_id = -1;
     u64 program_id = 0;
+    /// Owned by a Switch 2 process (a Switch 1 library applet can run beside one).
+    bool switch2 = true;
     bool initialized = false;
 };
 

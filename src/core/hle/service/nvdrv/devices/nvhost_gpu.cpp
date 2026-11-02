@@ -227,6 +227,7 @@ NvResult nvhost_gpu::AllocGPFIFOEx(IoctlAllocGpfifoEx& params, DeviceFD fd) {
     u64 program_id{};
     if (auto* const session = core.GetSession(sessions[fd]); session != nullptr) {
         program_id = session->process->GetProgramId();
+        channel_state->switch2 = session->process->IsSwitch2();
     }
 
     // Store program id for later lazy initialization
@@ -260,6 +261,7 @@ NvResult nvhost_gpu::AllocGPFIFOEx2(IoctlAllocGpfifoEx& params, DeviceFD fd) {
     u64 program_id{};
     if (auto* const session = core.GetSession(sessions[fd]); session != nullptr) {
         program_id = session->process->GetProgramId();
+        channel_state->switch2 = session->process->IsSwitch2();
     }
 
     // Store program id for later lazy initialization
