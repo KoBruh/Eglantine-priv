@@ -14,7 +14,7 @@ LICENSE="GPL-3.0-or-later"
 usage() {
 	cat << EOF
 Usage: $0 [uc]
-Compares the current HEAD to the master branch to check for license
+Compares the current HEAD to the dev branch to check for license
 header discrepancies. Each file changed in a branch MUST have a
 license header, and this script attempts to enforce that.
 
@@ -90,7 +90,7 @@ check_header() {
 	fi
 }
 
-BASE=$(git merge-base master HEAD)
+BASE=$(git merge-base dev HEAD)
 FILES=$(git diff --name-only "$BASE")
 
 for file in $FILES; do

@@ -7,7 +7,7 @@ All commits must have proper license header accreditation.
 You can easily add all necessary license headers by running:
 
 ```sh
-git fetch origin master:master
+git fetch origin dev:dev
 .ci/license-header.sh -u -c
 git push
 ```
@@ -15,7 +15,7 @@ git push
 Alternatively, you may omit `-c` and do an amend commit:
 
 ```sh
-git fetch origin master:master
+git fetch origin dev:dev
 .ci/license-header.sh
 git commit --amend -a --no-edit
 ```
