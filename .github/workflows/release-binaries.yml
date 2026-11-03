@@ -10,7 +10,6 @@ on:
   push:
     branches:
       - nx2
-      - nx2-experimental
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
@@ -326,7 +325,8 @@ jobs:
           test -x build/release/bin/eden-cli
           strip build/release/bin/eglantine build/release/bin/eden-cli
           tar -czf "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" \
-            -C build/release/bin eglantine eden-cli
+            -C build/release/bin eglantine eden-cli \
+            -C "$GITHUB_WORKSPACE/dist/mods" "Pokopia FPS mods"
           ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz"
 
       # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
@@ -375,6 +375,8 @@ jobs:
             }
           }
           windeployqt --release --no-translations build/release/bin/eglantine.exe
+          # The frame-rate mods ship next to the emulator (README: Frame-rate mods).
+          Copy-Item -Recurse -Force "dist/mods/Pokopia FPS mods" "build/release/bin/Pokopia FPS mods"
 
       # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
       # plugins, then every non-system DLL the binaries and those plugins pull in gets copied next to
@@ -385,6 +387,8 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="/ucrt64/bin:$PATH"
+          # The frame-rate mods ship next to the emulator (README: Frame-rate mods).
+          cp -r "dist/mods/Pokopia FPS mods" build/release/bin/
           cd build/release/bin
           test -f eglantine.exe
           test -f eden-cli.exe
@@ -517,9 +521,8 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  # Publishes every binary as a GitHub pre-release once every platform built: on pushes to nx2
-  # and nx2-experimental, and on manual runs unless "Publish the binaries as a GitHub release" is
-  # unticked.
+  # Publishes every binary as a GitHub pre-release once every platform built: on pushes to nx2,
+  # and on manual runs unless "Publish the binaries as a GitHub release" is unticked.
   release:
     name: Publish release
     needs: build
@@ -534,11 +537,17 @@ jobs:
           pattern: eglantine-*-${{ github.sha }}
           path: artifacts
 
+      # Only the frame-rate mods are needed from the source tree (their zip is a release asset).
+      - name: Check out the mods
+        uses: actions/checkout@v5
+        with:
+          sparse-checkout: dist/mods
+
       - name: Package release files
         shell: bash
         run: |
           set -euo pipefail
-          mkdir dist
+          mkdir release
           # Asset names drop the commit sha: the release tag already identifies the build, and
           # stable names let the notes table link to them.
           strip_sha() { sed "s/-${GITHUB_SHA}//" <<< "$1"; }
@@ -547,17 +556,19 @@ jobs:
             if compgen -G "$artifact*.AppImage" > /dev/null; then
               # Linux: ship the AppImage and the tar.gz as they are.
               for file in "$artifact"*.AppImage "$artifact"*.tar.gz; do
-                cp "$file" "dist/$(strip_sha "$(basename "$file")")"
+                cp "$file" "release/$(strip_sha "$(basename "$file")")"
               done
             elif compgen -G "$artifact*.zip" > /dev/null; then
               for file in "$artifact"*.zip "$artifact"*.dmg; do
-                [[ -e "$file" ]] && cp "$file" "dist/$(strip_sha "$(basename "$file")")"
+                [[ -e "$file" ]] && cp "$file" "release/$(strip_sha "$(basename "$file")")"
               done
             else
-              (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/dist/$(strip_sha "$name").zip" .)
+              (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/release/$(strip_sha "$name").zip" .)
             fi
           done
-          ls -la dist
+          # The frame-rate mods on their own, for the AppImage (the zips and tar.gz already hold them).
+          (cd dist/mods && zip -qr "${GITHUB_WORKSPACE}/release/pokopia-fps-mods.zip" "Pokopia FPS mods")
+          ls -la release
 
       - name: Create release
         shell: bash
@@ -589,30 +600,16 @@ jobs:
           | amd64 / x86_64 (MSVC) | [MSVC zip](${base}/eglantine-windows-x86_64.zip) | | Use if you run into graphical issues on other builds |
           | amd64 / x86_64 (MinGW) | | [PGO zip](${base}/eglantine-windows-x86_64-pgo.zip) | Built with MinGW clang; bundles its own DLLs, no Visual C++ redistributable needed |
 
-          ## macOS
-
-          | Build Type | Standard | PGO (Recommended) | Notes |
-          | --- | --- | --- | --- |
-          | arm64 (Apple Silicon) | [zip](${base}/eglantine-macos-arm64.zip) | | macOS 15 or newer. Not notarized: right-click and choose Open the first time, or run \`xattr -dr com.apple.quarantine eglantine.app\`. \`eden-cli\` is inside the app, in \`Contents/MacOS\` |
-
           The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it.
+
+          ## Frame-rate mods (Pokémon Pokopia)
+
+          120, 180, 240 and 360 FPS mods for Pokémon Pokopia 2.0.1 are in the Windows zips and the tar.gz (\`Pokopia FPS mods\` folder), and on their own in [pokopia-fps-mods.zip](${base}/pokopia-fps-mods.zip). See [Frame-rate mods](https://github.com/${GITHUB_REPOSITORY}#frame-rate-mods) in the README to install one.
           EOF
 
-          gh release create "${tag}" dist/* \
+          gh release create "${tag}" release/* \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --prerelease \
             --title "Eglantine ${GITHUB_REF_NAME} build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
             --notes-file notes.md
-
-      - name: Ping Discord
-        shell: bash
-        env:
-          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
-          URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/build-${GITHUB_RUN_NUMBER}"
-          MSG=$(printf '## <@&1566184315178713190> Eglantine %s build %s (%s)\n%s' \
-            "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" "${GITHUB_SHA::7}" "$URL")
-          jq -n --arg content "$MSG" \
-            '{content: $content, allowed_mentions: {roles: ["1566184315178713190"]}}' \
-          | curl -fsS -H "Content-Type: application/json" -d @- "$WEBHOOK"
