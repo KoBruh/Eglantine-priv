@@ -7,30 +7,9 @@ While most of the links mentioned in this guide are relatively "safe"; we urge u
 - [NixOS Eden Flake](https://github.com/Grantimatter/eden-flake)
 - [ES-DE Frontend Support](https://github.com/GlazedBelmont/es-de-android-custom-systems)
 
-## Mirrors
+## Repository
 
-The main origin repository is always at <https://git.eden-emu.dev/eden-emu/eden>.
-
-- <https://github.com/eden-emulator/mirror>
-- <https://git.crueter.xyz/mirror/eden>
-- <https://codeberg.org/eden-emu/eden>
-- <https://collective.taymaerz.de/eden/eden>
-
-Other mirrors obviously exist on the internet, but we can't guarantee their reliability and/or availability.
-
-If you're someone wanting to make a mirror, simply setup Forgejo and automatically mirror from the origin repository. Or you could mirror a mirror to save us bandwidth... your choice!
-
-## Configuring Obtainium
-
-Very nice handy app, here's a quick rundown how to configure:
-
-1. Copy the URL: <https://git.eden-emu.dev/eden-emu/eden/> (or one of your favorite mirrors)
-2. Open Obtainium and tap `Add App`.
-3. Paste the URL into the `App Source URL` field.
-4. Override Source: Look for the `Override Source` dropdown menu and select `Forgejo (Codeberg)`.
-5. Click `Add:` Obtainium should now be able to parse the releases and find the APK files.
-
-Note: Even though the site isn't Codeberg, it uses the same Forgejo/Gitea backend, and this setting tells Obtainium how to read the release data.
+Eglantine's repository is <https://github.com/notsapinho/Eglantine>, where its releases are published too. It has no official mirrors.
 
 ## Configuring ES-DE
 

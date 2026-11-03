@@ -4,7 +4,7 @@ The "FAQ".
 
 This handbook is primarily aimed at the end-user - baking useful knowledge for enhancing their emulation experience.
 
-A copy of this handbook is [available online](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/README.md).
+A copy of this handbook is [available online](https://github.com/notsapinho/Eglantine/blob/main/docs/user/README.md).
 
 ## Basics
 
@@ -35,9 +35,8 @@ A copy of this handbook is [available online](https://git.eden-emu.dev/eden-emu/
 - **[Server hosting](./ServerHosting.md)**
 - **[Syncthing Guide](./SyncthingGuide.md)**
 - **[Third Party](./ThirdParty.md)**
-    - **[Obtainium](./ThirdParty.md#configuring-obtainium)**
     - **[ES-DE](./ThirdParty.md#configuring-es-de)**
-    - **[Mirrors](./ThirdParty.md#mirrors)**
+    - **[Repository](./ThirdParty.md#repository)**
     - **[GameMode](./ThirdParty.md#configuring-gamemode)**
 
 ## Advanced

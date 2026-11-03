@@ -253,11 +253,11 @@ CPMUtil will create three lists of dependencies where `AddPackage` or similar wa
   - If the package was included as a system package, `(system)` is appended thereafter
   - Packages whose versions can't be deduced will be left as `unknown`.
 
-For an example of how this might be implemented in an application, see Eden's implementation:
+For an example of how this might be implemented in an application, see the implementation in this repository (from Eden):
 
-- [`dep_hashes.h.in`](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/src/dep_hashes.h.in)
-- [`GenerateDepHashes.cmake`](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/CMakeModules/GenerateDepHashes.cmake)
-- [`deps_dialog.cpp`](https://git.eden-emu.dev/eden-emu/eden/src/branch/master/src/yuzu/deps_dialog.cpp)
+- [`dep_hashes.h.in`](../src/dep_hashes.h.in)
+- [`GenerateDepHashes.cmake`](../CMakeModules/GenerateDepHashes.cmake)
+- [`deps_dialog.cpp`](../src/yuzu/deps_dialog.cpp)
 
 ## Addendum: Notes for Packagers
 

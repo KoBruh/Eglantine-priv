@@ -22,7 +22,7 @@ Here's some terminology you may want to familiarize yourself with:
 - Regression: A new bug/glitch caused by new code, i.e "Zelda broke in android after commit xyz".
 - Master: The "root" branch, this is where all merged code goes to, traditionally called `main`, `trunk` or just `master`, it contains all the code that eventually make it to stable releases.
 - `HEAD`: Latest commit in a given branch, `HEAD` of `master` is the latest commit on branch `master`.
-- `origin`: The default "remote", basically the URL from where git is located at, for most of the time that location is https://git.eden-emu.dev/eden-emu/eden.
+- `origin`: The default "remote", basically the URL from where git is located at, for most of the time that location is https://github.com/notsapinho/Eglantine.
 
 ## Testing checklist
 
@@ -95,5 +95,4 @@ The faulty commit then, is 6th of Jan. This is called bisection https://git-scm.
 
 - PR's marked with **WIP** do NOT need to be tested unless explicitly asked (check the git in case)
 - Sometimes license checks may fail, hover over the build icon to see if builds did succeed, as the CI will push builds even if license checks fail.
-- All open PRs can be viewed [here](https://git.eden-emu.dev/eden-emu/eden/pulls/).
-- If site is down use one of the [mirrors](./ThirdParty.md#mirrors).
+- All open PRs can be viewed [here](https://github.com/notsapinho/Eglantine/pulls).
