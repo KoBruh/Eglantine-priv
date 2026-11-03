@@ -217,12 +217,10 @@ TEST_CASE("NUP packs base, updates and add-ons and reads back through NupContain
     REQUIRE(packages[0].version == 0);
     REQUIRE(packages[0].display_version == "1.0.0");
     REQUIRE(packages[0].npdm.size() == 0x100);
-    REQUIRE(packages[0].display_version == "1.0.0");
     REQUIRE(packages[1].kind == NupContainer::PackageKind::Update);
     REQUIRE(packages[1].version == 65536);
     REQUIRE(packages[1].display_version == "1.1.0");
     REQUIRE(packages[1].title_id == TitleId);
-    REQUIRE(packages[1].display_version == "1.1.0");
     REQUIRE_FALSE(packages[1].standalone_update);
     REQUIRE(packages[2].kind == NupContainer::PackageKind::Update);
     REQUIRE(packages[2].version == 131072);
