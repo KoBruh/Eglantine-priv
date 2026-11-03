@@ -5,3 +5,6 @@ dist/languages/* linguist-vendored
 dist/qt_themes/* linguist-vendored
 externals/* linguist-vendored
 *.h linguist-language=cpp
+
+# Shell scripts run on Linux CI machines and boat sandboxes even when checked out on Windows.
+*.sh text eol=lf
