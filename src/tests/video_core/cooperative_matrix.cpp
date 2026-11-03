@@ -254,7 +254,11 @@ TEST_CASE("Native tensor lowering remains opt-in and preserves fallback errors",
     TensorMode mode{nullptr};
     std::array<Ampere::Instruction, 2> code{{
         {{0x0810723c, 12, 0x8ff, 0}}, {{0x0000794d, 0, 0x03800000, 0}}}};
-    REQUIRE_FALSE(static_cast<bool>(Ampere::LowerToMaxwell(code, false, true)));
+    // Without EDEN_NX2_TENSOR, desktop builds emulate HMMA in software, never through the
+    // cooperative-matrix path.
+    const auto by_default = Ampere::LowerToMaxwell(code, false, true);
+    REQUIRE(static_cast<bool>(by_default));
+    REQUIRE(by_default.instructions[0] >> 52 != 0x5d3);
     TensorMode::Set("fast");
     const auto unsupported = Ampere::LowerToMaxwell(code, false, false);
     REQUIRE_FALSE(static_cast<bool>(unsupported));

@@ -1662,7 +1662,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             // compute pass that composes it never ran, so emulation is the default on desktop. Not
             // on Android, where the expansion ran Donkey Kong at about one frame a second on Adreno.
             // EDEN_NX2_TENSOR=fast uses the cooperative-matrix path, =stub makes every HMMA D = C,
-            // =off or =0 rejects the program, and =emulate emulates everywhere.
+            // =emulate emulates everywhere, and any other value (off, 0) rejects the program.
             const char* env_mode = std::getenv("EDEN_NX2_TENSOR");
             const std::string_view mode = env_mode ? env_mode : "";
 #ifdef __ANDROID__
@@ -1670,8 +1670,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
 #else
             constexpr bool emulate_by_default = true;
 #endif
-            const bool emulate = mode == "emulate" ||
-                                 (emulate_by_default && mode != "off" && mode != "0");
+            const bool emulate = env_mode ? mode == "emulate" : emulate_by_default;
             const u32 a = insn.Bits(24, 8), b = insn.Bits(32, 8), c = insn.Bits(64, 8);
             if ((insn.words[1] & ~0xffU) || (insn.words[2] & ~0x8ffU) > 0x800 || dest + 2 > 246 ||
                 a + 4 > 246 || b + 2 > 246 || (c != 255 && c + 2 > 246))
@@ -1702,7 +1701,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 break;
             }
             if (!emulate)
-                return fail(index, "native matrix multiply (EDEN_NX2_TENSOR off, or emulation off by default)");
+                return fail(index, "native matrix multiply (EDEN_NX2_TENSOR is not emulate)");
             if (hmma_f32_registers_free) {
                 // The unit sums the eight products of one k group in f32 and rounds the sum to f16
                 // once, so this keeps four f32 accumulators and converts after every eight products.
