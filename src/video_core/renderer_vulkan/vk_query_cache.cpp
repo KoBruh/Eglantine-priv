@@ -169,6 +169,14 @@ public:
         if (has_started) {
             return;
         }
+        // Only inside a render pass. A query begun outside one has to end outside it too, but
+        // the counter is paused before each render pass ends, inside it. Clears whose render
+        // pass is deferred, and DrawTexture before its blit, enable the counter with no pass
+        // open: the next draw opens its pass first and starts the counter then. Nothing is
+        // drawn, so nothing is counted, in between.
+        if (!scheduler.IsRenderPassActive()) {
+            return;
+        }
 
         ReserveHostQuery();
 
