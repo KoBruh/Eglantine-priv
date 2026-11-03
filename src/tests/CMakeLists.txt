@@ -39,6 +39,7 @@ add_executable(tests
     shader_recompiler/compilation_memory.cpp
     video_core/memory_tracker.cpp
     video_core/ampere_conversions.cpp
+    video_core/ampere_half.cpp
     video_core/cache_entry.cpp
     video_core/staging_buffer_policy.cpp
     video_core/transcode_budget_policy.cpp

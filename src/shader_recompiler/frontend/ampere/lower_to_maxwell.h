@@ -756,11 +756,22 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             auto a = half_source(0);
             auto b = half_source(1);
             const auto c = half_source(2);
-            if (insn.Bits(86, 1)) { // H0_NH1: negate only the upper packed component.
+            if (insn.Bits(86, 1)) {
+                // .H0_NH1 names B's lanes high first, as .H1_H0 names the identity: the high lane
+                // reads B's low half and the low lane B's high half, negated. Read as a negation of
+                // the upper lane it crossed the two lanes of Pokemon Pokopia's sun-shadow mask
+                // (no object or cloud shadows, caves lit like the outdoors); xFractals/Eden-NS2
+                // 9a8a75c9.
                 if (b.swizzle != 0 || b.absolute || b.reg >= 250)
                     return fail(index, "native half mixed-sign source mode");
-                emit(0x0400000000000000ULL | predicate | 251 | (u64{b.reg} << 8) |
-                     (u64{0x80000000} << 20) | (u64{2} << 53));
+                emit(0x3828000000000000ULL | predicate | 250 | (u64{b.reg} << 8) |
+                     (u64{16} << 20));                       // SHR.U32 R250 = B >> 16: old H1 low
+                emit(0x3848000000000000ULL | predicate | 251 | (u64{b.reg} << 8) |
+                     (u64{16} << 20));                       // SHL R251 = B << 16: old H0 high
+                emit(0x5c40000000000000ULL | predicate | 251 | (u64{251} << 8) |
+                     (u64{250} << 20) | (u64{1} << 41) | (u64{7} << 48)); // LOP.OR R251 |= R250
+                emit(0x0400000000000000ULL | predicate | 251 | (u64{251} << 8) |
+                     (u64{0x8000} << 20) | (u64{2} << 53));  // LOP32I.XOR: negate the low half
                 b.reg = 251;
             }
             if (b.absolute || c.absolute || (a.absolute && a.reg >= 248))
