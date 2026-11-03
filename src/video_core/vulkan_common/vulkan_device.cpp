@@ -468,6 +468,14 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     // Get suitability and device properties.
     const bool is_suitable = GetSuitability(surface != VkSurfaceKHR{});
 
+    // EDEN_NX2_DRIVER_AMD=1: take the AMD proprietary driver's workarounds on another card, so a
+    // fault seen on AMD can be looked for there (EDEN_NX2_NO_NV_GEOMETRY=1 adds AMD's shader
+    // paths on NVIDIA).
+    if (std::getenv("EDEN_NX2_DRIVER_AMD") != nullptr) {
+        LOG_WARNING(Render_Vulkan, "EDEN_NX2_DRIVER_AMD: taking the AMD proprietary driver's paths");
+        properties.driver.driverID = VK_DRIVER_ID_AMD_PROPRIETARY;
+    }
+
     const VkDriverId driver_id = properties.driver.driverID;
 
     const bool is_radv = driver_id == VK_DRIVER_ID_MESA_RADV;
