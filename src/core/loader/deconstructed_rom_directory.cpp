@@ -82,9 +82,22 @@ struct PatchCollection {
 
 namespace {
 
-FileSys::VirtualDir GetRomFSDirectory(const FileSys::VirtualDir& dir) {
-    auto romfs_dir = dir->GetSubdirectory("romfs");
-    return romfs_dir ? romfs_dir : dir->GetSubdirectory("RomFS");
+FileSys::VirtualDir FindLooseRomFSDirectory(const FileSys::VirtualDir& parent) {
+    if (parent == nullptr) {
+        return nullptr;
+    }
+    if (const auto dir = parent->GetSubdirectory("romfs")) {
+        return dir;
+    }
+    for (const auto& dir : parent->GetSubdirectories()) {
+        const auto name = dir->GetName();
+        if (name.size() == 5 && std::equal(name.begin(), name.end(), "romfs", [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) == b;
+            })) {
+            return dir;
+        }
+    }
+    return nullptr;
 }
 
 // The base title's romfs/ for an ExeFS in <game>/updates/<version>/exefs (also update/<version>).
@@ -102,7 +115,7 @@ FileSys::VirtualDir FindBaseRomFSDirectory(const FileSys::VirtualDir& version_di
     if (!base_dir) {
         base_dir = game_dir->GetSubdirectory("Base");
     }
-    return base_dir ? GetRomFSDirectory(base_dir) : nullptr;
+    return base_dir ? FindLooseRomFSDirectory(base_dir) : nullptr;
 }
 
 // Building a loose RomFS walks every file and keeps an object for each (title 1: 206k files, ~150
@@ -142,7 +155,7 @@ FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs_dir) {
     if (parent == nullptr) {
         return nullptr;
     }
-    if (const auto romfs_dir = GetRomFSDirectory(parent)) {
+    if (const auto romfs_dir = FindLooseRomFSDirectory(parent)) {
         LOG_INFO(Loader, "Using RomFS directory next to the ExeFS");
         return BuildLooseRomFS(romfs_dir);
     }
@@ -304,11 +317,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 
     romfs_exefs_dir = file_dir;
     if (const auto title_dir = file_dir->GetParentDirectory()) {
-        auto romfs_dir = title_dir->GetSubdirectory("romfs");
-        if (!romfs_dir) {
-            romfs_dir = title_dir->GetSubdirectory("RomFS");
-        }
-        romfs_version = RomFSProductVersion(romfs_dir);
+        romfs_version = RomFSProductVersion(FindLooseRomFSDirectory(title_dir));
     }
 }
 

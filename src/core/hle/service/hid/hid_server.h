@@ -189,12 +189,14 @@ private:
     Result SendVibrationValueInBool(bool is_vibrating,
                                     Core::HID::VibrationDeviceHandle vibration_device_handle,
                                     ClientAppletResourceUserId aruid);
+    // 213 with mode 2: one device handle and value, sent like 206.
     void SendNx2VibrationValue(HLERequestContext& ctx);
-    // Switch 2 sends vibration every frame with 214 (pointer buffers of device handles and
-    // values, like 206); Eden doesn't emulate vibration, so accept and drop it.
-    Result SendNx2VibrationValues();
-    // 213 (32 bytes, aruid): sent per controller every frame by Kirby Air Riders (tens of
-    // thousands of auto stub log lines a run); no reply data. Accepted and dropped like 214.
+    // Switch 2 sends vibration every frame with 214: pointer buffers of device handles and values
+    // like 206, but the aruid is raw data after an unknown u64 instead of a sent process id.
+    Result SendNx2VibrationValues(
+        u64 unknown, AppletResourceUserId aruid,
+        InArray<Core::HID::VibrationDeviceHandle, BufferAttr_HipcPointer> vibration_handles,
+        InArray<Core::HID::VibrationValue, BufferAttr_HipcPointer> vibration_values);
     // 220 (16 bytes, aruid): replies one byte (meaning unknown); answer 0 instead of leaving it to
     // the message buffer's leftovers.
     Result Unknown220(Out<u8> out);

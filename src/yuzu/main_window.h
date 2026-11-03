@@ -278,6 +278,7 @@ private:
                   StartGameType with_config = StartGameType::Normal);
     void BootGameFromList(const QString& filename, StartGameType with_config);
     void ShutdownGame();
+    void TerminateEmulationThread();
 
     void SetDiscordEnabled(bool state);
     void LoadAmiibo(const QString& filename);
@@ -436,6 +437,7 @@ private slots:
     void OnShutdownBeginDialog();
     void OnEmulationStopped();
     void OnEmulationStopTimeExpired();
+    void OnEmulationStopTimeout();
 
 #ifdef ENABLE_UPDATE_CHECKER
     // `requested` is true when the user asked, so every outcome gets reported, not only updates.
@@ -497,11 +499,14 @@ private:
     std::shared_ptr<InputCommon::InputSubsystem> input_subsystem;
 
     MultiplayerState* multiplayer_state = nullptr;
+    bool use_recommended_mkw_settings = false;
+    bool asked_recommended_mkw_settings = false;
 
     GRenderWindow* render_window = nullptr;
     GameList* game_list = nullptr;
     LoadingScreen* loading_screen = nullptr;
     QTimer shutdown_timer;
+    QTimer emu_terminate_timer;
     OverlayDialog* shutdown_dialog{};
     PerformanceOverlay* perf_overlay = nullptr;
 #ifdef HAS_RESHADE

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <optional>
 #include <span>
@@ -124,6 +125,10 @@ struct CommandList final {
     u64 capture_submit_id{};
     u64 capture_enqueue_id{};
     const char* capture_origin{"untracked"};
+    /// DmaPusher::suspensions when the words were copied. A list copied during a suspension, or
+    /// that waited behind one, reads memory instead: games write the commands it runs before they
+    /// release the acquire.
+    u64 snapshot_suspensions = 0;
 };
 
 namespace GpfifoCapture {
@@ -150,6 +155,10 @@ inline u64 HashPushbufferWords(std::span<const u32> words) {
 /// details on this implementation.
 class DmaPusher final {
 public:
+    /// Counts suspensions on a semaphore acquire and the resumes after them, so it is odd while
+    /// the channel is suspended (see CommandList::snapshot_suspensions).
+    std::atomic<u64> suspensions{0};
+
     explicit DmaPusher(Core::System& system_, MemoryManager& memory_manager_, Control::ChannelState& channel_state_);
     ~DmaPusher();
 

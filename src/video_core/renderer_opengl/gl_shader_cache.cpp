@@ -54,7 +54,8 @@ using VideoCommon::LoadPipelines;
 using VideoCommon::SerializePipeline;
 using Context = ShaderContext::Context;
 
-constexpr u32 CACHE_VERSION = 23;
+// 24: above both forks' values (23 here, 16 upstream for the FSEL lowering fix).
+constexpr u32 CACHE_VERSION = 24;
 
 template <typename Container>
 auto MakeSpan(Container& container) {

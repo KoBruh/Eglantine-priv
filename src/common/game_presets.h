@@ -8,13 +8,9 @@ namespace Settings {
 
 inline constexpr u64 MarioKartWorldProgramId = 0x0400C3F00006E000ULL;
 
-inline bool ApplyMarioKartWorldPreset(Values& settings, u64 program_id) {
-    if (program_id != MarioKartWorldProgramId) {
-        return false;
-    }
-    // Apply after reading per-game configuration, without overwriting saved global preferences.
-    const auto session = [](auto& setting, auto value) {
-        setting.SetGlobal(false);
+inline void SetMarioKartWorldRecommendedSettings(Values& settings, bool global) {
+    const auto session = [global](auto& setting, auto value) {
+        setting.SetGlobal(global);
         setting.SetValue(value);
     };
     session(settings.renderer_backend, RendererBackend::Vulkan);
@@ -25,6 +21,16 @@ inline bool ApplyMarioKartWorldPreset(Values& settings, u64 program_id) {
     session(settings.vram_usage_mode, VramUsageMode::Conservative);
     session(settings.use_reactive_flushing, false);
     session(settings.vsync_mode, VSyncMode::FifoRelaxed);
+    session(settings.use_docked_mode, ConsoleMode::Handheld);
+    session(settings.scaling_filter, ScalingFilter::ScaleForce);
+    session(settings.anti_aliasing, AntiAliasing::Fxaa);
+}
+
+inline bool ApplyMarioKartWorldPreset(Values& settings, u64 program_id, bool accepted) {
+    if (!accepted || program_id != MarioKartWorldProgramId) {
+        return false;
+    }
+    SetMarioKartWorldRecommendedSettings(settings, false);
     return true;
 }
 

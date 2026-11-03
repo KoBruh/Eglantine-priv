@@ -10,6 +10,7 @@ add_executable(tests
     common/container_hash.cpp
     common/event.cpp
     common/fibers.cpp
+    common/game_presets.cpp
     common/host_memory.cpp
     common/host_memory_fallback.cpp
     common/page_table.cpp
@@ -18,9 +19,11 @@ add_executable(tests
     common/range_map.cpp
     common/ring_buffer.cpp
     common/scratch_buffer.cpp
+    common/slot_vector.cpp
     common/undefined_fix.cpp
     common/unique_function.cpp
     common/game_presets.cpp
+    common/zstd_compression.cpp
     core/core_timing.cpp
     core/deconstructed_rom_directory.cpp
     core/dynarmic_code_memory.cpp
@@ -34,7 +37,10 @@ add_executable(tests
     core/ncz_decompressor.cpp
     core/romfs_build_memory.cpp
     core/vfs_real_cache.cpp
+    core/ldn.cpp
+    core/internal_network/socket_proxy.cpp
     core/nup_writer.cpp
+    core/priority_queue.cpp
     core/internal_network/network.cpp
     shader_recompiler/compilation_memory.cpp
     video_core/memory_tracker.cpp
@@ -82,6 +88,8 @@ add_executable(tests
     video_core/sparse_tiles.cpp
     video_core/descriptor_table.cpp
     video_core/shader_invalidation.cpp
+    video_core/native_macro_fifo.cpp
+    video_core/uniform_stream_reuse.cpp
     input_common/calibration_configuration_job.cpp
 )
 

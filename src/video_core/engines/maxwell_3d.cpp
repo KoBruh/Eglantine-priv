@@ -350,7 +350,7 @@ void Maxwell3D::ProcessDirtyRegisters(u32 method, u32 argument) {
     // copy in c[0][0x644]) right after the loop, before the macro returns.
     if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method) &&
         GetNativeMacroEngine().native_turing) [[unlikely]] {
-        draw_manager.DrawDeferred(*this);
+        draw_manager.DrawDeferred(*this, true);
     }
     regs.reg_array[method] = argument;
     for (auto const& table : dirty.tables)
@@ -533,6 +533,10 @@ void Maxwell3D::DumpRecentWrites(u32 method) {
     }
     LOG_ERROR(HW_GPU, "Write to {:#x} while macro {:#x} collects parameters ({} so far); last writes:",
               method, executing_macro, macro_params.size());
+    if (!record_write_history) {
+        LOG_ERROR(HW_GPU, "Register write history disabled; EDEN_NX2_3D_HISTORY=1 enables it");
+        return;
+    }
     for (size_t i = 0; i < recent_writes.size(); ++i) {
         const auto& w = recent_writes[(recent_write_index + i) % recent_writes.size()];
         if (w.amount != 0) {
@@ -553,7 +557,7 @@ void Maxwell3D::CallMultiMethod(Core::System& system, u32 method, const u32* bas
     // As in ProcessDirtyRegisters: the paths below write without it.
     if (draw_manager.HasDeferredDraw() && !DrawManager::IsInstanceLoopMethod(method) &&
         GetNativeMacroEngine().native_turing) [[unlikely]] {
-        draw_manager.DrawDeferred(*this);
+        draw_manager.DrawDeferred(*this, true);
     }
     switch (method) {
     case MAXWELL3D_REG_INDEX(const_buffer.buffer):
@@ -1122,7 +1126,7 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             engine.native_jit = std::make_shared<TuringMacroJit>();
         }
         engine.native_jit->Prepare(engine.native_code, engine.native_code_generation);
-        const auto parameter_count = fs.parameters.size();
+        const size_t parameter_count = fs.parameters.size();
         const auto result = engine.native_jit->Execute(
             start, fs.parameters, std::span<u32>{native_data_ram},
             [&fs](u32 address) { return address < Regs::NUM_REGS ? fs.regs[address] : 0U; },

@@ -235,7 +235,7 @@ void nvhost_as_gpu::Nx2Map(u64 gpu_address, u64 cpu_address, u64 size) {
                  device_pointer != nullptr && device_pointer == cpu_pointer);
     }
     nx2_gpu_views.Map(gpu_address, cpu_address, size);
-    system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {
+    system.GPU().MapInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {
         gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);
     });
     LOG_DEBUG(Service_NVDRV, "Switch 2 GPU mapping {:#x}+{:#x} -> CPU {:#x}", gpu_address, size,
@@ -313,7 +313,7 @@ void nvhost_as_gpu::Nx2Sparse(u64 gpu_address, u64 size, bool create) {
         return;
     }
     nx2_sparse_ranges[gpu_address] = {size, device_address};
-    system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {
+    system.GPU().MapInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {
         gmmu->Map(gpu_address, device_address, size, Tegra::PTEKind::PITCH, false);
     });
     LOG_DEBUG(Service_NVDRV, "Switch 2 sparse region {:#x}+{:#x} -> device {:#x}", gpu_address,
@@ -330,7 +330,7 @@ void nvhost_as_gpu::Nx2BackSparse(u64 gpu_address, u64 cpu_address, u64 size) {
     --it;
     const auto& [start, range] = *it;
     const auto& [region_size, device_address] = range;
-    if (gpu_address + size > start + region_size) {
+    if (size > region_size || gpu_address - start > region_size - size) {
         return;
     }
     system.Host1x().MemoryManager().Map(device_address + (gpu_address - start), cpu_address, size,
@@ -347,7 +347,7 @@ void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
     --it;
     const auto& [start, range] = *it;
     const auto& [region_size, device_address] = range;
-    if (gpu_address + size > start + region_size) {
+    if (size > region_size || gpu_address - start > region_size - size) {
         return;
     }
     // In GPU-thread order: command lists submitted before the request still see the old tile.
@@ -355,7 +355,7 @@ void nvhost_as_gpu::Nx2SparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
     // whose contents are now what the game's memory holds there.
     const DAddr device = device_address + (gpu_address - start);
     auto& smmu = system.Host1x().MemoryManager();
-    system.GPU().RunInOrder([&smmu, device, cpu_address, size, asid = session->asid] {
+    system.GPU().MapInOrder([&smmu, device, cpu_address, size, asid = session->asid] {
         smmu.Unmap(device, size);
         if (cpu_address != 0) {
             smmu.Map(device, cpu_address, size, asid, true);
@@ -382,7 +382,8 @@ void nvhost_as_gpu::Nx2Reserve(u64 gpu_address, u64 size) {
         LOG_ERROR(Service_NVDRV, "Switch 2 sparse reservation {:#x}+{:#x} outside its region",
                   gpu_address, size);
     }
-    system.GPU().RunInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {
+    // A map back onto the sparse region: before later command lists are read, as in Nx2Sparse.
+    system.GPU().MapInOrder([gmmu = gmmu.get(), gpu_address, device_address, size] {
         if (device_address) {
             gmmu->Map(gpu_address, *device_address, size, Tegra::PTEKind::PITCH, false);
         } else {

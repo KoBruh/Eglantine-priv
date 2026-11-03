@@ -18,6 +18,7 @@
 #include <QSettings>
 
 #include "common/fs/fs.h"
+#include "common/fs/fs_util.h"
 #include "common/fs/path_util.h"
 #include "common/settings.h"
 #include "core/core.h"

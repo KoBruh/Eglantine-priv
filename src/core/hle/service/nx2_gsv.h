@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <initializer_list>
+#include <limits>
 #include <atomic>
 #include <deque>
 #include <map>
@@ -1096,13 +1097,18 @@ private:
         }
         const u64 gpu_address = request.gpu_address;
         const u64 size = request.size;
+        if (size > std::numeric_limits<u64>::max() - gpu_address) {
+            LOG_WARNING(Service, "nx2:gpu 216 [{:#x}, +{:#x}] wraps the address space", gpu_address,
+                        size);
+            return;
+        }
         auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
         auto it = m_sparse_regions.upper_bound(gpu_address);
         SparseRegion* region = nullptr;
         u64 start = 0;
         if (it != m_sparse_regions.begin()) {
             --it;
-            if (gpu_address + size <= it->first + it->second.size) {
+            if (size <= it->second.size && gpu_address - it->first <= it->second.size - size) {
                 start = it->first;
                 region = &it->second;
             }
@@ -1165,7 +1171,7 @@ private:
             return std::nullopt;
         }
         --it;
-        if (gpu_address + size > it->first + it->second) {
+        if (size > it->second || gpu_address - it->first > it->second - size) {
             return std::nullopt;
         }
         return it->first;
@@ -1260,7 +1266,7 @@ private:
             return std::nullopt;
         }
         --it;
-        if (gpu_address + size > it->first + it->second.size) {
+        if (size > it->second.size || gpu_address - it->first > it->second.size - size) {
             return std::nullopt;
         }
         return it->second.cpu_address + (gpu_address - it->first);
@@ -1617,9 +1623,17 @@ private:
         // EDEN_NX2_FRAMES_AHEAD=0 restores the wait for the current frame.
         // EDEN_NX2_FRAMES_AHEAD=2 or 3 waits for an older frame: a deeper queue that absorbs
         // single slow GPU frames.
+        // EDEN_NX2_FRAMES_AHEAD=a (upstream's default) waits for this frame, so the game doesn't
+        // write the next frame's data (constant buffers holding texture handles, vertex data,
+        // Pokopia's glyph atlas) while the GPU thread still reads this frame's; but while a GPU
+        // channel is suspended on a semaphore the game releases only after this present returns
+        // (title 1), it waits for the previous frame instead.
         static const int frames_ahead_env = [] {
             const char* value = std::getenv("EDEN_NX2_FRAMES_AHEAD");
-            return value == nullptr ? -1 : std::clamp(value[0] - '0', 0, 3);
+            if (value == nullptr) {
+                return -1;
+            }
+            return value[0] == 'a' ? -2 : std::clamp(value[0] - '0', 0, 3);
         }();
         // "Smooth 30 FPS" (mkw_smooth): two frames ahead at interval 2+. On the title-screen demo
         // of MKW 1.8.0 this took the 45-65 ms frames from ~150 per two minutes to none. Two
@@ -1629,15 +1643,20 @@ private:
         size_t frames_ahead = 1;
         if (frames_ahead_env >= 0) {
             frames_ahead = static_cast<size_t>(frames_ahead_env);
-        } else if (Settings::values.mkw_smooth.GetValue() && m_present_interval > 1 &&
-                   m_presents > 1200 && m_smooth_cooldown == 0) {
+        } else if (frames_ahead_env == -1 && Settings::values.mkw_smooth.GetValue() &&
+                   m_present_interval > 1 && m_presents > 1200 && m_smooth_cooldown == 0) {
             frames_ahead = 2;
         }
         if (m_smooth_cooldown > 0) {
             --m_smooth_cooldown;
         }
         const auto entered = std::chrono::steady_clock::now();
-        if (frames_ahead != 0) {
+        if (frames_ahead_env == -2) {
+            if (!WaitForFrame(~w[22], w[24], true)) {
+                const auto& previous = m_previous_fences[(m_presents + 3) % 4];
+                WaitForFrame(previous.first, previous.second);
+            }
+        } else if (frames_ahead != 0) {
             auto& oldest = m_previous_fences[(m_presents + 4 - frames_ahead) % 4];
             WaitForFrame(oldest.first, oldest.second);
         } else {
@@ -1873,9 +1892,12 @@ private:
         m_next_vblank += interval;
     }
 
-    void WaitForFrame(u32 fence_id, u32 fence_value) {
+    /// Waits until the fence is reached. With `unless_gpu_waits`, gives up after a few ms once a
+    /// GPU channel was seen suspended on a semaphore (it may be one this thread releases later).
+    /// Returns whether the fence was reached.
+    bool WaitForFrame(u32 fence_id, u32 fence_value, bool unless_gpu_waits = false) {
         if (fence_id >= 192) {
-            return;
+            return true;
         }
         auto& syncpoints = system.Host1x().GetSyncpointManager();
         const auto start = std::chrono::steady_clock::now();
@@ -1900,10 +1922,23 @@ private:
                 wake->cv.notify_all();
             });
             std::unique_lock lk{wake->mutex};
+            // Title 1's channels resume and suspend again while they wait on this thread, so any
+            // suspension counts, not only an unbroken one.
+            bool gpu_waited = false;
             while (!wake->done && system.IsPoweredOn() &&
                    std::chrono::steady_clock::now() < deadline) {
-                wake->cv.wait_for(lk, std::chrono::milliseconds{50});
+                if (unless_gpu_waits) {
+                    gpu_waited |= system.GPU().HasSuspendedChannels();
+                    if (gpu_waited &&
+                        std::chrono::steady_clock::now() - start > std::chrono::milliseconds{3}) {
+                        return false;
+                    }
+                }
+                wake->cv.wait_for(lk, std::chrono::milliseconds{unless_gpu_waits ? 1 : 50});
             }
+        }
+        if (unless_gpu_waits && !syncpoints.IsReadyGuest(fence_id, fence_value)) {
+            return false;
         }
         if (!syncpoints.IsReadyGuest(fence_id, fence_value) && m_wait_timeouts++ < 64) {
             LOG_WARNING(Service, "nx2:vi2 present #{} fence ({}, {}) not reached in 4 s (now {})",
@@ -1916,6 +1951,7 @@ private:
                          std::chrono::steady_clock::now() - start)
                          .count());
         }
+        return syncpoints.IsReadyGuest(fence_id, fence_value);
     }
 
     // Shows a presented native image: word 5 is the image id, ~word 22 / word 24 the GPU fence
@@ -2921,6 +2957,10 @@ private:
         if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12) {
             memory.WriteBlock(address + layout.chroma_offset, bytes.data() + layout.chroma_offset,
                               layout.pitch * ((height + 1) / 2));
+        }
+        // The game samples the image on the GPU: drop the texture cache's copy of the old frame.
+        if (const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
+            system.GPU().InvalidateRegion(*device, layout.size);
         }
         return {width, height};
     }
