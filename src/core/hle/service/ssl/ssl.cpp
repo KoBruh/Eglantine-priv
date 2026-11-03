@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <map>
+
 #include "common/string_util.h"
 
 #include "core/core.h"
@@ -69,7 +71,33 @@ struct SslVersion {
 };
 
 struct SslContextSharedData {
+    /// The server PKIs a context holds at most, as on the console
+    static constexpr size_t MaxServerPkis = 71;
+
     u32 connection_count = 0;
+    /// Trusts the console's trusted built-in certificates, which every context trusts
+    std::shared_ptr<const SSLTrustStore> built_in_trust_store;
+    /// The certificates of each server PKI ImportServerPki imported, by its id
+    std::map<u64, std::vector<std::vector<u8>>> server_pkis;
+    u64 next_server_pki_id = 1;
+    /// built_in_trust_store with server_pkis added, made for the first handshake after they change
+    std::shared_ptr<const SSLTrustStore> trust_store;
+
+    Result GetTrustStore(std::shared_ptr<const SSLTrustStore>* out_store) {
+        if (!trust_store && server_pkis.empty()) {
+            trust_store = built_in_trust_store;
+        } else if (!trust_store) {
+            std::vector<std::span<const u8>> certificates;
+            for (const auto& [id, pki] : server_pkis) {
+                for (const std::vector<u8>& certificate : pki) {
+                    certificates.emplace_back(certificate);
+                }
+            }
+            R_TRY(CreateSSLTrustStore(built_in_trust_store.get(), certificates, &trust_store));
+        }
+        *out_store = trust_store;
+        R_SUCCEED();
+    }
 };
 
 class ISslConnection final : public ServiceFramework<ISslConnection> {
@@ -87,7 +115,7 @@ public:
             {3, D<&ISslConnection::SetIoMode>, "SetIoMode"},
             {4, D<&ISslConnection::GetSocketDescriptor>, "GetSocketDescriptor"},
             {5, D<&ISslConnection::GetHostName>, "GetHostName"},
-            {6, &ISslConnection::StubReplyZeroed, "GetVerifyOption"},
+            {6, D<&ISslConnection::GetVerifyOption>, "GetVerifyOption"},
             {7, D<&ISslConnection::GetIoMode>, "GetIoMode"},
             {8, D<&ISslConnection::DoHandshake>, "DoHandshake"},
             {9, &ISslConnection::DoHandshakeGetServerCert, "DoHandshakeGetServerCert"},
@@ -154,6 +182,11 @@ public:
 private:
     Result DoHandshakeImpl() {
         ASSERT_OR_EXECUTE(!did_handshake && socket, { return ResultNoSocket; });
+        if (True(verify_option & VerifyOption::PeerCa)) {
+            std::shared_ptr<const SSLTrustStore> trust_store;
+            R_TRY(shared_data->GetTrustStore(&trust_store));
+            backend->SetTrustStore(std::move(trust_store));
+        }
         Result res = backend->DoHandshake();
         did_handshake = res.IsSuccess();
         return res;
@@ -222,11 +255,11 @@ private:
         return backend->SetHostName(hostname.c_str());
     }
 
-    Result SetVerifyOption(u32 option) {
-        LOG_DEBUG(Service_SSL, "called. option={} (forcing 0)", option);
+    Result SetVerifyOption(VerifyOption option) {
+        LOG_DEBUG(Service_SSL, "called. option={:#x}", static_cast<u32>(option));
         ASSERT(!did_handshake);
-        verify_option = 0;
-        backend->SetVerifyOption(0);
+        verify_option = option;
+        backend->SetVerifyOption(option);
         R_SUCCEED();
     }
 
@@ -256,6 +289,11 @@ private:
         return backend->GetHostName(std::span<u8>{data.begin(), data.end()}, out_size);
     }
 
+    Result GetVerifyOption(Out<VerifyOption> out_option) {
+        *out_option = verify_option;
+        R_SUCCEED();
+    }
+
     Result GetIoMode(Out<u32> out_mode) {
         LOG_WARNING(Service_SSL, "(STUBBED)");
         R_SUCCEED();
@@ -274,7 +312,8 @@ private:
 
         Result res = DoHandshakeImpl();
         OutputParameters out{};
-        if (res == ResultSuccess) {
+        // As on the console, no certificates are returned without VerifyOption::PeerCa
+        if (res == ResultSuccess && True(verify_option & VerifyOption::PeerCa)) {
             std::vector<std::vector<u8>> certs;
             res = backend->GetServerCerts(&certs);
             if (res == ResultSuccess) {
@@ -337,8 +376,7 @@ private:
     }
 
     Result GetVerifyCertError() {
-        LOG_WARNING(Service_SSL, "(STUBBED)");
-        R_SUCCEED();
+        R_RETURN(backend->GetVerifyCertError());
     }
 
     Result GetNeededServerCertBufferSize(Out<u32> out_needed_buffer_size) {
@@ -453,7 +491,7 @@ private:
     s32 guest_fd = -1;
     std::shared_ptr<Network::SocketBase> socket;
     std::vector<u8> next_alpn_proto;
-    u32 verify_option = 0;
+    VerifyOption verify_option = VerifyOption::PeerCa | VerifyOption::HostName;
 
     bool do_not_close_socket = false;
     bool get_server_cert_chain = false;
@@ -464,9 +502,11 @@ private:
 
 class ISslContext final : public ServiceFramework<ISslContext> {
 public:
-    explicit ISslContext(Core::System& system_, SslVersion version, bool for_system)
+    explicit ISslContext(Core::System& system_, SslVersion version, bool for_system,
+                         std::shared_ptr<const SSLTrustStore> built_in_trust_store)
         : ServiceFramework{system_, for_system ? "ISslContextForSystem" : "ISslContext"},
           ssl_version{version}, shared_data{std::make_shared<SslContextSharedData>()} {
+        shared_data->built_in_trust_store = std::move(built_in_trust_store);
         static const FunctionInfo functions[] = {
             {0, &ISslContext::SetOption, "SetOption"},
             {1, &ISslContext::GetOption, "GetOption"},
@@ -474,7 +514,7 @@ public:
             {3, &ISslContext::GetConnectionCount, "GetConnectionCount"},
             {4, &ISslContext::ImportServerPki, "ImportServerPki"},
             {5, &ISslContext::ImportClientPki, "ImportClientPki"},
-            {6, nullptr, "RemoveServerPki"},
+            {6, D<&ISslContext::RemoveServerPki>, "RemoveServerPki"},
             {7, nullptr, "RemoveClientPki"},
             {8, D<&ISslContext::RegisterInternalPki>, "RegisterInternalPki"},
             {9, nullptr, "AddPolicyOid"},
@@ -545,18 +585,41 @@ private:
         rb.Push(shared_data->connection_count);
     }
 
+    // The console checks the format, then ignores it: certificates decode as PEM or DER, either way.
     void ImportServerPki(HLERequestContext& ctx) {
         IPC::RequestParser rp{ctx};
         const auto certificate_format = rp.PopEnum<CertificateFormat>();
-        [[maybe_unused]] const auto pkcs_12_certificates = ctx.ReadBuffer(0);
+        const auto data = ctx.ReadBuffer(0);
 
-        constexpr u64 server_id = 0;
+        LOG_DEBUG(Service_SSL, "called, certificate_format={}", certificate_format);
 
-        LOG_WARNING(Service_SSL, "(STUBBED) called, certificate_format={}", certificate_format);
+        u64 server_id = 0;
+        const Result res = ImportServerPkiImpl(data, &server_id);
 
         IPC::ResponseBuilder rb{ctx, 4};
-        rb.Push(ResultSuccess);
+        rb.Push(res);
         rb.Push(server_id);
+    }
+
+    Result ImportServerPkiImpl(std::span<const u8> data, u64* out_id) {
+        R_UNLESS(shared_data->server_pkis.size() < SslContextSharedData::MaxServerPkis,
+                 ResultMaxServerPkiRegistered);
+        std::vector<std::vector<u8>> certificates;
+        R_TRY(DecodeServerPki(data, &certificates));
+        *out_id = shared_data->next_server_pki_id++;
+        shared_data->server_pkis.emplace(*out_id, std::move(certificates));
+        shared_data->trust_store.reset();
+        R_SUCCEED();
+    }
+
+    Result RemoveServerPki(u64 id) {
+        LOG_DEBUG(Service_SSL, "called, id={}", id);
+        if (shared_data->server_pkis.erase(id) == 0) {
+            LOG_ERROR(Service_SSL, "No server PKI has id {}", id);
+            return ResultInternalError;
+        }
+        shared_data->trust_store.reset();
+        R_SUCCEED();
     }
 
     void ImportClientPki(HLERequestContext& ctx) {
@@ -624,7 +687,8 @@ private:
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
-        rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version, false);
+        rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version, false,
+                                         cert_store.GetTrustStore());
     }
 
     void SetInterfaceVersion(HLERequestContext& ctx) {
@@ -699,7 +763,7 @@ class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem>
             IPC::ResponseBuilder rb{ctx, 2, 0, 1};
             rb.Push(ResultSuccess);
             rb.PushIpcInterface<ISslContext>(ctx, system, parameters.ssl_version,
-                                             ctx.GetCommand() == 100);
+                                             ctx.GetCommand() == 100, cert_store.GetTrustStore());
         }
 
         Result GetContextCount(Out<u32> out_count) {
