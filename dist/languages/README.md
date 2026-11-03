@@ -1,6 +1,6 @@
 # Translating
 
-This directory stores translation patches (TS files) for Yuzu Qt frontend. This directory is linked with the [Eden project on Transifex](https://app.transifex.com/edenemu/eden-emulator), so you can update the translation by executing `tx pull -t -a` in the root of this repository. If you want to contribute to the translation, please go the Transifex link and submit your translation there.
+This directory stores the translations (TS files) of the Qt frontend. They come from the [Eden project on Transifex](https://app.transifex.com/edenemu/eden-emulator), the project Eglantine is based on; this repository does not sync them itself.
 
 When creating/improving translations, please keep in mind:
 
