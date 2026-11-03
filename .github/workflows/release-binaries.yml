@@ -30,6 +30,9 @@ permissions:
 # eden.profdata; bump it when a refreshed profile needs a newer LLVM.
 env:
   PGO_LLVM_VERSION: "23"
+  # Qt for the Linux builds (Windows uses MSYS2's). The boat snapshot has this version in /opt/Qt:
+  # run tools/ci/boat-snapshot.sh after changing it, or after changing PGO_LLVM_VERSION.
+  QT_VERSION: "6.8.3"
 
 concurrency:
   group: release-binaries-${{ github.ref }}
@@ -48,125 +51,72 @@ jobs:
       CCACHE_NOHASHDIR: "true"
       # Compilers are installed fresh on every run; compare them by content, not by mtime.
       CCACHE_COMPILERCHECK: content
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_CACHE_SIZE: 3G
     strategy:
       fail-fast: false
       matrix:
-        # The Linux x86_64 jobs run on boat.dev sandboxes (8 vCPU, 16 GB: https://docs.boat.dev/ci);
-        # boat has no Windows or Arm runners, so those stay on GitHub's.
+        # Every build is clang with profile-guided optimization (PGO), the fastest build of the
+        # emulator. Windows uses MSYS2's MinGW clang: MSVC cannot read an LLVM .profdata file.
+        # The x86_64 Linux job runs on a boat.dev sandbox (8 vCPU, 16 GB: https://docs.boat.dev/ci)
+        # started from the eglantine-ci snapshot, which has every package, clang, CMake and Qt
+        # installed (tools/ci/boat-snapshot.sh). boat has no Windows or Arm machines, so those
+        # jobs stay on GitHub's runners.
         include:
           - platform: linux-x86_64
-            runner: boat-large
-          # The two -pgo builds are the same programs compiled by clang against Eden's periodically
-          # updated profile (https://github.com/Eden-CI/PGO). Windows uses MSYS2's MinGW clang like
-          # Eden does; MSVC cannot read an LLVM .profdata file.
-          - platform: linux-x86_64-pgo
-            runner: boat-large
-            pgo: true
+            runner: boat-large/from=eglantine-ci
           - platform: windows-x86_64
             runner: windows-2022
-          - platform: windows-x86_64-pgo
-            runner: windows-2022
-            pgo: true
-            mingw: true
           - platform: linux-aarch64
             runner: ubuntu-24.04-arm
-          - platform: linux-aarch64-pgo
-            runner: ubuntu-24.04-arm
-            pgo: true
 
     steps:
       - name: Check out source
         uses: actions/checkout@v5
 
+      # On the boat snapshot every dependency is already installed and this takes a second
+      # (tools/ci/linux-deps.sh); on a plain runner it installs them.
       - name: Install Linux dependencies
-        if: startsWith(matrix.platform, 'linux')
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            autoconf cmake g++ gcc git glslang-tools libglu1-mesa-dev \
-            libpulse-dev libtool libudev-dev libxkbcommon-x11-0 \
-            mesa-common-dev nasm ninja-build qt6-base-private-dev \
-            qt6-charts-dev qt6-tools-dev libavfilter-dev libavcodec-dev \
-            libswscale-dev pkg-config zlib1g-dev libva-dev libvdpau-dev \
-            spirv-tools spirv-headers libusb-1.0-0-dev \
-            libboost-dev libboost-fiber-dev libboost-context-dev \
-            libopus-dev libasound2-dev ccache \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
-            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 \
-            patch perl make build-essential curl ca-certificates file xz-utils zstd unzip zip \
-            python3-venv
-
-      # GitHub's Ubuntu image has a current CMake in /usr/local/bin; a plain Ubuntu 24.04 runner
-      # (boat) only has 3.28 from apt, and the build needs 3.31 or newer.
-      - name: CMake 3.31 where the runner lacks it
-        if: startsWith(matrix.platform, 'linux')
+        id: linux-deps
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          if cmake --version | head -1 | grep -qE 'version (3\.(3[1-9]|[4-9][0-9])|[4-9])\.'; then
-            cmake --version | head -1
-            exit 0
+          bash tools/ci/linux-deps.sh "$PGO_LLVM_VERSION"
+          qt="/opt/Qt/$QT_VERSION/gcc_64"
+          if [ "$(uname -m)" = x86_64 ] && [ -x "$qt/bin/qmake" ]; then
+            echo "Qt $QT_VERSION from the snapshot: $qt"
+            # What install-qt-action sets for the Qt it installs.
+            {
+              echo "QT_ROOT_DIR=$qt"
+              echo "QT_PLUGIN_PATH=$qt/plugins"
+              echo "LD_LIBRARY_PATH=$qt/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              echo "PKG_CONFIG_PATH=$qt/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            } >> "$GITHUB_ENV"
+            echo "$qt/bin" >> "$GITHUB_PATH"
+            echo "qt=installed" >> "$GITHUB_OUTPUT"
           fi
-          python3 -m venv "$RUNNER_TEMP/cmake-venv"
-          "$RUNNER_TEMP/cmake-venv/bin/pip" install -q "cmake==3.31.6"
-          echo "$RUNNER_TEMP/cmake-venv/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/cmake-venv/bin/cmake" --version | head -1
 
       # install-qt-action installs aqtinstall with pip; a plain Ubuntu runner's system Python
-      # refuses that (PEP 668), so give every Linux job its own.
+      # refuses that (PEP 668), so the job gets its own.
       - name: Python for the Qt installer
-        if: startsWith(matrix.platform, 'linux')
+        if: runner.os == 'Linux' && steps.linux-deps.outputs.qt != 'installed'
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - name: Install Qt on Linux x86_64
-        if: startsWith(matrix.platform, 'linux') && runner.arch != 'ARM64'
+      - name: Install Qt on Linux
+        if: runner.os == 'Linux' && steps.linux-deps.outputs.qt != 'installed'
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.8.3"
-          host: linux
+          version: ${{ env.QT_VERSION }}
+          host: ${{ runner.arch == 'ARM64' && 'linux_arm64' || 'linux' }}
           target: desktop
-          arch: linux_gcc_64
+          arch: ${{ runner.arch == 'ARM64' && 'linux_gcc_arm64' || 'linux_gcc_64' }}
           modules: qtcharts
           cache: true
-
-      - name: Install Qt on Linux ARM64
-        if: startsWith(matrix.platform, 'linux') && runner.arch == 'ARM64'
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.8.3"
-          host: linux_arm64
-          target: desktop
-          arch: linux_gcc_arm64
-          modules: qtcharts
-          cache: true
-
-      # Ubuntu's own clang 18 cannot read a profile from a current LLVM, so take clang from the LLVM
-      # apt repo. The versioned packages are named explicitly: that repo's unversioned clang/lld
-      # metapackages can lag the binaries they depend on and then resolve to nothing. lld-23 only
-      # ships ld.lld under /usr/lib/llvm-23/bin, so -B points the linker search there.
-      - name: Install clang for PGO
-        if: startsWith(matrix.platform, 'linux') && matrix.pgo
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
-            sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$PGO_LLVM_VERSION main" |
-            sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            "clang-$PGO_LLVM_VERSION" "lld-$PGO_LLVM_VERSION"
-          "clang-$PGO_LLVM_VERSION" --version
 
       # Fetched into the source tree so both the Linux and MSYS2 configure steps can read it from a
       # path their clang understands.
       - name: Download PGO profile
-        if: matrix.pgo
         shell: bash
         run: |
           set -euo pipefail
@@ -174,47 +124,10 @@ jobs:
             https://github.com/Eden-CI/PGO/releases/latest/download/eden.profdata
           test -s eden.profdata
 
-      - name: Set up MSVC
-        if: matrix.platform == 'windows-x86_64'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install Qt on Windows
-        if: matrix.platform == 'windows-x86_64'
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.8.3"
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-          modules: qtcharts
-          cache: true
-
-      # MSVC is not something ccache handles well, so that job uses sccache. The other jobs use
-      # ccache, which CMake enables through USE_CCACHE (externals/cmake-modules/UseCcache.cmake).
-      - name: Install sccache on Windows
-        if: matrix.platform == 'windows-x86_64'
-        shell: pwsh
-        run: |
-          $zip = Join-Path $env:RUNNER_TEMP 'sccache.zip'
-          Invoke-WebRequest -OutFile $zip https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip
-          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'sccache')
-          $bin = (Get-ChildItem -Recurse -Filter sccache.exe (Join-Path $env:RUNNER_TEMP 'sccache')).DirectoryName
-          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-
-      - name: Install Vulkan SDK on Windows
-        if: matrix.platform == 'windows-x86_64'
-        shell: pwsh
-        run: ./tools/windows/install-vulkan-sdk.ps1
-
-      - name: Verify Vulkan tools on Windows
-        if: matrix.platform == 'windows-x86_64'
-        shell: pwsh
-        run: glslangValidator --version
-
       # Eden builds its Windows PGO binaries with MSYS2's clang toolchain, so we do the same. The
       # package list is docs/Deps.md (MSYS2) plus what the bundled FFmpeg needs to compile.
       - name: Set up MSYS2
-        if: matrix.mingw
+        if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -234,27 +147,24 @@ jobs:
         uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpm-${{ runner.os }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
+          key: cpm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'src/**/CMakeLists.txt') }}
           restore-keys: |
-            cpm-${{ runner.os }}-
+            cpm-${{ runner.os }}-${{ runner.arch }}-
 
       # The sha in the key makes every run save a fresh cache (a cache key is never overwritten),
       # and the restore key seeds it from the newest one of the same platform. The "/" after the
-      # platform keeps the prefixes apart: "objects/linux-x86_64/" does not match the PGO job's
-      # "objects/linux-x86_64-pgo/" (its objects are built with other flags and never hit).
-      # Saving is a separate step that runs even when the build or a later step fails.
+      # platform keeps one platform's prefix from matching another's. Saving is a separate step
+      # that runs even when the build or a later step fails.
       - name: Restore compiler objects
         uses: actions/cache/restore@v5
         with:
-          path: |
-            .ccache
-            .sccache
+          path: .ccache
           key: objects/${{ matrix.platform }}/${{ github.sha }}
           restore-keys: |
             objects/${{ matrix.platform }}/
 
       - name: Configure Linux
-        if: startsWith(matrix.platform, 'linux')
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -273,43 +183,20 @@ jobs:
             -DENABLE_UPDATE_CHECKER=OFF
             -DUSE_DISCORD_PRESENCE=OFF
             -DUSE_CCACHE=ON
+            "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
+            "-DCMAKE_CXX_COMPILER=clang++-$PGO_LLVM_VERSION"
+            "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld"
           )
-          if [ '${{ matrix.pgo }}' = 'true' ]; then
-            # Same flags Eden's CI passes for its clang PGO build.
-            profile="-fprofile-use=$PWD/eden.profdata -Wno-backend-plugin \
-              -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
-            flags+=(
-              "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
-              "-DCMAKE_CXX_COMPILER=clang++-$PGO_LLVM_VERSION"
-              "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld"
-              "-DCMAKE_C_FLAGS=$profile"
-              "-DCMAKE_CXX_FLAGS=$profile"
-            )
-          fi
+          # Same flags Eden's CI passes for its clang PGO build.
+          profile="-fprofile-use=$PWD/eden.profdata -Wno-backend-plugin \
+            -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+          flags+=("-DCMAKE_C_FLAGS=$profile" "-DCMAKE_CXX_FLAGS=$profile")
           cmake -S . -B build/release -G Ninja "${flags[@]}"
-
-      - name: Configure Windows
-        if: matrix.platform == 'windows-x86_64'
-        shell: bash
-        run: >-
-          cmake -S . -B build/release -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_TESTING=OFF
-          -DYUZU_TESTS=OFF
-          -DYUZU_CMD=ON
-          -DYUZU_ROOM=OFF
-          -DYUZU_ROOM_STANDALONE=OFF
-          -DYUZU_USE_BUNDLED_QT=OFF
-          -DYUZU_USE_BUNDLED_SDL3=ON
-          -DENABLE_UPDATE_CHECKER=OFF
-          -DUSE_DISCORD_PRESENCE=OFF
-          -DCMAKE_C_COMPILER_LAUNCHER=sccache
-          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
 
       # MinGW build: system Qt and libraries from MSYS2, clang plus Eden's PGO profile. The profile
       # path is converted to its Windows form because clang runs with the MSYS mount underneath.
       - name: Configure MinGW PGO
-        if: matrix.mingw
+        if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -337,16 +224,16 @@ jobs:
             "-DCMAKE_CXX_FLAGS=$profile"
 
       # The statistics are zeroed first, so the printed hit rate is this run's, not the cache's lifetime.
-      - name: Build
-        if: ${{ ! matrix.mingw }}
+      - name: Build Linux
+        if: runner.os == 'Linux'
         shell: bash
         run: |
-          if command -v ccache > /dev/null; then ccache --zero-stats > /dev/null; else sccache --zero-stats > /dev/null; fi
+          ccache --zero-stats > /dev/null
           cmake --build build/release --target yuzu yuzu-cmd --parallel
-          if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; sccache --stop-server > /dev/null || true; fi
+          ccache --show-stats
 
       - name: Build MinGW PGO
-        if: matrix.mingw
+        if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           ccache --zero-stats > /dev/null
@@ -357,9 +244,7 @@ jobs:
         if: always() && !cancelled()
         uses: actions/cache/save@v5
         with:
-          path: |
-            .ccache
-            .sccache
+          path: .ccache
           key: objects/${{ matrix.platform }}/${{ github.sha }}
 
       # Plain tar.gz with the two programs. GitHub artifacts drop the executable bit, so a tar is
@@ -414,24 +299,11 @@ jobs:
           test -s "$LDAI_OUTPUT"
           ls -la "$LDAI_OUTPUT"
 
-      - name: Package Windows binary
-        if: matrix.platform == 'windows-x86_64'
-        shell: pwsh
-        run: |
-          foreach ($exe in 'eglantine.exe', 'eden-cli.exe') {
-            if (-not (Test-Path "build/release/bin/$exe")) {
-              throw "build/release/bin/$exe was not produced"
-            }
-          }
-          windeployqt --release --no-translations build/release/bin/eglantine.exe
-          # The frame-rate mods ship next to the emulator (README: Frame-rate mods).
-          Copy-Item -Recurse -Force "dist/mods/Pokopia FPS mods" "build/release/bin/Pokopia FPS mods"
-
       # A dynamic MinGW build is not portable on its own: windeployqt6 brings the Qt libraries and
       # plugins, then every non-system DLL the binaries and those plugins pull in gets copied next to
       # them (docs/Caveats.md#msys2).
       - name: Package MinGW binary
-        if: matrix.mingw
+        if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           set -euo pipefail
@@ -465,78 +337,10 @@ jobs:
             deps "$dll"
           done
 
-      # A self-contained app bundle: macdeployqt copies Qt and every other Homebrew library both
-      # programs load into the bundle, then the leftover Homebrew search paths are removed so a
-      # machine with Homebrew still uses the bundled copies. Ad-hoc signed, not notarized.
-      - name: Package macOS app
-        if: startsWith(matrix.platform, 'macos')
-        shell: bash
-        run: |
-          set -euo pipefail
-          app=build/release/bin/eglantine.app
-          test -x "$app/Contents/MacOS/eglantine"
-          test -x build/release/bin/eden-cli
-          cp build/release/bin/eden-cli "$app/Contents/MacOS/eden-cli"
-          "$(brew --prefix qt@6)/bin/macdeployqt" "$app" \
-            -executable="$app/Contents/MacOS/eden-cli" -libpath="$(brew --prefix)/lib" \
-            -always-overwrite -verbose=1
-          # Qt's virtual keyboard input plugin pulls in the QML stack, which the emulator doesn't use.
-          rm -f "$app/Contents/PlugIns/platforminputcontexts/libqtvirtualkeyboardplugin.dylib"
-          binaries=$(find "$app/Contents" -type f \( -perm -u+x -o -name '*.dylib' \) \
-            -exec sh -c 'file -b "$1" | grep -q Mach-O' _ {} \; -print)
-          for binary in $binaries; do
-            otool -l "$binary" | awk '/cmd LC_RPATH/ {getline; getline; print $2}' |
-              { grep -E '^/(opt/homebrew|usr/local)/' || true; } | while read -r rpath; do
-                install_name_tool -delete_rpath "$rpath" "$binary" 2> /dev/null
-              done
-          done
-          # Libraries that load their dependencies through @rpath find them in the bundle.
-          for program in eglantine eden-cli; do
-            install_name_tool -add_rpath @executable_path/../Frameworks \
-              "$app/Contents/MacOS/$program" 2> /dev/null
-          done
-          leaks=$(for binary in $binaries; do
-            otool -L "$binary" | grep -E '^\s+/(opt/homebrew|usr/local)/'
-            otool -l "$binary" | awk '/cmd LC_RPATH/ {getline; getline; print $2}' |
-              grep -E '^/(opt/homebrew|usr/local)/'
-          done || true)
-          if [ -n "$leaks" ]; then
-            echo "References still pointing outside the bundle:"
-            echo "$leaks" | sort -u
-            exit 1
-          fi
-          # macdeployqt invalidates the signatures. The programs get the entitlements when the
-          # tree has them (the Hypervisor CPU backend needs com.apple.security.hypervisor).
-          codesign --force --deep --sign - "$app"
-          if [ -f dist/eglantine.entitlements ]; then
-            codesign --force --sign - --entitlements dist/eglantine.entitlements \
-              "$app/Contents/MacOS/eden-cli"
-            codesign --force --sign - --entitlements dist/eglantine.entitlements "$app"
-          fi
-          codesign --verify --deep --strict "$app"
-          ditto -c -k --keepParent "$app" "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
-          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.zip"
-          # Also ship a .dmg (drag eglantine.app onto Applications).
-          dmgdir=$(mktemp -d)
-          ditto "$app" "$dmgdir/eglantine.app"
-          ln -s /Applications "$dmgdir/Applications"
-          hdiutil create -volname "Eglantine" -srcfolder "$dmgdir" -ov -format UDZO \
-            "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
-          ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.dmg"
-
       # The artifact is the bin folder itself: GitHub zips artifacts on download, and uploading a
       # zip gave a zip inside a zip. The release job zips it once for the release.
-      - name: Upload Windows binary
-        if: matrix.platform == 'windows-x86_64'
-        uses: actions/upload-artifact@v7
-        with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: build/release/bin/
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Upload MinGW binary
-        if: matrix.mingw
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
           name: eglantine-${{ matrix.platform }}-${{ github.sha }}
@@ -553,19 +357,6 @@ jobs:
           path: |
             eglantine-${{ github.sha }}-${{ matrix.platform }}.tar.gz
             eglantine-${{ github.sha }}-${{ matrix.platform }}.AppImage
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-
-      # Zipped with ditto beforehand: the bundle's framework symlinks don't survive artifact zipping.
-      - name: Upload macOS app
-        if: startsWith(matrix.platform, 'macos')
-        uses: actions/upload-artifact@v7
-        with:
-          name: eglantine-${{ matrix.platform }}-${{ github.sha }}
-          path: |
-            eglantine-${{ github.sha }}-${{ matrix.platform }}.zip
-            eglantine-${{ github.sha }}-${{ matrix.platform }}.dmg
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -607,11 +398,8 @@ jobs:
               for file in "$artifact"*.AppImage "$artifact"*.tar.gz; do
                 cp "$file" "release/$(strip_sha "$(basename "$file")")"
               done
-            elif compgen -G "$artifact*.zip" > /dev/null; then
-              for file in "$artifact"*.zip "$artifact"*.dmg; do
-                [[ -e "$file" ]] && cp "$file" "release/$(strip_sha "$(basename "$file")")"
-              done
             else
+              # Windows: the artifact is the bin folder, zipped once here.
               (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/release/$(strip_sha "$name").zip" .)
             fi
           done
@@ -631,29 +419,26 @@ jobs:
           cat > notes.md <<EOF
           Automatic build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}.
 
-          ## Linux
-
-          Linux packages come as an AppImage (self-contained, needs glibc 2.39 or newer: Ubuntu 24.04, Fedora 40, Debian 13, Arch) and a tar.gz (uses your system libraries, so Qt 6 and the usual libraries must be installed).
-
-          | Build Type | Standard | PGO (Recommended) | Notes |
-          | --- | --- | --- | --- |
-          | amd64 | [AppImage](${base}/eglantine-linux-x86_64.AppImage) · [tar.gz](${base}/eglantine-linux-x86_64.tar.gz) | [AppImage](${base}/eglantine-linux-x86_64-pgo.AppImage) · [tar.gz](${base}/eglantine-linux-x86_64-pgo.tar.gz) | Make the AppImage executable (\`chmod +x\`) and run it |
-          | ARM (aarch64) | [AppImage](${base}/eglantine-linux-aarch64.AppImage) · [tar.gz](${base}/eglantine-linux-aarch64.tar.gz) | [AppImage](${base}/eglantine-linux-aarch64-pgo.AppImage) · [tar.gz](${base}/eglantine-linux-aarch64-pgo.tar.gz) | |
+          Every package is built with clang and profile-guided optimization (PGO).
 
           ## Windows
 
-          Windows packages are in-place zip files: extract and run \`eglantine.exe\`, or \`eden-cli.exe\` from a terminal.
+          | System | Download | Notes |
+          | --- | --- | --- |
+          | x86_64 | [eglantine-windows-x86_64.zip](${base}/eglantine-windows-x86_64.zip) | Extract and run \`eglantine.exe\`, or \`eden-cli.exe\` from a terminal. Bundles its own DLLs; no Visual C++ redistributable needed. |
 
-          | Build Type | Standard | PGO (Recommended) | Notes |
-          | --- | --- | --- | --- |
-          | amd64 / x86_64 (MSVC) | [MSVC zip](${base}/eglantine-windows-x86_64.zip) | | Use if you run into graphical issues on other builds |
-          | amd64 / x86_64 (MinGW) | | [PGO zip](${base}/eglantine-windows-x86_64-pgo.zip) | Built with MinGW clang; bundles its own DLLs, no Visual C++ redistributable needed |
+          ## Linux
 
-          The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eden's profile); prefer them when your CPU supports it.
+          The AppImage is self-contained and needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch): make it executable (\`chmod +x\`) and run it. The tar.gz uses your system's libraries, so Qt 6 and the usual libraries must be installed.
+
+          | System | AppImage | tar.gz |
+          | --- | --- | --- |
+          | x86_64 | [eglantine-linux-x86_64.AppImage](${base}/eglantine-linux-x86_64.AppImage) | [eglantine-linux-x86_64.tar.gz](${base}/eglantine-linux-x86_64.tar.gz) |
+          | ARM (aarch64) | [eglantine-linux-aarch64.AppImage](${base}/eglantine-linux-aarch64.AppImage) | [eglantine-linux-aarch64.tar.gz](${base}/eglantine-linux-aarch64.tar.gz) |
 
           ## Frame-rate mods (Pokémon Pokopia)
 
-          120, 180, 240 and 360 FPS mods for Pokémon Pokopia 2.0.1 are in the Windows zips and the tar.gz (\`Pokopia FPS mods\` folder), and on their own in [pokopia-fps-mods.zip](${base}/pokopia-fps-mods.zip). See [Frame-rate mods](https://github.com/${GITHUB_REPOSITORY}#frame-rate-mods) in the README to install one.
+          120, 180, 240 and 360 FPS mods for Pokémon Pokopia 2.0.1 are in the Windows zip and the tar.gz (\`Pokopia FPS mods\` folder), and on their own in [pokopia-fps-mods.zip](${base}/pokopia-fps-mods.zip). See [Frame-rate mods](https://github.com/${GITHUB_REPOSITORY}#frame-rate-mods) in the README to install one.
           EOF
 
           gh release create "${tag}" release/* \

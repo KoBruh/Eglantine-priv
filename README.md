@@ -48,11 +48,11 @@ Other games are being brought up; their notes are in [docs/dev/bringup](./docs/d
 
 ## Download
 
-Every change to `main` is built and published on the [Releases](https://github.com/notsapinho/Eglantine/releases) page. Day-to-day work happens on `dev`, which has no automatic builds.
+Every change to `main` is built and published on the [Releases](https://github.com/notsapinho/Eglantine/releases) page. Day-to-day work happens on `dev`, which has no automatic builds. Every package is built with clang and profile-guided optimization (PGO).
 
 | System | File | Notes |
 | --- | --- | --- |
-| Windows x64 | `eglantine-windows-x86_64-pgo.zip` (recommended) or `eglantine-windows-x86_64.zip` | Extract and run `eglantine.exe`. Try the plain (MSVC) zip if you see graphical issues. |
+| Windows x64 | `eglantine-windows-x86_64.zip` | Extract and run `eglantine.exe`. |
 | Linux x86_64 / arm64 | `eglantine-linux-*.AppImage` | Self-contained; needs glibc 2.39 or newer (Ubuntu 24.04, Fedora 40, Debian 13, Arch). `chmod +x` it, then run it. |
 | Linux x86_64 / arm64 | `eglantine-linux-*.tar.gz` | Uses your system's Qt 6 and libraries. |
 
@@ -70,7 +70,7 @@ The [User Handbook](./docs/user/README.md) covers setup, with a [Quick Start](./
 
 ## Frame-rate mods
 
-The game runs at 60 FPS by default. The bundled mods for **Pokémon Pokopia 2.0.1** raise that to 120, 180, 240 or 360 FPS. They are in the `Pokopia FPS mods` folder of the Windows zips and the Linux tar.gz, and on their own as `pokopia-fps-mods.zip` on each release.
+The game runs at 60 FPS by default. The bundled mods for **Pokémon Pokopia 2.0.1** raise that to 120, 180, 240 or 360 FPS. They are in the `Pokopia FPS mods` folder of the Windows zip and the Linux tar.gz, and on their own as `pokopia-fps-mods.zip` on each release.
 
 1. In Eglantine, right-click Pokémon Pokopia and choose **Open Mod Data Location**.
    - On Windows that is `%APPDATA%\eden\load\0400A3A01EE4C000`; on Linux, `~/.local/share/eden/load/0400A3A01EE4C000`.
