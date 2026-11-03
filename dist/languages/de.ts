@@ -7466,7 +7466,7 @@ Fehlerbehebungs-Meldung: </translation>
     </message>
     <message>
         <location filename="../../src/yuzu/main_window.cpp" line="1839"/>
-        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
+        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
         <translation type="unfinished"/>
     </message>
     <message>
@@ -9451,8 +9451,8 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="328"/>
-        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
-        <translation>UNERWARTETE PROBLEME KÖNNTEN AUFTRETEN, WENN DU DIES NICHT LIEST!&lt;br&gt;Eden hat die folgenden Speicherverzeichnisse ohne zugeordnetes Profil erkannt:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;Die folgenden Profile sind gültig:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Klicke auf „OK“, um deinen Speicherordner zu öffnen und deine Profile zu korrigieren.&lt;br&gt;Tipp: Kopiere den Inhalt des größten oder zuletzt geänderten Ordners an einen anderen Ort, lösche alle verwaisten Profile und verschiebe die kopierten Inhalte in das intakte Profil.&lt;br&gt;&lt;br&gt;Immer noch unsicher? Lies auf der &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;Hilfeseite&lt;/a&gt; nach.&lt;br&gt;</translation>
+        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
+        <translation>UNERWARTETE PROBLEME KÖNNTEN AUFTRETEN, WENN DU DIES NICHT LIEST!&lt;br&gt;Eden hat die folgenden Speicherverzeichnisse ohne zugeordnetes Profil erkannt:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;Die folgenden Profile sind gültig:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Klicke auf „OK“, um deinen Speicherordner zu öffnen und deine Profile zu korrigieren.&lt;br&gt;Tipp: Kopiere den Inhalt des größten oder zuletzt geänderten Ordners an einen anderen Ort, lösche alle verwaisten Profile und verschiebe die kopierten Inhalte in das intakte Profil.&lt;br&gt;&lt;br&gt;Immer noch unsicher? Lies auf der &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;Hilfeseite&lt;/a&gt; nach.&lt;br&gt;</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="347"/>

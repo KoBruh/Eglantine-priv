@@ -7453,8 +7453,8 @@ Debug Message: </source>
     </message>
     <message>
         <location filename="../../src/yuzu/main_window.cpp" line="1839"/>
-        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
-        <translation>这通常是因为过时的 GPU 驱动所导致的。具体情况请查看日志。请查阅: &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md&apos;&gt;如何访问日志文件&lt;/a&gt;。</translation>
+        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
+        <translation>这通常是因为过时的 GPU 驱动所导致的。具体情况请查看日志。请查阅: &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md&apos;&gt;如何访问日志文件&lt;/a&gt;。</translation>
     </message>
     <message>
         <location filename="../../src/yuzu/main_window.cpp" line="1852"/>
@@ -9435,8 +9435,8 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="328"/>
-        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
-        <translation>如果您不阅读此内容,可能会发生意想不到的糟糕情况!&lt;br&gt;Eden 检测到以下存档目录没有附加的配置文件:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;下列配置是有效的:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;点击“确定”以打开您的存档文件夹并修复配置文件。&lt;br&gt;提示: 将最大或最近修改的文件夹内容复制到其他地方,删除所有孤立的配置文件,然后将复制的内容移到正确的配置文件中。&lt;br&gt;&lt;br&gt;还是感到疑惑? 请查看 &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;帮助页&lt;/a&gt;。&lt;br&gt;</translation>
+        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
+        <translation>如果您不阅读此内容,可能会发生意想不到的糟糕情况!&lt;br&gt;Eden 检测到以下存档目录没有附加的配置文件:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;下列配置是有效的:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;点击“确定”以打开您的存档文件夹并修复配置文件。&lt;br&gt;提示: 将最大或最近修改的文件夹内容复制到其他地方,删除所有孤立的配置文件,然后将复制的内容移到正确的配置文件中。&lt;br&gt;&lt;br&gt;还是感到疑惑? 请查看 &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;帮助页&lt;/a&gt;。&lt;br&gt;</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="347"/>

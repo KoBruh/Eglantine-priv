@@ -7474,8 +7474,8 @@ Debug Message: </source>
     </message>
     <message>
         <location filename="../../src/yuzu/main_window.cpp" line="1839"/>
-        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
-        <translation>通常、GPUドライバーが古いことが原因です。詳細はログをご確認ください。参照: &lt;a href='https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md'&gt;ログファイルの確認方法&lt;/a&gt;</translation>
+        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
+        <translation>通常、GPUドライバーが古いことが原因です。詳細はログをご確認ください。参照: &lt;a href='https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md'&gt;ログファイルの確認方法&lt;/a&gt;</translation>
     </message>
     <message>
         <location filename="../../src/yuzu/main_window.cpp" line="1852"/>
@@ -9457,8 +9457,8 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="328"/>
-        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
-        <translation>【重要】必ずお読みください。予期せぬ問題が発生する恐れがあります。&lt;br&gt;プロファイルが紐付けられていない以下のセーブデータディレクトリが検出されました:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;有効なプロファイルは以下のとおりです:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;「OK」をクリックしてセーブデータフォルダーを開き、プロファイルを整理してください。&lt;br&gt;ヒント: 最もサイズが大きい、または更新日時が新しいフォルダーの中身を別の場所にコピーし、孤立したプロファイルをすべて削除してから、コピーした中身を有効なプロファイルのフォルダーに移動してください。&lt;br&gt;&lt;br&gt;ご不明な場合は、&lt;a href='https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md'&gt;ヘルプページ&lt;/a&gt;をご覧ください。&lt;br&gt;</translation>
+        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
+        <translation>【重要】必ずお読みください。予期せぬ問題が発生する恐れがあります。&lt;br&gt;プロファイルが紐付けられていない以下のセーブデータディレクトリが検出されました:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;有効なプロファイルは以下のとおりです:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;「OK」をクリックしてセーブデータフォルダーを開き、プロファイルを整理してください。&lt;br&gt;ヒント: 最もサイズが大きい、または更新日時が新しいフォルダーの中身を別の場所にコピーし、孤立したプロファイルをすべて削除してから、コピーした中身を有効なプロファイルのフォルダーに移動してください。&lt;br&gt;&lt;br&gt;ご不明な場合は、&lt;a href='https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md'&gt;ヘルプページ&lt;/a&gt;をご覧ください。&lt;br&gt;</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="347"/>

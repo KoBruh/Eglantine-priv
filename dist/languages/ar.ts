@@ -7454,9 +7454,9 @@ Debug Message: </source>
     </message>
     <message>
         <location filename="../../src/yuzu/main_window.cpp" line="1839"/>
-        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
+        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
         <translation>عادةً ما يحدث هذا بسبب برامج تشغيل وحدة معالجة الرسومات القديمة. يرجى الاطلاع على السجل لمزيد من التفاصيل. انظر: 
-&lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md&apos;&gt;كيفية الوصول إلى ملفات السجلات&lt;/a&gt;.</translation>
+&lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md&apos;&gt;كيفية الوصول إلى ملفات السجلات&lt;/a&gt;.</translation>
     </message>
     <message>
         <location filename="../../src/yuzu/main_window.cpp" line="1852"/>
@@ -9453,8 +9453,8 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="328"/>
-        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
-        <translation>قد تحدث أمور سيئة غير متوقعة إذا لم تقرأ هذا&lt;br&gt;!لقد اكتشف إيدن مجلدات الحفظ التالية بدون ملف تعريف مرفق:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;ملفات التعريف التالية صالحة:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;انقر على ”موافق“ لفتح مجلد الحفظ وإصلاح ملفات التعريف الخاصة بك.&lt;br&gt;تلميح: انسخ محتويات المجلد الأكبر أو آخر مجلد تم تعديله إلى مكان آخر، واحذف جميع ملفات التعريف اليتيمة، وانقل المحتويات المنسوخة إلى ملف التعريف الصحيح.&lt;br&gt;&lt;br&gt;هل ما زلت تشعر بالارتباك؟ انظر إلى &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;صفحة المساعدة&lt;/a&gt;.&lt;br&gt;</translation>
+        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
+        <translation>قد تحدث أمور سيئة غير متوقعة إذا لم تقرأ هذا&lt;br&gt;!لقد اكتشف إيدن مجلدات الحفظ التالية بدون ملف تعريف مرفق:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;ملفات التعريف التالية صالحة:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;انقر على ”موافق“ لفتح مجلد الحفظ وإصلاح ملفات التعريف الخاصة بك.&lt;br&gt;تلميح: انسخ محتويات المجلد الأكبر أو آخر مجلد تم تعديله إلى مكان آخر، واحذف جميع ملفات التعريف اليتيمة، وانقل المحتويات المنسوخة إلى ملف التعريف الصحيح.&lt;br&gt;&lt;br&gt;هل ما زلت تشعر بالارتباك؟ انظر إلى &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;صفحة المساعدة&lt;/a&gt;.&lt;br&gt;</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="347"/>

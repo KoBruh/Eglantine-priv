@@ -7468,7 +7468,7 @@ Debug Message: </source>
     </message>
     <message>
         <location filename="../../src/yuzu/main_window.cpp" line="1839"/>
-        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
+        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
         <translation type="unfinished"/>
     </message>
     <message>
@@ -9451,8 +9451,8 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="328"/>
-        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
-        <translation>이 내용을 읽지 않으면 예상치 못한 문제가 발생할 수 있습니다!&lt;br&gt;Eden이 프로필에 연결되지 않은 다음 저장 디렉터리를 발견했습니다:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;다음 프로필이 유효합니다:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;&quot;확인&quot;을 클릭하여 저장 폴더를 열고 프로필을 수정하세요.&lt;br&gt;힌트: 가장 크거나 마지막으로 수정된 폴더의 내용을 다른 곳에 복사하고, 연결되지 않은 프로필을 모두 삭제한 다음, 복사한 내용을 유효한 프로필로 이동하세요.&lt;br&gt;&lt;br&gt;여전히 이해가 안 되나요? &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;도움말 페이지&lt;/a&gt;를 참조하세요.&lt;br&gt;</translation>
+        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
+        <translation>이 내용을 읽지 않으면 예상치 못한 문제가 발생할 수 있습니다!&lt;br&gt;Eden이 프로필에 연결되지 않은 다음 저장 디렉터리를 발견했습니다:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;다음 프로필이 유효합니다:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;&quot;확인&quot;을 클릭하여 저장 폴더를 열고 프로필을 수정하세요.&lt;br&gt;힌트: 가장 크거나 마지막으로 수정된 폴더의 내용을 다른 곳에 복사하고, 연결되지 않은 프로필을 모두 삭제한 다음, 복사한 내용을 유효한 프로필로 이동하세요.&lt;br&gt;&lt;br&gt;여전히 이해가 안 되나요? &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;도움말 페이지&lt;/a&gt;를 참조하세요.&lt;br&gt;</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="347"/>

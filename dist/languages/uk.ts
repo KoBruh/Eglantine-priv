@@ -7466,7 +7466,7 @@ Debug Message: </source>
     </message>
     <message>
         <location filename="../../src/yuzu/main_window.cpp" line="1839"/>
-        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
+        <source>This is usually caused by outdated GPU drivers. Please see the log for more details. See: &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md&apos;&gt;How to access log files&lt;/a&gt;.</source>
         <translation type="unfinished"/>
     </message>
     <message>
@@ -9458,8 +9458,8 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="328"/>
-        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
-        <translation>ЯКЩО ВИ ЦЕ НЕ ПРОЧИТАЄТЕ, МОЖУТЬ СТАТИСЯ НЕОЧІКУВАНІ ПОГАНІ РЕЧІ!&lt;br&gt;Eden виявив такі теки збережень без прикріпленого профілю:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;Є такі дійсні профілі:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Натисніть «ОК», щоб відкрити теку збережень і полагодити свої профілі.&lt;br&gt;Порада: скопіюйте у будь-яке інше місце вміст найбільшої теки, у якій нещодавно були зміни, видаліть профілі, що лишилися та перемістіть скопійований вміст до провильного профілю.&lt;br&gt;&lt;br&gt;Досі не розумієте, що робити? Перегляньте &lt;a href=&apos;https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/Orphaned.md&apos;&gt;сторінку допомоги&lt;/a&gt;.&lt;br&gt;</translation>
+        <source>UNEXPECTED BAD THINGS MAY HAPPEN IF YOU DON&apos;T READ THIS!&lt;br&gt;Eden has detected the following save directories with no attached profile:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;The following profiles are valid:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Click &quot;OK&quot; to open your save folder and fix up your profiles.&lt;br&gt;Hint: copy the contents of the largest or last-modified folder elsewhere, delete all orphaned profiles, and move your copied contents to the good profile.&lt;br&gt;&lt;br&gt;Still confused? See the &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;help page&lt;/a&gt;.&lt;br&gt;</source>
+        <translation>ЯКЩО ВИ ЦЕ НЕ ПРОЧИТАЄТЕ, МОЖУТЬ СТАТИСЯ НЕОЧІКУВАНІ ПОГАНІ РЕЧІ!&lt;br&gt;Eden виявив такі теки збережень без прикріпленого профілю:&lt;br&gt;%1&lt;br&gt;&lt;br&gt;Є такі дійсні профілі:&lt;br&gt;%2&lt;br&gt;&lt;br&gt;Натисніть «ОК», щоб відкрити теку збережень і полагодити свої профілі.&lt;br&gt;Порада: скопіюйте у будь-яке інше місце вміст найбільшої теки, у якій нещодавно були зміни, видаліть профілі, що лишилися та перемістіть скопійований вміст до провильного профілю.&lt;br&gt;&lt;br&gt;Досі не розумієте, що робити? Перегляньте &lt;a href=&apos;https://github.com/notsapinho/Eglantine/blob/main/docs/user/Orphaned.md&apos;&gt;сторінку допомоги&lt;/a&gt;.&lt;br&gt;</translation>
     </message>
     <message>
         <location filename="../../src/qt_common/util/content.cpp" line="347"/>
