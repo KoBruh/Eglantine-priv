@@ -139,8 +139,10 @@ std::pair<s32, Errno> ProxySocket::Recv(int flags, std::span<u8> message) {
 }
 
 std::pair<s32, Errno> ProxySocket::RecvFrom(int flags, std::span<u8> message, SockAddrIn* addr) {
+    // Through RecvMsg, like Recv: EmulatedPoll reports a room TCP socket as always readable, so an
+    // empty one must read as the end of the stream here too instead of blocking or spinning.
     u32 msg_flags = 0;
-    return Receive(flags, message, addr, msg_flags);
+    return RecvMsg(flags, message, addr, msg_flags);
 }
 
 std::pair<s32, Errno> ProxySocket::RecvMsg(int flags, std::span<u8> message, SockAddrIn* addr,

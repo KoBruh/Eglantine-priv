@@ -1347,10 +1347,11 @@ void BSD_USA::DuplicateSocket(HLERequestContext& ctx) {
 }
 
 void BSD_USA::EventFd(HLERequestContext& ctx) {
-    // The flags come first in the request; initval follows at its 8-byte alignment.
+    // EventFd(u64 initval, u32 flags): the 8-byte argument comes first in the request, as in
+    // libnx's bsdEventFd and Ryujinx (and the stub this replaced).
     struct InputParameters {
-        u32 flags;
         u64 initval;
+        u32 flags;
     };
     static_assert(sizeof(InputParameters) == 0x10);
 
