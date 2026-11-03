@@ -39,6 +39,7 @@
 #include "video_core/host1x/gpu_device_memory_manager.h"
 #include "video_core/renderer_vulkan/blit_image.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
+#include "video_core/renderer_vulkan/framebuffer_clear_layers.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
@@ -930,6 +931,17 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     texture_cache.UpdateRenderTargets(true);
     const Framebuffer* const framebuffer = texture_cache.GetFramebuffer();
     const VkExtent2D render_area = framebuffer->RenderArea();
+    const u32 base_array_layer = regs.clear_surface.layer;
+    const auto clear_layers =
+        GetFramebufferClearLayers(base_array_layer, layer_count, framebuffer->Layers());
+    if (clear_layers.count != layer_count) {
+        LOG_DEBUG(Render_Vulkan,
+                  "Framebuffer clear layers: base={}, requested={}, clipped={}, framebuffer={}",
+                  base_array_layer, layer_count, clear_layers.count, framebuffer->Layers());
+    }
+    if (clear_layers.count == 0) {
+        return;
+    }
 
     constexpr bool ENABLE_DEFERRED_CLEAR = true;
     const bool color_full_channels = regs.clear_surface.R && regs.clear_surface.G &&
@@ -955,8 +967,8 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     VkClearRect clear_rect{
         .rect = regs.clear_control.use_scissor ? GetScissorState(regs, 0, up_scale, down_shift)
                                                : default_scissor,
-        .baseArrayLayer = regs.clear_surface.layer,
-        .layerCount = layer_count,
+        .baseArrayLayer = base_array_layer,
+        .layerCount = clear_layers.count,
     };
     const auto clamp_rect_to_render_area = [render_area](VkRect2D& rect) -> bool {
         const auto clamp_axis = [](s32& offset, u32& extent, u32 limit) {
@@ -1006,7 +1018,7 @@ void RasterizerVulkan::Clear(u32 layer_count) {
         clear_rect.rect.extent.width >= render_area.width &&
         clear_rect.rect.extent.height >= render_area.height;
     const bool can_defer_clear = ENABLE_DEFERRED_CLEAR && (!regs.clear_control.use_scissor || clear_covers_render_area) &&
-                                 regs.clear_surface.layer == 0 &&
+                                 clear_layers.covers_all_layers &&
                                  !scheduler.IsRenderPassActive() &&
                                  (!use_color || color_full_channels) && ds_deferrable;
     if (!can_defer_clear) {

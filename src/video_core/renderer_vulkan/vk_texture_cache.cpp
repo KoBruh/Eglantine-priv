@@ -4530,6 +4530,11 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
     if (num_layers == (std::numeric_limits<s32>::max)()) {
         num_layers = 1;
     }
+    layers = static_cast<u32>((std::max)(num_layers, 1));
+    LOG_DEBUG(Render_Vulkan,
+              "Framebuffer layers: layers={}, color0_layers={}, depth_layers={}, attachments={}",
+              layers, color_buffers[0] ? color_buffers[0]->range.extent.layers : 0,
+              depth_buffer ? depth_buffer->range.extent.layers : 0, attachments.size());
     renderpass_key.samples = samples;
     const bool do_resolve_color = ENABLE_MSAA_TILER_RESOLVE &&
         samples != VK_SAMPLE_COUNT_1_BIT && num_colors > 0 && runtime.device.IsTiler();
@@ -4554,7 +4559,6 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
     render_area.height = (std::min)(render_area.height, height);
 
     if (do_resolve_color) {
-        const u32 layers = static_cast<u32>((std::max)(num_layers, 1));
         for (size_t index = 0; index < NUM_RT; ++index) {
             const PixelFormat format = renderpass_key.color_formats[index];
             if (format == PixelFormat::Invalid) {
@@ -4570,7 +4574,6 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
     }
 
     if (do_resolve_depth_stencil) {
-        const u32 layers = static_cast<u32>((std::max)(num_layers, 1));
         const VkFormat vk_format =
             MaxwellToVK::SurfaceFormat(runtime.device, FormatType::Optimal, true,
                                        renderpass_key.depth_format)
@@ -4590,7 +4593,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
         .pAttachments = attachments.data(),
         .width = render_area.width,
         .height = render_area.height,
-        .layers = static_cast<u32>((std::max)(num_layers, 1)),
+        .layers = layers,
     });
 }
 
