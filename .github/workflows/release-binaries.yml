@@ -42,6 +42,12 @@ jobs:
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 3000M
+      # Paths under the checkout are hashed relative to it, so a cache made on one runner (whose
+      # workspace path differs: boat's is not GitHub's) still hits on another.
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "true"
+      # Compilers are installed fresh on every run; compare them by content, not by mtime.
+      CCACHE_COMPILERCHECK: content
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_CACHE_SIZE: 3G
     strategy:
@@ -232,17 +238,20 @@ jobs:
           restore-keys: |
             cpm-${{ runner.os }}-
 
-      # The sha in the key makes every run save a fresh cache (actions/cache never saves over an
-      # exact hit), and restore-keys seeds it from the newest one of the same platform.
-      - name: Cache compiler objects
-        uses: actions/cache@v5
+      # The sha in the key makes every run save a fresh cache (a cache key is never overwritten),
+      # and the restore key seeds it from the newest one of the same platform. The "/" after the
+      # platform keeps the prefixes apart: "objects/linux-x86_64/" does not match the PGO job's
+      # "objects/linux-x86_64-pgo/" (its objects are built with other flags and never hit).
+      # Saving is a separate step that runs even when the build or a later step fails.
+      - name: Restore compiler objects
+        uses: actions/cache/restore@v5
         with:
           path: |
             .ccache
             .sccache
-          key: objects-${{ matrix.platform }}-${{ github.sha }}
+          key: objects/${{ matrix.platform }}/${{ github.sha }}
           restore-keys: |
-            objects-${{ matrix.platform }}-
+            objects/${{ matrix.platform }}/
 
       - name: Configure Linux
         if: startsWith(matrix.platform, 'linux')
@@ -327,19 +336,31 @@ jobs:
             "-DCMAKE_C_FLAGS=$profile" \
             "-DCMAKE_CXX_FLAGS=$profile"
 
+      # The statistics are zeroed first, so the printed hit rate is this run's, not the cache's lifetime.
       - name: Build
         if: ${{ ! matrix.mingw }}
         shell: bash
         run: |
+          if command -v ccache > /dev/null; then ccache --zero-stats > /dev/null; else sccache --zero-stats > /dev/null; fi
           cmake --build build/release --target yuzu yuzu-cmd --parallel
-          if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; fi
+          if command -v ccache > /dev/null; then ccache --show-stats; else sccache --show-stats; sccache --stop-server > /dev/null || true; fi
 
       - name: Build MinGW PGO
         if: matrix.mingw
         shell: msys2 {0}
         run: |
+          ccache --zero-stats > /dev/null
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           ccache --show-stats
+
+      - name: Save compiler objects
+        if: always() && !cancelled()
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            .ccache
+            .sccache
+          key: objects/${{ matrix.platform }}/${{ github.sha }}
 
       # Plain tar.gz with the two programs. GitHub artifacts drop the executable bit, so a tar is
       # what keeps it. This one is not self-contained: it needs Qt 6 and the usual libraries
