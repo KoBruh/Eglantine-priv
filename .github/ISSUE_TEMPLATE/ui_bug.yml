@@ -78,4 +78,5 @@ body:
     id: logs
     attributes:
       label: Log / crash dump
+      description: "Where to find it: [How to access logs](https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md)"
       render: shell
