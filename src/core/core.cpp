@@ -502,10 +502,14 @@ struct System::Impl {
             }
         }
 
-        perf_stats.emplace(params.program_id);
-        // Reset counters and set time origin to current frame
-        GetAndResetPerfStats();
-        perf_stats->BeginSystemFrame();
+        {
+            // Frontend timers poll GetAndResetPerfStats from their own threads.
+            std::scoped_lock lk{perf_stats_mutex};
+            perf_stats.emplace(params.program_id);
+            // Reset counters and set time origin to current frame
+            perf_stats->GetAndResetStats(core_timing.GetGlobalTimeUs());
+            perf_stats->BeginSystemFrame();
+        }
 
         const FileSys::PatchManager pm(params.program_id, system.GetFileSystemController(), system.GetContentProvider());
         auto const metadata = pm.GetControlMetadata();
@@ -562,7 +566,10 @@ struct System::Impl {
         Common::Log::Flush();
         gpu_core.reset();
         host1x_core.reset();
-        perf_stats.reset();
+        {
+            std::scoped_lock lk{perf_stats_mutex};
+            perf_stats.reset();
+        }
         LOG_INFO(Core, "Shutdown phase: stop CPU manager and kernel");
         Common::Log::Flush();
         cpu_manager.Shutdown();
@@ -596,6 +603,7 @@ struct System::Impl {
     }
 
     PerfStatsResults GetAndResetPerfStats() {
+        std::scoped_lock lk{perf_stats_mutex};
         if (!perf_stats) {
             return {};
         }
@@ -630,6 +638,7 @@ struct System::Impl {
     std::optional<Service::KernelHelpers::ServiceContext> general_channel_context;
     std::optional<Service::Event> general_channel_event;
     std::optional<Core::PerfStats> perf_stats;
+    std::mutex perf_stats_mutex;
     std::optional<Tegra::Host1x::Host1x> host1x_core;
     std::optional<Core::DeviceMemory> device_memory;
     std::optional<AudioCore::AudioCore> audio_core;
