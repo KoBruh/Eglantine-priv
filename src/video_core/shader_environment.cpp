@@ -78,6 +78,14 @@ static Shader::TextureType ConvertTextureType(const Tegra::Texture::TICEntry& en
     }
 }
 
+// Shader::TexturePixelFormat mirrors VideoCore::Surface::PixelFormat value for value.
+static_assert(static_cast<u32>(Shader::TexturePixelFormat::E5B9G9R9_FLOAT) ==
+              static_cast<u32>(VideoCore::Surface::PixelFormat::E5B9G9R9_FLOAT));
+static_assert(static_cast<u32>(Shader::TexturePixelFormat::D32_FLOAT) ==
+              static_cast<u32>(VideoCore::Surface::PixelFormat::D32_FLOAT));
+static_assert(static_cast<size_t>(Shader::TexturePixelFormat::D32_FLOAT_S8_UINT) + 1 ==
+              VideoCore::Surface::MaxPixelFormat);
+
 static Shader::TexturePixelFormat ConvertTexturePixelFormat(const Tegra::Texture::TICEntry& entry) {
     return static_cast<Shader::TexturePixelFormat>(
         PixelFormatFromTextureInfo(entry.format, entry.r_type, entry.g_type, entry.b_type,
