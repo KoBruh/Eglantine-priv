@@ -92,6 +92,23 @@ void execute(Wave& r, const std::vector<u64>& code) {
                 float aa = half(x, sw - 2);
                 out = pack(std::fma(aa, half(y, 0), half(old[t][c], 0)),
                            std::fma(aa, half(y, 1), half(old[t][c], 1)));
+            } else if (op == 0x5ca8) {
+                // F2F: bits 8-9 the destination format and 10-11 the source (1 F16, 2 F32), bit
+                // 41 the source's high half. The f32 HMMA accumulation converts both ways.
+                REQUIRE(((w >> 45) & 1) == 0);
+                REQUIRE(((w >> 49) & 1) == 0);
+                const u64 to = (w >> 8) & 3, from = (w >> 10) & 3;
+                if (to == 2 && from == 1) {
+                    out = std::bit_cast<u32>(half(y, static_cast<u32>((w >> 41) & 1)));
+                } else if (to == 1 && from == 2) {
+                    out = encode(std::bit_cast<float>(y));
+                } else {
+                    FAIL("Unsupported F2F word " << std::hex << w);
+                }
+            } else if (op == 0x5980) {
+                // FFMA Rd = Ra * Rb + Rc (bits 39-46).
+                out = std::bit_cast<u32>(std::fma(std::bit_cast<float>(x), std::bit_cast<float>(y),
+                                                  std::bit_cast<float>(old[t][c])));
             } else {
                 FAIL("Unsupported emitted word " << std::hex << w);
             }
