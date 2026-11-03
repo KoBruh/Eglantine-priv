@@ -71,7 +71,7 @@ std::string DiscordImpl::GetGameString(const std::string& title) {
 
 static constexpr char DEFAULT_DISCORD_TEXT[] = "Eglantine is an emulator for the Nintendo Switch";
 static constexpr char DEFAULT_DISCORD_IMAGE[] =
-    "https://git.eden-emu.dev/eden-emu/eden/raw/branch/master/dist/qt_themes/default/icons/256x256/"
+    "https://raw.githubusercontent.com/notsapinho/Eglantine/main/dist/qt_themes/default/icons/256x256/"
     "eden.png";
 
 void DiscordImpl::UpdateGameStatus(std::string_view game_url, bool has_boxart) {

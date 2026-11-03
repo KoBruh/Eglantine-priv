@@ -1858,7 +1858,7 @@ bool MainWindow::LoadROM(const QString& filename, Service::AM::FrontendAppletPar
                 this, tr("An error occurred initializing the video core."),
                 tr("This is usually caused by outdated GPU drivers. "
                    "Please see the log for more details. See: "
-                   "<a href='https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/HowToAccessLogs.md'>"
+                   "<a href='https://github.com/notsapinho/Eglantine/blob/main/docs/user/HowToAccessLogs.md'>"
                    "How to access log files</a>."));
             break;
         default:
@@ -3352,7 +3352,7 @@ void MainWindow::OnOpenModsPage() {
 }
 
 void MainWindow::OnOpenUserHandbook() {
-    OpenURL(QUrl(QStringLiteral("https://git.eden-emu.dev/eden-emu/eden/src/branch/master/docs/user/README.md")));
+    OpenURL(QUrl(QStringLiteral("https://github.com/notsapinho/Eglantine/blob/main/docs/user/README.md")));
 }
 
 void MainWindow::ToggleFullscreen() {
