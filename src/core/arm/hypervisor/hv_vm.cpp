@@ -460,6 +460,17 @@ void Vm::Detach(std::string reason) {
     unavailable_reason = std::move(reason);
 }
 
+void Vm::ReleaseBacking() {
+    std::scoped_lock lk{mutex};
+    ready.store(false, std::memory_order_release);
+    attached_table = nullptr;
+    if (mapped_backing != nullptr) {
+        hv_vm_unmap(DramMemoryMap::Base, mapped_backing_size);
+        mapped_backing = nullptr;
+        mapped_backing_size = 0;
+    }
+}
+
 std::string Vm::UnavailableReason() const {
     std::scoped_lock lk{mutex};
     return unavailable_reason;
