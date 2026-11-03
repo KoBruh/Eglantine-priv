@@ -29,6 +29,7 @@ import json
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -40,6 +41,37 @@ import thread_cpu  # noqa: E402
 REPO = pathlib.Path(__file__).resolve().parents[2]
 DEFAULT_EXE = REPO / "build" / "bin" / ("eden-cli.exe" if os.name == "nt" else "eden-cli")
 TAP_SECONDS = 0.3
+
+
+def request_quit(process):
+    """Ask eden-cli to quit the way closing its window does: it shuts the emulation down and
+    returns from main, so exit handlers run (an instrumented build writes its .profraw in one).
+    Returns False when there was nothing to ask."""
+    if os.name != "nt":
+        process.send_signal(signal.SIGTERM)  # SDL turns it into SDL_EVENT_QUIT
+        return True
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    windows = []
+
+    def collect(hwnd, _):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value == process.pid:
+            name = ctypes.create_unicode_buffer(64)
+            user32.GetClassNameW(hwnd, name, len(name))
+            windows.append((hwnd, name.value))
+        return True
+
+    user32.EnumWindows(enum_proc(collect), 0)
+    # SDL's windows are of class SDL_app; the process also owns IME and driver helper windows.
+    targets = [hwnd for hwnd, name in windows if name == "SDL_app"]
+    WM_CLOSE = 0x0010
+    for hwnd in targets:
+        user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+    return bool(targets)
 
 
 def default_config():
@@ -211,9 +243,17 @@ def write_report(out, scenario, settings, events, result, found, presents, excep
         ("stubbed", "Stubbed functions called"),
         ("assert", "Assertions that failed"),
     ]
+    if result["crashed"]:
+        ending = f"**exited before the end** (exit code {result['exit_code']})"
+    elif "quit_seconds" not in result:
+        ending = "no crash (stopped by the harness)"
+    elif result["quit_seconds"] is None:
+        ending = "no crash; asked to quit at the end but **had to be killed**"
+    else:
+        ending = (f"no crash; asked to quit at the end, exited in {result['quit_seconds']:.0f} s "
+                  f"(exit code {result['exit_code']})")
     lines = [f"# Scenario report: {scenario.name}", "",
-             f"- Run: {result['started']} for {result['seconds']:.0f} s, "
-             f"{'**exited before the end** (exit code ' + str(result['exit_code']) + ')' if result['crashed'] else 'no crash (stopped by the harness)'}",
+             f"- Run: {result['started']} for {result['seconds']:.0f} s, {ending}",
              f"- Game: `{settings['game']}`",
              f"- Extra environment: {', '.join(f'`{k}={v}`' for k, v in settings['env'].items()) or 'none'}",
              f"- Config changes: {', '.join(f'`{k}={v}`' for k, v in settings.get('config', {}).items()) or 'none'}",
@@ -275,6 +315,10 @@ def main():
                              "never takes focus)")
     parser.add_argument("--fullscreen", action="store_true",
                         help="start the game fullscreen (with --foreground: screen recordings)")
+    parser.add_argument("--clean-exit", type=float, nargs="?", const=120.0, default=None, metavar="SECONDS",
+                        help="at the end, ask the emulator to quit (as closing its window does) instead of "
+                             "killing it, so its exit handlers run: an instrumented (PGO) build writes its "
+                             "profile then. Killed if it is still running after SECONDS (default 120)")
     args = parser.parse_args()
 
     config = args.config or default_config()
@@ -345,12 +389,25 @@ def main():
                 time.sleep(1)  # let the last capture finish writing
                 break
         sampler.close()
-        if not crashed:
+        seconds = time.monotonic() - started
+        quit_seconds = None
+        if not crashed and args.clean_exit is not None:
+            asked = time.monotonic()
+            if request_quit(process):
+                try:
+                    exit_code = process.wait(timeout=args.clean_exit)
+                    quit_seconds = time.monotonic() - asked
+                except subprocess.TimeoutExpired:
+                    print(f"warning: the emulator did not quit within {args.clean_exit:.0f} s; killing it")
+            else:
+                print("warning: found no emulator window to close; killing it")
+        if not crashed and quit_seconds is None:
             process.kill()
             process.wait()
-    seconds = time.monotonic() - started
     result = {"started": stamp, "seconds": seconds, "crashed": crashed,
               "exit_code": f"{exit_code & 0xffffffff:#x}" if exit_code is not None else None}
+    if args.clean_exit is not None and not crashed:
+        result["quit_seconds"] = quit_seconds  # None: it had to be killed
 
     frame_list = sorted(path.stem.removeprefix("nx2-frame-") for path in frames_dir.glob("nx2-frame-*.tga"))
     lumas = {int(tga.stem.removeprefix("nx2-frame-")): round(frame_tools.mean_luma(tga), 1)

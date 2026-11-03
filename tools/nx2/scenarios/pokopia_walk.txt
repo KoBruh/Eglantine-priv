@@ -1,0 +1,52 @@
+# Pokopia: load the save, then a long walk and run with camera turns and tilts, so the world
+# streams in new areas and the CPU JIT keeps compiling new game code. Written for PGO training
+# (tools/pgo/README.md), also a longer gameplay benchmark.
+# Run: python tools/nx2/run_scenario.py tools/nx2/scenarios/pokopia_walk.txt --game <...\exefs\main>
+#
+# Timed in presented frames, like pokopia_pokedex.txt: the title comes at ~f2600-2900 and the
+# world is up by ~f3600. Holds overlap on purpose: walking while turning the camera curves the
+# path, two stick directions at once walk diagonally, and B held while walking runs.
+duration: 360          # hard limit (seconds)
+until_frame: 11400     # stop once this frame is captured
+capture_every: 120
+
+at f2700: press A      # title ("PRESS A BUTTON"); spare presses cover a slower load
+at f2950: press A
+at f3150: press A
+at f3400: press A
+
+at f3900: hold LS_UP 8        # walk forward, curving left
+at f4000: hold RS_LEFT 2
+at f4450: hold RS_LEFT 3      # stand and pan the camera around
+at f4650: hold LS_UP 8        # run forward, curving right
+at f4650: hold B 8
+at f4800: hold RS_RIGHT 1.5
+at f5200: hold LS_LEFT 5      # walk left
+at f5550: hold RS_UP 1        # tilt up, then down
+at f5620: hold RS_DOWN 1.5
+at f5750: hold LS_DOWN 6      # run back
+at f5750: hold B 6
+at f5850: hold RS_RIGHT 2
+at f6200: hold LS_RIGHT 6     # walk right
+at f6600: hold RS_LEFT 4      # a full turn of the camera
+at f6900: hold LS_UP 10       # long run forward, weaving
+at f6900: hold B 10
+at f7100: hold RS_LEFT 1
+at f7300: hold RS_RIGHT 1
+at f7550: hold LS_UP 4        # diagonal walk
+at f7550: hold LS_LEFT 4
+at f7850: hold RS_RIGHT 3
+at f8100: hold LS_UP 10       # another long run
+at f8100: hold B 10
+at f8300: hold RS_RIGHT 1.5
+at f8750: hold LS_DOWN 8      # walk back, curving
+at f8900: hold RS_LEFT 2
+at f9300: hold LS_RIGHT 6     # run right
+at f9300: hold B 6
+at f9700: hold RS_UP 1.5      # look at the sky and pan across it
+at f9800: hold RS_LEFT 3
+at f10000: hold RS_DOWN 2
+at f10150: hold LS_UP 8       # run forward once more
+at f10150: hold B 8
+at f10300: hold RS_RIGHT 2
+at f10700: hold LS_LEFT 6     # and walk left to the end
