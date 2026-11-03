@@ -22,7 +22,7 @@ ManifestDPIAware true
 
 !define PRODUCT_NAME "Eden"
 !define PRODUCT_PUBLISHER "Utopia LLC"
-!define PRODUCT_WEB_SITE "https://git.eden-emu.dev"
+!define PRODUCT_WEB_SITE "https://github.com/notsapinho/Eglantine"
 !define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\${PRODUCT_NAME}.exe"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 

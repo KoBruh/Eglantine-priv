@@ -5,7 +5,7 @@ pkgver=0.r0.g0000000
 pkgrel=1
 pkgdesc='Nintendo Switch emulator (development branch)'
 arch=('x86_64')
-url='https://github.com/Djihads80/Eglantine'
+url='https://github.com/notsapinho/Eglantine'
 license=('GPL-3.0-or-later')
 depends=(
   'enet'
@@ -43,7 +43,7 @@ optdepends=(
 )
 provides=('eglantine')
 conflicts=('eglantine')
-source=("eglantine::git+https://github.com/Djihads80/Eglantine.git#branch=nx2")
+source=("eglantine::git+https://github.com/notsapinho/Eglantine.git#branch=main")
 sha256sums=('SKIP')
 
 pkgver() {
