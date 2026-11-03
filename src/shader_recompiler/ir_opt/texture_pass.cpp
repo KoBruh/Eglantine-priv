@@ -1108,6 +1108,23 @@ bool IsPixelFormatSNorm(TexturePixelFormat pixel_format) {
     }
 }
 
+bool IsPixelFormatSignedInteger(TexturePixelFormat pixel_format) {
+    switch (pixel_format) {
+    case TexturePixelFormat::A8B8G8R8_SINT:
+    case TexturePixelFormat::R8_SINT:
+    case TexturePixelFormat::R8G8_SINT:
+    case TexturePixelFormat::R16_SINT:
+    case TexturePixelFormat::R16G16_SINT:
+    case TexturePixelFormat::R16G16B16A16_SINT:
+    case TexturePixelFormat::R32_SINT:
+    case TexturePixelFormat::R32G32_SINT:
+    case TexturePixelFormat::R32G32B32A32_SINT:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void PatchTexelFetch(IR::Block& block, IR::Inst& inst, TexturePixelFormat pixel_format) {
     const auto it{IR::Block::InstructionList::s_iterator_to(inst)};
     IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
@@ -1277,8 +1294,15 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         }
         default:
             if (flags.type == TextureType::Buffer) {
+                // The texel buffer view takes the descriptor's format; declare the type that
+                // format returns. Integer texels reach the program's registers as their bits.
+                const bool is_integer{is_texture_pixel_format_integer(cbuf)};
+                const bool is_signed{is_integer && IsPixelFormatSignedInteger(
+                                                       ReadTexturePixelFormatCached(env, cbuf))};
                 index = descriptors.Add(TextureBufferDescriptor{
                     .has_secondary = cbuf.has_secondary,
+                    .is_integer = is_integer,
+                    .is_signed = is_signed,
                     .cbuf_index = cbuf.index,
                     .cbuf_offset = cbuf.offset,
                     .shift_left = cbuf.shift_left,

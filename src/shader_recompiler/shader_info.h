@@ -191,6 +191,10 @@ struct StorageBufferDescriptor {
 
 struct TextureBufferDescriptor {
     bool has_secondary;
+    /// The buffer's format holds integers (signed when is_signed): the shader reads it as such,
+    /// since a texel buffer view's numeric type must match the type the shader declares.
+    bool is_integer;
+    bool is_signed;
     u32 cbuf_index;
     u32 cbuf_offset;
     u32 shift_left;

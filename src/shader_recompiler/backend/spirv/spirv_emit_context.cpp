@@ -1409,21 +1409,26 @@ void EmitContext::DefineTextureBuffers(const Info& info, u32& binding) {
         return;
     }
     const spv::ImageFormat format{spv::ImageFormat::Unknown};
-    image_buffer_type = TypeImage(F32[1], spv::Dim::Buffer, 0U, false, false, 1, format);
-
-    const Id type{TypePointer(spv::StorageClass::UniformConstant, image_buffer_type)};
     texture_buffers.reserve(info.texture_buffer_descriptors.size());
     for (const TextureBufferDescriptor& desc : info.texture_buffer_descriptors) {
         if (desc.count != 1) {
             throw NotImplementedException("Array of texture buffers");
         }
+        // The sampled type has to match the numeric type of the view's format (float, unsigned
+        // or signed integer), which is the descriptor's format.
+        const Id sampled_type{desc.is_integer ? (desc.is_signed ? S32[1] : U32[1]) : F32[1]};
+        const Id image_type{TypeImage(sampled_type, spv::Dim::Buffer, 0U, false, false, 1, format)};
+        const Id type{TypePointer(spv::StorageClass::UniformConstant, image_type)};
         const Id id{AddGlobalVariable(type, spv::StorageClass::UniformConstant)};
         Decorate(id, spv::Decoration::Binding, binding);
         Decorate(id, spv::Decoration::DescriptorSet, 0U);
         Name(id, NameOf(stage, desc, "texbuf"));
         texture_buffers.push_back({
             .id = id,
+            .image_type = image_type,
             .count = desc.count,
+            .is_integer = desc.is_integer,
+            .is_signed = desc.is_signed,
         });
         if (profile.supported_spirv >= 0x00010400) {
             interfaces.push_back(id);
