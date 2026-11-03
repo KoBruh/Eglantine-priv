@@ -30,6 +30,8 @@ u32 TranslationReads::Ask(Shader::Environment& env, Query query, u32 arg0, u32 a
         return static_cast<u32>(env.ReadTexturePixelFormat(arg0));
     case Query::TexturePixelFormatInteger:
         return env.IsTexturePixelFormatInteger(arg0) ? 1 : 0;
+    case Query::TextureSamplerState:
+        return env.ReadTextureSamplerState(arg0);
     case Query::ViewportTransformState:
         return env.ReadViewportTransformState();
     case Query::ReplaceConstBuffer: {
@@ -123,6 +125,10 @@ Shader::TexturePixelFormat RecordingEnvironment::ReadTexturePixelFormat(u32 raw_
 
 bool RecordingEnvironment::IsTexturePixelFormatInteger(u32 raw_handle) {
     return AskAndRecord(TranslationReads::Query::TexturePixelFormatInteger, raw_handle) != 0;
+}
+
+u32 RecordingEnvironment::ReadTextureSamplerState(u32 raw_handle) {
+    return AskAndRecord(TranslationReads::Query::TextureSamplerState, raw_handle);
 }
 
 u32 RecordingEnvironment::ReadViewportTransformState() {

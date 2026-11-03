@@ -85,6 +85,12 @@ public:
 
     [[nodiscard]] virtual bool IsTexturePixelFormatInteger(u32 raw_handle) = 0;
 
+    /// The sampler state of a texture handle, TextureSamplerState::Pack()ed; 0 (unknown) when
+    /// the environment has no sampler to read.
+    [[nodiscard]] virtual u32 ReadTextureSamplerState([[maybe_unused]] u32 raw_handle) {
+        return 0;
+    }
+
     [[nodiscard]] virtual u32 ReadViewportTransformState() = 0;
 
     [[nodiscard]] virtual u32 TextureBoundBuffer() const = 0;

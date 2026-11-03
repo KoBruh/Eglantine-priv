@@ -98,6 +98,7 @@ public:
         TextureType,
         TexturePixelFormat,
         TexturePixelFormatInteger,
+        TextureSamplerState,
         ViewportTransformState,
         ReplaceConstBuffer,
         HasHLEMacroState,
@@ -165,6 +166,7 @@ public:
     Shader::TextureType ReadTextureType(u32 raw_handle) override;
     Shader::TexturePixelFormat ReadTexturePixelFormat(u32 raw_handle) override;
     bool IsTexturePixelFormatInteger(u32 raw_handle) override;
+    u32 ReadTextureSamplerState(u32 raw_handle) override;
     u32 ReadViewportTransformState() override;
     u32 TextureBoundBuffer() const override;
     u32 LocalMemorySize() const override;

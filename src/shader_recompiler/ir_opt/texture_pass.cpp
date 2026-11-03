@@ -5,17 +5,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <bit>
 #include <optional>
+#include <string_view>
 #include "common/container/unordered_map.h"
 #include <tuple>
 #include <limits>
 #include <boost/container/small_vector.hpp>
 
+#include "common/logging.h"
 #include "common/settings.h"
 #include "shader_recompiler/environment.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
@@ -1125,6 +1129,266 @@ bool IsPixelFormatSignedInteger(TexturePixelFormat pixel_format) {
     }
 }
 
+bool IsPixelFormatDepth(TexturePixelFormat pixel_format) {
+    switch (pixel_format) {
+    case TexturePixelFormat::D32_FLOAT:
+    case TexturePixelFormat::D16_UNORM:
+    case TexturePixelFormat::X8_D24_UNORM:
+    case TexturePixelFormat::S8_UINT:
+    case TexturePixelFormat::D24_UNORM_S8_UINT:
+    case TexturePixelFormat::S8_UINT_D24_UNORM:
+    case TexturePixelFormat::D32_FLOAT_S8_UINT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsPixelFormatFloat(TexturePixelFormat pixel_format) {
+    switch (pixel_format) {
+    case TexturePixelFormat::R16G16B16A16_FLOAT:
+    case TexturePixelFormat::B10G11R11_FLOAT:
+    case TexturePixelFormat::BC6H_UFLOAT:
+    case TexturePixelFormat::BC6H_SFLOAT:
+    case TexturePixelFormat::R32G32B32A32_FLOAT:
+    case TexturePixelFormat::R32G32_FLOAT:
+    case TexturePixelFormat::R32_FLOAT:
+    case TexturePixelFormat::R16_FLOAT:
+    case TexturePixelFormat::R16G16_FLOAT:
+    case TexturePixelFormat::R32G32B32_FLOAT:
+    case TexturePixelFormat::R16G16B16X16_FLOAT:
+    case TexturePixelFormat::E5B9G9R9_FLOAT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool IsDepthCompareInstruction(IR::Opcode opcode) {
+    switch (opcode) {
+    case IR::Opcode::ImageSampleDrefImplicitLod:
+    case IR::Opcode::ImageSampleDrefExplicitLod:
+    case IR::Opcode::ImageGatherDref:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Depth comparison lookups the host does not define.
+//
+// Vulkan defines a depth comparison (OpImage*Dref*) only on formats with
+// VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT, depth formats in practice, and only
+// with the comparison the sampler has on. Games do both others on Maxwell: Pokopia samples, with
+// depth comparison lookups, an 8x8 A8B8G8R8_UNORM placeholder bound where a shadow map array
+// goes, through a sampler with its comparison off. NVIDIA's driver does what Maxwell does: no
+// comparison returns the texel, and a color format compares its red channel. AMD's drivers take
+// a comparison that is off as "never" and return 0 (black where the result is a light factor).
+//
+// So when the sampler bound at translation has its comparison off, or the texture is not a depth
+// format, the shader looks up the red channel without the comparison and compares it itself (or
+// not), with the sampler's comparison function and filter. Its descriptor is a color one, and
+// the sampler is bound without its comparison (Sampler::HandleFor).
+// EDEN_NX2_DREF_EMULATION=0 keeps the hardware comparison; "fail" / "pass" make every emulated
+// comparison fail / pass instead (what a driver that gets them wrong shows).
+struct DepthCompareEmulation {
+    /// Off: the lookup returns the texel, like Maxwell with the sampler's comparison off.
+    bool compare;
+    u32 compare_func; ///< Maxwell order: never, <, ==, <=, >, !=, >=, always
+    bool linear_filter;
+    /// Fixed-point (normalized) texels: the reference is clamped to [0, 1], as for D16 and D24.
+    bool clamp_reference;
+};
+
+std::optional<DepthCompareEmulation> DepthCompareEmulationFor(Environment& env,
+                                                              const ConstBufferAddr& cbuf,
+                                                              IR::TextureInstInfo flags,
+                                                              IR::Inst& inst) {
+    static const std::string_view mode = [] {
+        const char* const value = std::getenv("EDEN_NX2_DREF_EMULATION");
+        return std::string_view{value != nullptr ? value : "1"};
+    }();
+    if (mode == "0" || flags.is_depth == 0 || !IsDepthCompareInstruction(inst.GetOpcode())) {
+        return std::nullopt;
+    }
+    // Handles computed per draw, and arrays (whose other elements may have other formats), have
+    // no single texture and sampler to read here.
+    if (cbuf.handle_program != ~0U || cbuf.count > 1) {
+        return std::nullopt;
+    }
+    if (inst.GetAssociatedPseudoOperation(IR::Opcode::GetSparseFromOp) != nullptr) {
+        return std::nullopt;
+    }
+    switch (flags.type) {
+    case TextureType::Color1D:
+    case TextureType::ColorArray1D:
+    case TextureType::Color2D:
+    case TextureType::ColorArray2D:
+    case TextureType::ColorCube:
+    case TextureType::ColorArrayCube:
+        break;
+    default:
+        return std::nullopt;
+    }
+    if (IsTexturePixelFormatIntegerCached(env, cbuf)) {
+        return std::nullopt;
+    }
+    const TexturePixelFormat format{ReadTexturePixelFormatCached(env, cbuf)};
+    const u32 handle{GetTextureHandleCached(env, cbuf)};
+    const TextureSamplerState sampler{
+        TextureSamplerState::Unpack(env.ReadTextureSamplerState(handle))};
+    if (!sampler.known || (sampler.compare_enabled && IsPixelFormatDepth(format))) {
+        // Unknown, or defined: the hardware comparison.
+        return std::nullopt;
+    }
+    DepthCompareEmulation emulation{
+        .compare = sampler.compare_enabled,
+        .compare_func = sampler.compare_func,
+        .linear_filter = sampler.linear_filter,
+        .clamp_reference = !IsPixelFormatFloat(format),
+    };
+    if (mode == "fail" || mode == "pass") {
+        emulation.compare = true;
+        emulation.compare_func = mode == "fail" ? 0 : 7; // never / always
+    }
+    static std::atomic<u32> logged{};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+        LOG_INFO(Shader,
+                 "Depth comparison lookup of texture {:#x} (format {}, sampler comparison {}, "
+                 "function {}, {} filter) done in the shader",
+                 handle, static_cast<u32>(format), sampler.compare_enabled, sampler.compare_func,
+                 sampler.linear_filter ? "linear" : "nearest");
+    }
+    return emulation;
+}
+
+/// 1 when `reference <func> texel` holds, else 0: what a comparison of one texel returns.
+IR::F32 CompareTexel(IR::IREmitter& ir, u32 func, const IR::F32& reference,
+                     const IR::F32& texel) {
+    IR::U1 pass;
+    switch (func) {
+    case 1:
+        pass = ir.FPLessThan(reference, texel);
+        break;
+    case 2:
+        pass = ir.FPEqual(reference, texel);
+        break;
+    case 3:
+        pass = ir.FPLessThanEqual(reference, texel);
+        break;
+    case 4:
+        pass = ir.FPGreaterThan(reference, texel);
+        break;
+    case 5:
+        pass = ir.FPNotEqual(reference, texel, {}, false);
+        break;
+    case 6:
+        pass = ir.FPGreaterThanEqual(reference, texel);
+        break;
+    case 7:
+        return ir.Imm32(1.0f);
+    default:
+        return ir.Imm32(0.0f);
+    }
+    return IR::F32{ir.Select(pass, ir.Imm32(1.0f), ir.Imm32(0.0f))};
+}
+
+/// Replaces `inst`, a depth comparison lookup whose descriptor was made a color one, with a
+/// lookup of the red channel and, if the sampler has it, the comparison. `inst` already has its
+/// final descriptor index and texture index argument, which the new texture instructions take.
+void LowerDepthCompare(IR::Block& block, IR::Inst& inst, const DepthCompareEmulation& emulation) {
+    const auto it{IR::Block::InstructionList::s_iterator_to(inst)};
+    IR::IREmitter ir{block, it};
+    const IR::Opcode opcode{inst.GetOpcode()};
+    const auto flags{inst.Flags<IR::TextureInstInfo>()};
+    const IR::Value index{inst.Arg(0)};
+    const IR::Value coords{inst.Arg(1)};
+    const IR::F32 dref{opcode == IR::Opcode::ImageGatherDref ? inst.Arg(4) : inst.Arg(2)};
+    const IR::F32 reference{emulation.clamp_reference
+                                ? IR::F32{ir.FPClamp(dref, ir.Imm32(0.0f), ir.Imm32(1.0f))}
+                                : dref};
+    const auto compare{[&](const IR::Value& texels, size_t component) {
+        const IR::F32 texel{ir.CompositeExtract(texels, component)};
+        return emulation.compare ? CompareTexel(ir, emulation.compare_func, reference, texel)
+                                 : texel;
+    }};
+    const auto texture_op{[&](IR::Opcode op, std::initializer_list<IR::Value> args,
+                              IR::TextureInstInfo op_flags) {
+        return IR::Value{&*block.PrependNewInst(it, op, args, op_flags.raw)};
+    }};
+    IR::TextureInstInfo gather_flags{flags};
+    gather_flags.gather_component.Assign(0);
+    gather_flags.has_bias.Assign(0);
+    gather_flags.has_lod_clamp.Assign(0);
+
+    if (opcode == IR::Opcode::ImageGatherDref) {
+        // Each of the four texels, compared unfiltered.
+        const IR::Value texels{texture_op(IR::Opcode::ImageGather,
+                                          {index, coords, inst.Arg(2), inst.Arg(3)}, gather_flags)};
+        inst.ReplaceUsesWith(ir.CompositeConstruct(compare(texels, 0), compare(texels, 1),
+                                                   compare(texels, 2), compare(texels, 3)));
+        return;
+    }
+    const bool is_1d{flags.type == TextureType::Color1D || flags.type == TextureType::ColorArray1D};
+    if (!emulation.compare || !emulation.linear_filter || is_1d) {
+        // The same lookup without the comparison: the filtered texel, or with nearest filtering
+        // the one texel to compare. (1D textures cannot be gathered: compared after filtering.)
+        const IR::Value texel{
+            opcode == IR::Opcode::ImageSampleDrefImplicitLod
+                ? texture_op(IR::Opcode::ImageSampleImplicitLod,
+                             {index, coords, inst.Arg(3), inst.Arg(4)}, flags)
+                : texture_op(IR::Opcode::ImageSampleExplicitLod,
+                             {index, coords, inst.Arg(3), inst.Arg(4)}, flags)};
+        inst.ReplaceUsesWith(compare(texel, 0));
+        return;
+    }
+    // Linear filtering: percentage-closer filtering of the 2x2 texels around the coordinate on
+    // the top level, the four comparisons weighted bilinearly.
+    const IR::Value offset{inst.Arg(4)};
+    if (flags.type == TextureType::ColorCube || flags.type == TextureType::ColorArrayCube) {
+        // The texels around a cube coordinate depend on its face: weigh them equally.
+        const IR::Value texels{texture_op(IR::Opcode::ImageGather,
+                                          {index, coords, offset, IR::Value{}}, gather_flags)};
+        const IR::F32 sum{ir.FPAdd(ir.FPAdd(compare(texels, 0), compare(texels, 1)),
+                                   ir.FPAdd(compare(texels, 2), compare(texels, 3)))};
+        inst.ReplaceUsesWith(ir.FPMul(sum, ir.Imm32(0.25f)));
+        return;
+    }
+    // Texel space, where texel i's center is at i: the four texels are floor(pos) and the next
+    // ones, weighted by fract(pos).
+    const IR::Value size{texture_op(IR::Opcode::ImageQueryDimensions,
+                                    {index, ir.Imm32(0), ir.Imm1(true)}, flags)};
+    const IR::F32 width{ir.ConvertUToF(32, 32, ir.CompositeExtract(size, 0))};
+    const IR::F32 height{ir.ConvertUToF(32, 32, ir.CompositeExtract(size, 1))};
+    const IR::F32 x{ir.FPAdd(ir.FPMul(IR::F32{ir.CompositeExtract(coords, 0)}, width),
+                             ir.Imm32(-0.5f))};
+    const IR::F32 y{ir.FPAdd(ir.FPMul(IR::F32{ir.CompositeExtract(coords, 1)}, height),
+                             ir.Imm32(-0.5f))};
+    const IR::F32 x0{ir.FPFloor(x)};
+    const IR::F32 y0{ir.FPFloor(y)};
+    const IR::F32 alpha{ir.FPAdd(x, ir.FPNeg(x0))};
+    const IR::F32 beta{ir.FPAdd(y, ir.FPNeg(y0))};
+    // Gather at the corner the four texels share, half a texel from where the choice of texels
+    // changes, so every implementation's rounding picks the texels the weights are for.
+    const IR::F32 corner_x{ir.FPMul(ir.FPAdd(x0, ir.Imm32(1.0f)), ir.FPRecip(width))};
+    const IR::F32 corner_y{ir.FPMul(ir.FPAdd(y0, ir.Imm32(1.0f)), ir.FPRecip(height))};
+    const IR::Value corner{flags.type == TextureType::ColorArray2D
+                               ? ir.CompositeConstruct(corner_x, corner_y,
+                                                       ir.CompositeExtract(coords, 2))
+                               : ir.CompositeConstruct(corner_x, corner_y)};
+    const IR::Value texels{
+        texture_op(IR::Opcode::ImageGather, {index, corner, offset, IR::Value{}}, gather_flags)};
+    // Gathered in the order (x0, y1), (x1, y1), (x1, y0), (x0, y0).
+    const IR::F32 x0_y1{compare(texels, 0)};
+    const IR::F32 x1_y1{compare(texels, 1)};
+    const IR::F32 x1_y0{compare(texels, 2)};
+    const IR::F32 x0_y0{compare(texels, 3)};
+    const auto lerp{[&](const IR::F32& a, const IR::F32& b, const IR::F32& t) {
+        return IR::F32{ir.FPFma(ir.FPAdd(b, ir.FPNeg(a)), t, a)};
+    }};
+    inst.ReplaceUsesWith(lerp(lerp(x0_y0, x1_y0, alpha), lerp(x0_y1, x1_y1, alpha), beta));
+}
+
 void PatchTexelFetch(IR::Block& block, IR::Inst& inst, TexturePixelFormat pixel_format) {
     const auto it{IR::Block::InstructionList::s_iterator_to(inst)};
     IR::IREmitter ir{block, IR::Block::InstructionList::s_iterator_to(inst)};
@@ -1243,6 +1507,12 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
         default:
             break;
         }
+        const std::optional<DepthCompareEmulation> depth_compare_emulation{
+            DepthCompareEmulationFor(env, cbuf, flags, *inst)};
+        if (depth_compare_emulation) {
+            // A color descriptor: the comparison is done in the shader (LowerDepthCompare).
+            flags.is_depth.Assign(0);
+        }
         u32 index;
         u32 size_shift = cbuf.count > 1 ? DynamicDescriptorSizeShift(cbuf.dynamic_offset) : DESCRIPTOR_SIZE_SHIFT;
         u32 count = cbuf.count;
@@ -1345,6 +1615,10 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
             inst->SetArg(0, ir.UMin(ir.ShiftRightLogical(cbuf.dynamic_offset, shift), ir.Imm32(count - 1)));
         } else {
             inst->SetArg(0, IR::Value{});
+        }
+
+        if (depth_compare_emulation) {
+            LowerDepthCompare(*texture_inst.block, *inst, *depth_compare_emulation);
         }
 
         if (!host_info.support_snorm_render_buffer && inst->GetOpcode() == IR::Opcode::ImageFetch &&

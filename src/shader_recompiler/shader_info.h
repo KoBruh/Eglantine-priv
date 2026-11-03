@@ -156,6 +156,30 @@ enum class TexturePixelFormat {
     D32_FLOAT_S8_UINT,
 };
 
+/// What translation reads of a texture's sampler (its TSC entry): the depth comparison, so one
+/// can be done in the shader when the texture's format has no depth (see texture_pass.cpp).
+/// Environments answer it packed in a word.
+struct TextureSamplerState {
+    bool known{};           ///< False when the environment could not read the sampler
+    bool compare_enabled{};
+    u32 compare_func{};     ///< Maxwell order: never, <, ==, <=, >, !=, >=, always
+    bool linear_filter{};   ///< Magnification filter is linear (percentage-closer filtering)
+
+    [[nodiscard]] constexpr u32 Pack() const noexcept {
+        return (known ? 1U : 0U) | (compare_enabled ? 2U : 0U) | ((compare_func & 7U) << 2) |
+               (linear_filter ? 0x20U : 0U);
+    }
+
+    [[nodiscard]] static constexpr TextureSamplerState Unpack(u32 word) noexcept {
+        return {
+            .known = (word & 1U) != 0,
+            .compare_enabled = (word & 2U) != 0,
+            .compare_func = (word >> 2) & 7U,
+            .linear_filter = (word & 0x20U) != 0,
+        };
+    }
+};
+
 enum class ImageFormat : u32 {
     Typeless,
     R8_UINT,

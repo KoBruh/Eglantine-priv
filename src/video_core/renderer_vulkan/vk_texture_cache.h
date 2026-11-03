@@ -753,6 +753,9 @@ private:
         bool drop_reduction;
         bool drop_custom_border;
         bool srgb_border;
+        /// Bound to a descriptor the shader does not sample with a depth comparison: the
+        /// comparison is in the shader (texture_pass.cpp) or not asked for.
+        bool drop_compare;
         std::array<VkComponentSwizzle, 4> swizzle;
 
         bool operator==(const VariantKey&) const noexcept = default;
