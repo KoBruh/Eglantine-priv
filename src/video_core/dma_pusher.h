@@ -127,6 +127,7 @@ struct CommandList final {
 };
 
 namespace GpfifoCapture {
+bool Configured() noexcept;
 bool Enabled() noexcept;
 u64 BeginSubmission(s32 fd, u32 ioctl, u32 variant, u64 session,
                     std::span<const u8> input, std::size_t inline_size) noexcept;
