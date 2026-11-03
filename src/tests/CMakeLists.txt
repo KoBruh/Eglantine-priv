@@ -41,6 +41,7 @@ add_executable(tests
     core/internal_network/socket_proxy.cpp
     core/nup_writer.cpp
     core/priority_queue.cpp
+    core/vfs_vector.cpp
     core/internal_network/network.cpp
     shader_recompiler/compilation_memory.cpp
     video_core/memory_tracker.cpp
