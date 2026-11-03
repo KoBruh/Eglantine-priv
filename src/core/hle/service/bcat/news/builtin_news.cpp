@@ -51,7 +51,7 @@ std::filesystem::path GetCachePath() {
 
 std::filesystem::path GetDefaultLogoPath(bool large) {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "news" /
-           (large ? "eden_logo_large.jpg" : "eden_logo_small.jpg");
+           (large ? "eglantine_logo_large.jpg" : "eglantine_logo_small.jpg");
 }
 
 std::filesystem::path GetNewsImagePath(std::string_view news_id, bool large) {
@@ -79,11 +79,14 @@ std::vector<u8> TryLoadFromDisk(const std::filesystem::path& path) {
     return data;
 }
 
+// News images are files in dist/news/ of the repository whose releases the feed reads, on main.
 // TODO(crueter): Migrate to use Common::Net
-std::vector<u8> DownloadImage(const std::string& url_path, const std::filesystem::path& cache_path) {
-    LOG_DEBUG(Service_BCAT, "Downloading image: https://eden-emu.dev{}", url_path);
+std::vector<u8> DownloadImage(const std::string& file_name, const std::filesystem::path& cache_path) {
+    const std::string url_path =
+        fmt::format("/{}/main/dist/news/{}", Common::g_build_auto_update_repo, file_name);
+    LOG_DEBUG(Service_BCAT, "Downloading image: https://raw.githubusercontent.com{}", url_path);
     try {
-        httplib::Client cli("https://eden-emu.dev");
+        httplib::Client cli("https://raw.githubusercontent.com");
         cli.set_follow_location(true);
         cli.set_connection_timeout(std::chrono::seconds(2));
         cli.set_read_timeout(std::chrono::seconds(2));
@@ -110,7 +113,7 @@ std::vector<u8> DownloadImage(const std::string& url_path, const std::filesystem
 
 std::vector<u8> LoadDefaultLogo(bool large) {
     const auto path = GetDefaultLogoPath(large);
-    const std::string url = large ? "/news/eden_logo_large.jpg" : "/news/eden_logo_small.jpg";
+    const std::string url = large ? "eglantine_logo_large.jpg" : "eglantine_logo_small.jpg";
 
     auto data = TryLoadFromDisk(path);
     if (!data.empty()) return data;
@@ -141,7 +144,7 @@ std::vector<u8> GetNewsImage(std::string_view news_id, bool large) {
     auto data = TryLoadFromDisk(cache_path);
 
     if (data.empty()) {
-        const std::string url = fmt::format("/news/{}_{}.jpg", id_str, large ? "large" : "small");
+        const std::string url = fmt::format("{}_{}.jpg", id_str, large ? "large" : "small");
         data = DownloadImage(url, cache_path);
     }
 
