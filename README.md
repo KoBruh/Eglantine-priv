@@ -48,7 +48,7 @@ Other games are being brought up; their notes are in [docs/dev/bringup](./docs/d
 
 ## Download
 
-Every change to `nx2` is built and published on the [Releases](https://github.com/notsapinho/Eglantine/releases) page.
+Every change to `main` is built and published on the [Releases](https://github.com/notsapinho/Eglantine/releases) page. Day-to-day work happens on `dev`, which has no automatic builds.
 
 | System | File | Notes |
 | --- | --- | --- |
@@ -86,7 +86,7 @@ See the [General Build Guide](./docs/Build.md). On Windows, [`tools/windows/buil
 
 ## Contributing
 
-Pull requests are welcome. Please keep changes focused and documented, and describe how you tested them. For development discussions, join the [Discord](https://discord.gg/jCCZ58VExk).
+Pull requests are welcome; open them against `dev`. Please keep changes focused and documented, and describe how you tested them. For development discussions, join the [Discord](https://discord.gg/jCCZ58VExk).
 
 ## Credits
 
