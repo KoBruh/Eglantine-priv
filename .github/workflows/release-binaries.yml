@@ -9,7 +9,7 @@ on:
         default: true
   push:
     branches:
-      - nx2
+      - main
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
@@ -52,16 +52,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The Linux x86_64 jobs run on boat.dev sandboxes (8 vCPU, 16 GB: https://docs.boat.dev/ci);
+        # boat has no Windows or Arm runners, so those stay on GitHub's.
         include:
           - platform: linux-x86_64
-            runner: ubuntu-24.04
+            runner: boat-large
           # The two -pgo builds are the same programs compiled by clang against the repo's
           # eglantine.profdata. Eden's profile (Eden-CI/PGO) comes from Switch 1 games: with it Mario
           # Kart World ran at about half the speed of the normal build, with eglantine.profdata at
           # about the same speed. Windows uses MSYS2's MinGW clang like Eden does; MSVC cannot read
           # an LLVM .profdata file.
           - platform: linux-x86_64-pgo
-            runner: ubuntu-24.04
+            runner: boat-large
             pgo: true
           - platform: windows-x86_64
             runner: windows-2022
@@ -94,7 +96,33 @@ jobs:
             libboost-dev libboost-fiber-dev libboost-context-dev \
             libopus-dev libasound2-dev ccache \
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
-            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 \
+            patch perl make build-essential curl ca-certificates file xz-utils zstd unzip zip \
+            python3-venv
+
+      # GitHub's Ubuntu image has a current CMake in /usr/local/bin; a plain Ubuntu 24.04 runner
+      # (boat) only has 3.28 from apt, and the build needs 3.31 or newer.
+      - name: CMake 3.31 where the runner lacks it
+        if: startsWith(matrix.platform, 'linux')
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cmake --version | head -1 | grep -qE 'version (3\.(3[1-9]|[4-9][0-9])|[4-9])\.'; then
+            cmake --version | head -1
+            exit 0
+          fi
+          python3 -m venv "$RUNNER_TEMP/cmake-venv"
+          "$RUNNER_TEMP/cmake-venv/bin/pip" install -q "cmake==3.31.6"
+          echo "$RUNNER_TEMP/cmake-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/cmake-venv/bin/cmake" --version | head -1
+
+      # install-qt-action installs aqtinstall with pip; a plain Ubuntu runner's system Python
+      # refuses that (PEP 668), so give every Linux job its own.
+      - name: Python for the Qt installer
+        if: startsWith(matrix.platform, 'linux')
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
 
       - name: Install Qt on Linux x86_64
         if: startsWith(matrix.platform, 'linux') && runner.arch != 'ARM64'
@@ -530,7 +558,7 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  # Publishes every binary as a GitHub pre-release once every platform built: on pushes to nx2,
+  # Publishes every binary as a GitHub pre-release once every platform built: on pushes to main,
   # and on manual runs unless "Publish the binaries as a GitHub release" is unticked.
   release:
     name: Publish release
