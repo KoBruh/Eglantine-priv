@@ -1,36 +1,47 @@
-# Eden Build Documentation
+# Eglantine Developer Documentation
 
-Are you just a casual user? Take a look at our [User Handbook](./user) then!
+Are you just a casual user? Take a look at our [User Handbook](./user/README.md) then!
 
-If you want to register/signup as a contributor, take a gander at [CONTRIBUTING.md](../CONTRIBUTING.md).
+If you want to contribute, take a gander at [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-This contains documentation created by developers, build instructions, guidelines, instructions/layouts for [cool stuff we made](./CPMUtil.md), and more.
+This contains documentation created by developers, build instructions, guidelines, developer notes, and more.
+
+## Building
 
 - **[General Build Instructions](./Build.md)**
+  - **[Android](./build/Android.md)**
+- **[Dependencies](./Deps.md)**
 - **[CMake Options](./Options.md)**
 - **[Cross Compiling](./CrossCompile.md)**
+- **[Platform-Specific Caveats](./Caveats.md)**
+- **[CPM - CMake Package Manager](./CPMUtil.md)**
+
+## Development
+
 - **[Development Guidelines](./Development.md)**
-- **[Dependencies](./Deps.md)**
+- **[Contributing](../CONTRIBUTING.md)**
 - **[Debug Guidelines](./Debug.md)**
   - **[RenderDoc](./Debug.md#renderdoc)**
-- **[CPM - CMake Package Manager](./CPMUtil.md)**
-- **[Platform-Specific Caveats](./Caveats.md)**
 - **[The NVIDIA SM86 (Maxwell) GPU](./NvidiaGpu.md)**
 - **[Driver Bugs](./DriverBugs.md)**
-- **[Building Older Commits](./build/OlderCommits.md)**
 - Subsystems:
   - **[Design Overview](./DesignOverview.md)**
   - **[Dynarmic](./dynarmic/README.md)**
+    - **[Design](./dynarmic/Design.md)**
   - **[HOS Kernel](./HosKernel.md)**
   - **[Settings](./Settings.md)**
 
-## Policies
+## Developer notes
 
-Policies and information on development.
+Notes on the Switch 2 work, kept in [dev](./dev):
 
-- **[AI and LLM Usage](./policies/AI.md)**
-- **[Coding guidelines](./policies/Coding.md)**
-- **[Contributing](../CONTRIBUTING.md)**
+- **[Switch 2 titles: setup, blockers and fixes](./dev/NX2_NOTES.md)**
+- **[Splitting the GPU thread](./dev/NX2_GPU_THREAD_SPLIT.md)**
+- **[Experimental NV cooperative-matrix lowering](./dev/experimental-cooperative-matrix.md)**
+- Game bring-up:
+  - **[Fire Emblem: Fortune's Weave](./dev/bringup/FE_FORTUNES_WEAVE.md)**
+  - **[Kirby Air Riders](./dev/bringup/KIRBY_AIR_RIDERS.md)**
+  - **[Welcome Tour](./dev/bringup/WELCOME_TOUR.md)**
 
 ## Externals
 

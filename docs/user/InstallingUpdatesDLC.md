@@ -1,27 +1,27 @@
-# User Handbook - Working with Updates/DLC in Eden
+# User Handbook - Working with Updates/DLC in Eglantine
 
-Use this guide when you want to install Updates or DLC for your games in Eden.
+Use this guide when you want to install Updates or DLC for your games in Eglantine.
 
 <aside>
 
-***NOTE***: This applies to separate Update/DLC files, not "merged" NSP/XCI's which include the base game and Updates/DLC applied on top of them in a single file.  These files work in Eden, but would not require the following steps.
+***NOTE***: This applies to separate Update/DLC files, not "merged" NSP/XCI's which include the base game and Updates/DLC applied on top of them in a single file.  These files work in Eglantine, but would not require the following steps.
 
 </aside>
 
-**[See here](https://evilperson1337.notion.site/Working-with-Updates-DLC-in-Eden-2b057c2edaf681dfb65dfc4dd96980c0) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Working-with-Updates-DLC-in-Eden-2b057c2edaf681dfb65dfc4dd96980c0) for an illustrated guide (written for Eden).**
 
 ---
 
 ### Pre-Requisites
 
-1. Eden already setup and configured for your platform.
+1. Eglantine already setup and configured for your platform.
 2. The Update/DLC file(s) you want to install
 
 ---
 
 ## Installing Updates/DLC
 
-1. Open Eden to the Main Window.
+1. Open Eglantine to the Main Window.
 2. Select *File > Install Files to NAND...*.
 3. Navigate to the Update/DLC files you want to install.
     <aside>

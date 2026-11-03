@@ -1,12 +1,12 @@
-# User Handbook - Backing Up/Syncing Eden Game Saves
+# User Handbook - Backing Up/Syncing Eglantine Game Saves
 
-Use this guide for when you want to configure automated backup/syncing of your Eden save files using [*Syncthing*](https://syncthing.net/).
+Use this guide for when you want to configure automated backup/syncing of your Eglantine save files using [*Syncthing*](https://syncthing.net/).
 
-**[See here](https://evilperson1337.notion.site/Backing-Up-Syncing-Eden-Game-Saves-2b357c2edaf68000b40cfab2c2c3dc0a) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Backing-Up-Syncing-Eden-Game-Saves-2b357c2edaf68000b40cfab2c2c3dc0a) for an illustrated guide (written for Eden).**
 
 ### Pre-Requisites
 
-- Eden already installed, configured, and functioning.
+- Eglantine already installed, configured, and functioning.
 - Devices to run Syncthing on.
 - Ability to allow a program to communicate through the firewall of your device.
 
@@ -19,8 +19,8 @@ Use this guide for when you want to configure automated backup/syncing of your E
 </aside>
 
 - While this is a de-centralized model without the concepts of a Server/Client, Parent/Child, etc. - For the purposes of these guides, we will borrow from this models terminology to avoid sync conflicts and potential data loss.  After the initial setup, all the devices in the sync network are equals and can push & pull files from any other device.
-- In order for this to work, you should get all of the save files in Eden in the save folder on the Parent.
-    - If you need help doing that, see the ***Importing Saves into Eden*** guide for the platform you elect to act as the Parent, and delete the save files on the "Child" devices.
+- In order for this to work, you should get all of the save files in Eglantine in the save folder on the Parent.
+    - If you need help doing that, see the ***Importing Saves into Eglantine*** guide for the platform you elect to act as the Parent, and delete the save files on the "Child" devices.
 
 ### Terminology
 
@@ -49,7 +49,7 @@ Syncthing is fairly robust and doesn't have many issues luckily, but there are s
 
 ### Pre-Requisites
 
-- Eden already installed, configured, and functioning.
+- Eglantine already installed, configured, and functioning.
 - Ability to allow a program to communicate through the firewall in Windows.
 - Ability to extract archive (.zip/.7z/.rar) files.
 
@@ -92,7 +92,7 @@ Use this when you want to set this machine as the initial source of truth (push 
     
     <aside>
     
-    ***TIP***: The easiest way to do this would be to open Eden, right-click a game that has a save, hit ***Open Save Data Location,*** and then go up 1 directory.  It should contain folders with the TitleID of your games.
+    ***TIP***: The easiest way to do this would be to open Eglantine, right-click a game that has a save, hit ***Open Save Data Location,*** and then go up 1 directory.  It should contain folders with the TitleID of your games.
     
     It should look similar to this: ..*\nand\user\save\0000000000000000\EC573727F509799675F6E5112C581D7E*
     
@@ -116,11 +116,11 @@ Use this when you want to set this machine up as a child (pull files from the ot
 9. You should now see a connection request from the parent.  Hit **+ Add Device** to add the device.
 10. Hit **Save** to finish adding the device.
 11. That pop-up will close and you will get notification that the device wants to share a folder now. Hit **Add.**
-12. Enter the path to the save folder in Eden and hit **Save.**
+12. Enter the path to the save folder in Eglantine and hit **Save.**
     
     <aside>
     
-    ***TIP***: The easiest way to do this would be to open Eden, right-click a game that has a save, hit ***Open Save Data Location,*** and then go up 1 directory.  It should contain folders with the TitleID of your games.
+    ***TIP***: The easiest way to do this would be to open Eglantine, right-click a game that has a save, hit ***Open Save Data Location,*** and then go up 1 directory.  It should contain folders with the TitleID of your games.
     
     It should look similar to this: ..*\nand\user\save\0000000000000000\EC573727F509799675F6E5112C581D7E*
     
@@ -132,7 +132,7 @@ Use this when you want to set this machine up as a child (pull files from the ot
 
 ### Pre-Requisites
 
-- Eden already installed, configured, and functioning.
+- Eglantine already installed, configured, and functioning.
 
 ### Step 1: Downloading and Installing Syncthing
 
@@ -174,7 +174,7 @@ Use this when you want to set this machine as the initial source of truth (push 
     
     <aside>
     
-    ***TIP***: The easiest way to do this would be to open Eden, right-click a game that has a save, hit ***Open Save Data Location,*** and then go up 1 directory.  It should contain folders with the TitleID of your games.
+    ***TIP***: The easiest way to do this would be to open Eglantine, right-click a game that has a save, hit ***Open Save Data Location,*** and then go up 1 directory.  It should contain folders with the TitleID of your games.
     
     It should look similar to this: ..*\nand\user\save\0000000000000000\EC573727F509799675F6E5112C581D7E*
     
@@ -198,11 +198,11 @@ Use this when you want to set this machine up as a child (pull files from the ot
 9. You should now see a connection request pop-up from the parent.  Hit **+ Add Device** to add the device.
 10. Hit **Save** to finish adding the device.
 11. That pop-up will close and you will get notification that the device wants to share a folder now. Hit **Add.**
-12. Enter the path to the save folder in Eden and hit **Save.**
+12. Enter the path to the save folder in Eglantine and hit **Save.**
     
     <aside>
     
-    ***TIP***: The easiest way to do this would be to open Eden, right-click a game that has a save, hit ***Open Save Data Location,*** and then go up 1 directory.  It should contain folders with the TitleID of your games.
+    ***TIP***: The easiest way to do this would be to open Eglantine, right-click a game that has a save, hit ***Open Save Data Location,*** and then go up 1 directory.  It should contain folders with the TitleID of your games.
     
     It should look similar to this: ..*\nand\user\save\0000000000000000\EC573727F509799675F6E5112C581D7E*
     

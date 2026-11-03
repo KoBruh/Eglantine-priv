@@ -1,16 +1,16 @@
 # User Handbook - Configuring Steam ROM Manager
 
-## Importing Eden into Steam with Steam Rom Manager
+## Importing Eglantine into Steam with Steam Rom Manager
 
-Use this when you want to import the Eden AppImage into your Steam Library along with artwork using *Steam ROM Manager.*
+Use this when you want to import the Eglantine AppImage into your Steam Library along with artwork using *Steam ROM Manager.*
 
-**[See here](https://evilperson1337.notion.site/Importing-Eden-into-Steam-with-Steam-Rom-Manager-2b757c2edaf68054851bc287b6382cb5) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Importing-Eden-into-Steam-with-Steam-Rom-Manager-2b757c2edaf68054851bc287b6382cb5) for an illustrated guide (written for Eden).**
 
 ---
 
 #### Pre-Requisites
 
-- Eden set up and configured
+- Eglantine set up and configured
 - Internet Connection
 - Comfort Accessing and Navigating SteamOS Desktop Mode
 
@@ -47,7 +47,7 @@ Use this when you want to import the Eden AppImage into your Steam Library along
 
     ---
 
-#### Adding Eden into *Steam ROM Manager*
+#### Adding Eglantine into *Steam ROM Manager*
 
 #### EmuDeck Users
 
@@ -95,7 +95,7 @@ We will need to create a new parser for the Emulators.  Unlike with the EmuDeck 
 
 <aside>
 
-***TIP***: In order to ensure that the matches occur correctly, it is recommended that you name the Eden Appimage as ***eden.AppImage***, rather than what it downloads as.
+***TIP***: In order to ensure that the matches occur correctly, it is recommended that you name the Eglantine AppImage ***eglantine.AppImage***, rather than what it downloads as.
 
 </aside>
 
@@ -114,7 +114,7 @@ We will need to create a new parser for the Emulators.  Unlike with the EmuDeck 
         2. **Parser Title**: *Emulators - Emulators*
         3. **Steam Directory**: *${steamdirglobal}*
         4. **User Accounts**: *Global*
-        5. **ROMs Directory**: <path to directory containing Eden AppImage>
+        5. **ROMs Directory**: <path to directory containing Eglantine AppImage>
         6. **Steam Collections**: *Emulation* (OPTIONAL)
     2. Parser Specific Configuration
         1. **Search Glob**: *${title}@(.AppImage|.APPIMAGE|.appimage)*
@@ -128,7 +128,7 @@ We will need to create a new parser for the Emulators.  Unlike with the EmuDeck 
 
 ---
 
-#### Adding Eden to Steam
+#### Adding Eglantine to Steam
 
 Now that we have the parser or shell script created, we can actually add it to Steam.
 
@@ -143,8 +143,8 @@ Now that we have the parser or shell script created, we can actually add it to S
     
     If the emulator is not identified correctly, you may need to tell *Steam ROM Manager* what the game is manually.
     
-    1. Hover over the emulator card and click the magnifying glass icon.  Here it incorrectly identified *Eden* as a game by a similar name. **        
-    2. Search for *Eden Emulator* on the *Search SteamGridDB* section and scroll through the results, selecting the one you want.        
+    1. Hover over the emulator card and click the magnifying glass icon.  If it matched a different game by a similar name: **        
+    2. Search for *Eglantine* on the *Search SteamGridDB* section and scroll through the results, selecting the one you want.        
     3. Ensure the *Name* and *Game ID*  update in the **Per-App Exceptions** and press **Save and close**.  The game should now update.
 
     ---
@@ -165,16 +165,16 @@ Now that we have the parser or shell script created, we can actually add it to S
 
 ## Importing Games into Steam with Steam Rom Manager
 
-Use this when you want to import your games inside Eden into Steam to launch with artwork from Steam Game Mode without needing to launch Eden first.
+Use this when you want to import your games inside Eglantine into Steam to launch with artwork from Steam Game Mode without needing to launch Eglantine first.
 
-**[See here](https://evilperson1337.notion.site/Importing-Games-into-Steam-with-Steam-Rom-Manager-2b757c2edaf680d7a491c92b138f1fcc) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Importing-Games-into-Steam-with-Steam-Rom-Manager-2b757c2edaf680d7a491c92b138f1fcc) for an illustrated guide (written for Eden).**
 
 ---
 
 #### Pre-Requisites
 
 - Steam Deck Set up and Configured
-- Eden set up and Configured
+- Eglantine set up and Configured
 - Internet Access
 
 ---
@@ -220,20 +220,20 @@ Use this when you want to import your games inside Eden into Steam to launch wit
     </aside>
     
 2. Switch off all Parsers by hitting the *Toggle Parsers* switch.
-3. Scroll down the list on the left-hand side and look for a parser called *Nintendo Switch - Eden* and switch it on.  This parser may not exist depending on how you installed *Steam ROM Manager* (EmuDeck creates it for you).  Follow these steps to create it if it is missing.
+3. Scroll down the list on the left-hand side and look for a parser called *Nintendo Switch - Eglantine* and switch it on.  This parser won't exist unless you created it before (EmuDeck creates one for Eden, not for Eglantine).  Follow these steps to create it if it is missing.
     
     ---
-    #### Creating the Eden Parser
+    #### Creating the Eglantine Parser
     
     1. Select Create Parser and in the *Community Presets* option look for **Nintendo Switch - Yuzu**.
-    2. Change the **Parser title** from *Nintendo Switch - Yuzu* to *Nintendo Switch - Eden.*
+    2. Change the **Parser title** from *Nintendo Switch - Yuzu* to *Nintendo Switch - Eglantine.*
     3. Hit the **Browse** option under the *ROMs directory* section.  Select the directory containing your Switch ROMs.
     4. Under *Steam collections*, you can add a Steam category name.  This just organizes the games under a common category in your Steam Library, this is optional but recommended.
-    5. Scroll down slightly to the **Executable Configuration > Executable**, select **Browse** and select the Eden AppImage.
+    5. Scroll down slightly to the **Executable Configuration > Executable**, select **Browse** and select the Eglantine AppImage.
     6. Leave everything else the same and hit **Save** to save the parser.
     ---
     
-4. Click the Eden parser to view the options on the right, select **Test** at the bottom of the screen to ensure that *Steam ROM Manager* detects your games correctly.
+4. Click the Eglantine parser to view the options on the right, select **Test** at the bottom of the screen to ensure that *Steam ROM Manager* detects your games correctly.
 1. *Steam ROM Manager* will start to scan the specified ROMs directory and match them to games.  Look over the results to ensure they are accurate.  If you do not see any entries - check your parsers ROMs directory field.
 1. When you are happy with the results, click the **Add Games** > **Parse** to start the actual Parsing.
 1. The program will now identify the games and pull artwork from [*SteamGridDB*](https://www.steamgriddb.com/).

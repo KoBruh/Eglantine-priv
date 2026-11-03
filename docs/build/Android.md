@@ -10,7 +10,7 @@
 
 * **[Visual Studio 2022 Community](https://visualstudio.microsoft.com/downloads/)** - **Make sure to select "Desktop development with C++" support in the installer. Make sure to update to the latest version if already installed.**
 * **[Vulkan SDK](https://vulkan.lunarg.com/sdk/home#windows)** - **Make sure to select Latest SDK.**
-  * A convenience script to install the latest SDK is provided in `.ci\windows\install-vulkan-sdk.ps1`.
+  * A convenience script to install the latest SDK is provided in `tools\windows\install-vulkan-sdk.ps1`.
 
 ## Cloning Eglantine with Git
 

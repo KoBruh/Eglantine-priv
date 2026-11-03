@@ -20,21 +20,21 @@ However, this process can be tedious for those unfamiliar; this document serves 
     * [Example 1: Conditional Debug Logging](#example-1-conditional-debug-logging)
     * [Example 2: Performance Tuning](#example-2-performance-tuning)
     * [Example 3: Feature Gating](#example-3-feature-gating)
-  * [Best Practices](#best-practices)
+  * [Best Practices](#best-practices-1)
 * [Adding Boolean Settings Toggles](#adding-boolean-settings-toggles)
-  * [Step 1 - Common Setting](#step-1-common-setting)
-  * [Step 2 - Qt Toggle](#step-2-qt-toggle)
-  * [Step 3 - Kotlin (Android)](#step-3-kotlin-android)
-    * [Step 3.1 - BooleanSetting.kt](#step-3-1-booleansetting-kt)
-    * [Step 3.2 - SettingsItem.kt](#step-3-2-settingsitem-kt)
-    * [Step 3.3 - SettingsFragmentPresenter.kt](#step-3-3-settingsfragmentpresenter-kt)
-    * [Step 3.4 - Localization](#step-3-4-localization)
-  * [Step 4 - Use Your Toggle](#step-4-use-your-toggle)
+  * [Step 1 - Common Setting](#step-1---common-setting)
+  * [Step 2 - Qt Toggle](#step-2---qt-toggle)
+  * [Step 3 - Kotlin (Android)](#step-3---kotlin-android)
+    * [Step 3.1 - BooleanSetting.kt](#step-31---booleansettingkt)
+    * [Step 3.2 - SettingsItem.kt](#step-32---settingsitemkt)
+    * [Step 3.3 - SettingsFragmentPresenter.kt](#step-33---settingsfragmentpresenterkt)
+    * [Step 3.4 - Localization](#step-34---localization)
+  * [Step 4 - Use Your Toggle](#step-4---use-your-toggle)
   * [Best Practices](#best-practices)
 
 ## Adding Boolean Settings Toggles
 
-This guide will walk you through adding a new boolean toggle setting to Eden's configuration across both Qt's (PC) and Kotlin's (Android) UIs.
+This guide will walk you through adding a new boolean toggle setting to Eglantine's configuration across both Qt's (PC) and Kotlin's (Android) UIs.
 
 ---
 
@@ -183,7 +183,7 @@ Thank you for reading, I hope this guide helped you making your toggle!
 
 ## Adding Debug Knobs
 
-Debug Knobs is a 16-bit integer setting (`debug_knobs`) in the Eden Emulator that serves as a bitmask for gating various testing and debugging features. This allows developers and advanced users to enable or disable specific debug behaviors without requiring deploying of complete but temporary toggles.
+Debug Knobs is a 16-bit integer setting (`debug_knobs`) in Eglantine that serves as a bitmask for gating various testing and debugging features. This allows developers and advanced users to enable or disable specific debug behaviors without requiring deploying of complete but temporary toggles.
 
 The setting ranges from 0 to 65535 (0x0000 to 0xFFFF), where each bit represents a different debug feature flag.
 

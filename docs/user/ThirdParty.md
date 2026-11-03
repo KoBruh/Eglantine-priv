@@ -1,10 +1,9 @@
 # User Handbook - Third party tools and extras
 
-The Eden emulator by itself lacks some functionality - or otherwise requires external files (such as packaging) to operate correctly in a given OS. Addendum to that some repositories provide nightly or specialized builds of the emulator.
+Eglantine by itself lacks some functionality - or otherwise requires external files (such as packaging) to operate correctly in a given OS.
 
 While most of the links mentioned in this guide are relatively "safe"; we urge users to use their due diligence and appropriately verify the integrity of all files downloaded and ensure they're not compromised.
 
-- [NixOS Eden Flake](https://github.com/Grantimatter/eden-flake)
 - [ES-DE Frontend Support](https://github.com/GlazedBelmont/es-de-android-custom-systems)
 
 ## Repository
@@ -17,7 +16,7 @@ Eglantine's repository is <https://github.com/notsapinho/Eglantine>, where its r
 
 1. Download the ZIP from [GitHub](https://github.com/GlazedBelmont/es-de-android-custom-systems)
 2. Unzip the file and extract `es_systems.xml` and `es_find_rules.xml` to `\Odin2\Internal shared storage\ES-DE\custom_systems`.
-3. Press `Start -> Other Settings -> Alternative Emulators` and set it to Eden (Standalone).
+3. Press `Start -> Other Settings -> Alternative Emulators` and set it to Eden (Standalone). The entry is named after Eden; Eglantine's Android app uses the same package name, `dev.eden.eden_emulator`.
 
 ### Method 2
 

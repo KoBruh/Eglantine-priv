@@ -1,12 +1,12 @@
 # User Handbook - Multiplayer
-Use this guide to answer questions regarding and to start using the multiplayer functionality of Eden.
+Use this guide to answer questions regarding and to start using the multiplayer functionality of Eglantine.
 
 ## Multiplayer FAQ
 This FAQ will serve as a general quick question and answer simple questions.
 
-**[See here](https://evilperson1337.notion.site/Multiplayer-FAQ-2c357c2edaf680fca2e9ce59969a220f) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Multiplayer-FAQ-2c357c2edaf680fca2e9ce59969a220f) for an illustrated guide (written for Eden).**
 
-### Can Eden Play Games with a Switch Console?
+### Can Eglantine Play Games with a Switch Console?
 No - The only emulator that has this kind of functionality is *Ryujinx* and it's forks.  This solution requires loading a custom module on a modded switch console to work.
 
 ### Can I Play Online Games?
@@ -23,8 +23,8 @@ I have chosen the wording carefully here for a reason.
 
 The rule of thumb here is simple: If a game supports the ability to communicate without a server (Local Wireless, LAN, etc.) you will be able to play with other users.  If it requires a server to function - it will not.  You will need to look up if your title support Local Wireless/LAN play as an option.
 
-### How Does Multiplayer Work on Eden Exactly?
-Eden's multiplayer works by emulating the Switch's local wireless (LDN) system, then tunneling that traffic over the internet through "rooms" that act like lobbies. Each player runs their own instance of the emulator, and as long as everyone joins the same room and the game supports local wireless multiplayer, the emulated consoles see each other as if they were on the same local network. This design avoids typical one-save netplay issues because every user keeps an independent save and console state while only the in-game wireless packets are forwarded through the room server.  In practice, you pick or host a room, configure your network interface/port forwarding if needed, then launch any LDN-capable game; from the game's perspective it is just doing standard local wireless, while the emulator handles discovery and communication over the internet or LAN.
+### How Does Multiplayer Work on Eglantine Exactly?
+Eglantine's multiplayer works by emulating the Switch's local wireless (LDN) system, then tunneling that traffic over the internet through "rooms" that act like lobbies. Each player runs their own instance of the emulator, and as long as everyone joins the same room and the game supports local wireless multiplayer, the emulated consoles see each other as if they were on the same local network. This design avoids typical one-save netplay issues because every user keeps an independent save and console state while only the in-game wireless packets are forwarded through the room server.  In practice, you pick or host a room, configure your network interface/port forwarding if needed, then launch any LDN-capable game; from the game's perspective it is just doing standard local wireless, while the emulator handles discovery and communication over the internet or LAN.
 
 ### What Do I Need to Do?
 That depends entirely on what your goal is and your level of technical ability, you have a 2 options on how to proceed.  
@@ -45,18 +45,18 @@ While it would be nice if everything always worked perfectly - that is not reali
 2. Game Version Mismatches
     1. It is best practice to have the game version be identical to each other in order to ensure that there is no difference in how the programs are handling the LDN logic.  Games are black boxes that the dev team can't see into to ensure the logic handling operates the same way.  For this reason, it is highly advised that the game versions match across all the players.  This would be a good 2nd step to check if you are having issues playing a game together, but can join the same lobby without issue.
 3. Latency
-    1. Because this implementation is emulating a LAN/Local Wireless connection - it is extremely sensitive to network latency and drops.  Eden has done a good job of trying to account for this and not immediately drop users out - but it is not infallible.  If latency is a concern or becomes an issue - consider hosting a room.
+    1. Because this implementation is emulating a LAN/Local Wireless connection - it is extremely sensitive to network latency and drops.  Eglantine has done a good job of trying to account for this and not immediately drop users out - but it is not infallible.  If latency is a concern or becomes an issue - consider hosting a room.
 
 ---
 
 ## Joining a Multiplayer Room
-Use this when you need to connect to a multiplayer room for LDN functionality inside of Eden.  This does not cover how to host a room, only joining existing ones.
+Use this when you need to connect to a multiplayer room for LDN functionality inside of Eglantine.  This does not cover how to host a room, only joining existing ones.
 
-**[See here](https://evilperson1337.notion.site/Access-Your-Multiplayer-Room-Externally-2c357c2edaf681c0ab2ce2ee624d809d) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Access-Your-Multiplayer-Room-Externally-2c357c2edaf681c0ab2ce2ee624d809d) for an illustrated guide (written for Eden).**
 
 ### Pre-Requisites
-- Eden set up and functioning
-- Multiplayer Options Configured in Eden Settings
+- Eglantine set up and functioning
+- Multiplayer Options Configured in Eglantine Settings
 - Network Access
 
 ### Steps
@@ -74,7 +74,7 @@ There are 2 primary methods that you can use to connect to an existing room, dep
 </aside>
 
 ## Joining a Public Lobby
-1. Open Eden and navigate to *Multiplayer > Browse Public Game Lobby*.
+1. Open Eglantine and navigate to *Multiplayer > Browse Public Game Lobby*.
 2. The **Public Room Browser** will now open and display a list of publicly accessible rooms.  Find one you want to connect to and double click it.
     
     <aside>
@@ -87,24 +87,24 @@ There are 2 primary methods that you can use to connect to an existing room, dep
 ### Direct Connecting to a Room
 If the host has not made the lobby public, or you don't want to find it in the public game browser - use this option to connect.
 
-1. Open Eden and navigate to *Multiplayer > Direct Connect*.
+1. Open Eglantine and navigate to *Multiplayer > Direct Connect*.
 2. Enter the *Server Address, Port*, *Nickname* (what your user will be called in the room), and a *Password* (if the host set one, otherwise leave it blank) and hit **Connect.**
 3. You will now see a window showing everyone on the lobby, or an error message.
 
 ---
 
 ## Hosting a Multiplayer Room
-Use this guide for when you want to host a multiplayer lobby to play with others in Eden.  In order to have someone access the room from outside your local network, see the *Access Your Multiplayer Room Externally* section for next steps.
+Use this guide for when you want to host a multiplayer lobby to play with others in Eglantine.  In order to have someone access the room from outside your local network, see the *Access Your Multiplayer Room Externally* section for next steps.
 
-**[See here](https://evilperson1337.notion.site/Hosting-a-Multiplayer-Room-2c357c2edaf6819481dbe8a99926cea2) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Hosting-a-Multiplayer-Room-2c357c2edaf6819481dbe8a99926cea2) for an illustrated guide (written for Eden).**
 
 ### Pre-Requisites
-- Eden set up and Functioning
+- Eglantine set up and Functioning
 - Network Access
 - Ability to allow programs through the firewall on your device.
 
 ### Steps
-1. Open Eden and navigate to *Emulation > Multiplayer > Create Room.*    
+1. Open Eglantine and navigate to *Emulation > Multiplayer > Create Room.*    
 2. Fill out the following information in the popup dialog box.
     
     
@@ -117,7 +117,7 @@ Use this guide for when you want to host a multiplayer lobby to play with others
     | Max Players | 2 - 16 | 8 | How many players do you want to allow in the room at a time? |
     | Port | 1024 - 65535 | 24872 | What port do you want to run the lobby on?  Could technically be any port number, but it's best to choose an uncommon port to avoid potential conflicts.  See [*Well-Known Ports*](https://en.wikipedia.org/wiki/List_of_TCP_and_UDP_port_numbers#Well-known_ports) for more information on ports commonly used. |
     | Room Description | *None or any string* | *None* | An optional message that elaborates on what the room is for, or for a makeshift message of the day presented to users in the lobby. |
-    | Load Previous Ban List | [Checked, Unchecked] | Checked | Tells Eden to load the list containing users you have banned before. |
+    | Load Previous Ban List | [Checked, Unchecked] | Checked | Tells Eglantine to load the list containing users you have banned before. |
     | Room Type | [Public, Unlisted] | Public | Specifies whether you want the server to appear in the public game lobby browser |
 3. Click **Host Room** to start the room server.  You may get a notice to allow the program through the firewall from your operating system.   Allow it and then users can attempt to connect to your room.
 
@@ -126,10 +126,10 @@ Use this guide for when you want to host a multiplayer lobby to play with others
 ## Access Your Multiplayer Room Externally
 Quite often the person with whom you want to play is located off of your internal network (LAN).  If you want to host a room and play with them you will need to get your devices to communicate with each other.  This guide will go over your options on how to do this so that you can play together.
 
-**[See here](https://evilperson1337.notion.site/Access-Your-Multiplayer-Room-Externally-2c357c2edaf681c0ab2ce2ee624d809d) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Access-Your-Multiplayer-Room-Externally-2c357c2edaf681c0ab2ce2ee624d809d) for an illustrated guide (written for Eden).**
 
 ### Pre-Requisites
-- Eden set up and Functioning
+- Eglantine set up and Functioning
 - Network Access
 
 ### Options
@@ -196,18 +196,18 @@ The VPN solution is a good compromise between the tunnelling solution and port f
 ## Finding the Server Information for a Multiplayer Room
 Use this guide when you need to determine the connection information for the Public Multiplayer Lobby you are connected to.
 
-**[See here](https://evilperson1337.notion.site/Finding-the-Server-Information-for-a-Multiplayer-Room-2c557c2edaf6809e94e8ed3429b9eb26) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Finding-the-Server-Information-for-a-Multiplayer-Room-2c557c2edaf6809e94e8ed3429b9eb26) for an illustrated guide (written for Eden).**
 
 ### Pre-Requisites
-- Eden set up and configured
+- Eglantine set up and configured
 - Internet Access
 
 ### Steps
 
 ### Method 1: Grabbing the Address from the Log File
-1. Open Eden and Connect to the room you want to identify.
+1. Open Eglantine and Connect to the room you want to identify.
     1. See the *Joining a Multiplayer Room* section for instructions on how to do so if you need them.
-2. Go to *File > Open Eden Folder*, then open the **config** folder.
+2. Go to *File > Open Eglantine Folders > Root Data Folder*, then open the **config** folder.
 3. Open the the **qt-config.ini** file in a text editor.
 4. Search for the following keys: 
     1. `Multiplayer\ip=` 
@@ -259,7 +259,7 @@ Use this guide when you need to determine the connection information for the Pub
 ## Multiplayer for Local Co-Op Games
 Use this guide when you want to play with a friend on a different system for games that only support local co-op.
 
-**[See here](https://evilperson1337.notion.site/Multiplayer-for-Local-Co-Op-Games-2c657c2edaf680c59975ec6b52022a2d) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Multiplayer-for-Local-Co-Op-Games-2c657c2edaf680c59975ec6b52022a2d) for an illustrated guide (written for Eden).**
 
 Occasionally you will want to play a game with a friend on a game that does not support LDN multiplayer, and only offer local co-op (multiple controllers connected to a single console), such as with *New Super Mario Bros. U Deluxe.*  Emulation solutions have developed 2 primary methods for handling these cases.
 
@@ -270,7 +270,7 @@ Occasionally you will want to play a game with a friend on a game that does not 
 In either situation at its core, we are emulating an input device on the host machine, so the game believes 2 controllers are connected.  No current Switch emulator has a Netplay offering, so we use Parsec to accomplish this for us.
 
 ### Pre-Requisites
-- Eden Set Up and Fully Configured
+- Eglantine Set Up and Fully Configured
 - A [*Parsec*](https://parsec.app/) Account
     - Parsec is free to use for personal, non-commercial use.  For instructions on how to set up an account and install the client you should refer to the Parsec documentation on it's site.
 - Parsec client installed on your machine and remote (friend's) machine
@@ -288,7 +288,7 @@ This guide will assume you are the one hosting the game and go over things *Pars
     1. If you are the one hosting the game, you will have your friend initiate the remote connection you will accept.
     2. If you are joining a game, you will have to send a connection request the host will have to accept.
 3. Verify that the remote player can see the screen and that there is no issues with the connection.
-4. Launch Eden.
+4. Launch Eglantine.
 5. Navigate to *Emulation > Configure*.
 6. Select the **Controls** tab.
 7. Set up your controller, if necessary.

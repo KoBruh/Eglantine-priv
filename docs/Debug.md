@@ -73,28 +73,28 @@ For more information type `info gdb` and read [the man page](https://man7.org/li
 
 RenderDoc is a free, cross platform, multi-graphics API debugger. It is an invaluable tool for diagnosing issues with graphics applications, and includes support for Vulkan. Get it from [renderdoc.org](https://renderdoc.org).
 
-RenderDoc can capture Eden's Vulkan output when its Vulkan layer is loaded before Eden creates the Vulkan device. Before using RenderDoc to diagnose issues, it's always good to make sure there are no validation errors. Any errors means the behavior of the application is undefined. That said, RenderDoc can help debug validation errors if you do have them.
+RenderDoc can capture Eglantine's Vulkan output when its Vulkan layer is loaded before Eglantine creates the Vulkan device. Before using RenderDoc to diagnose issues, it's always good to make sure there are no validation errors. Any errors means the behavior of the application is undefined. That said, RenderDoc can help debug validation errors if you do have them.
 
 ## Usage on Windows 
 
-You can either use RenderDoc UI to launch Eden, or you can make Eden attach it internally:
+You can either use RenderDoc UI to launch Eglantine, or you can make Eglantine attach it internally:
 
 On Windows PowerShell:
 ```powershell
 $env:ENABLE_VULKAN_RENDERDOC_CAPTURE='1'
-.\eden.exe
+.\eglantine.exe
 ```
-When RenderDoc is attached, Eden logs the default Windows capture folder:
+When RenderDoc is attached, Eglantine logs the default Windows capture folder:
 ```text
 %LOCALAPPDATA%\Temp\RenderDoc
 ```
 
-Press RenderDoc's capture hotkey, usually `F12`, to capture a frame. To stop using RenderDoc, close Eden and launch it again without `ENABLE_VULKAN_RENDERDOC_CAPTURE`.
+Press RenderDoc's capture hotkey, usually `F12`, to capture a frame. To stop using RenderDoc, close Eglantine and launch it again without `ENABLE_VULKAN_RENDERDOC_CAPTURE`.
 
-## Eden Hotkey
+## Eglantine Hotkey
 
-Eden also has a separate `Toggle Renderdoc Capture` hotkey behind the debug setting `renderdoc_hotkey`.
-That hotkey does not load or unload RenderDoc. It only toggles Eden's own manual capture through RenderDoc's API:
+Eglantine also has a separate `Toggle Renderdoc Capture` hotkey behind the debug setting `renderdoc_hotkey`.
+That hotkey does not load or unload RenderDoc. It only toggles Eglantine's own manual capture through RenderDoc's API:
 
 - First press: Starts a capture
 - Second press: Ends that capture

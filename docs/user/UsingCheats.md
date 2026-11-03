@@ -1,14 +1,14 @@
 # User Handbook - Using Cheats
 
-Use this guide when you want to add cheats into a game to alter gameplay for use with the Eden emulator.
+Use this guide when you want to add cheats into a game to alter gameplay for use with Eglantine.
 
-**[See here](https://evilperson1337.notion.site/Using-Cheats-with-Eden-2b057c2edaf6818fab66c276e2304bb4) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Using-Cheats-with-Eden-2b057c2edaf6818fab66c276e2304bb4) for an illustrated guide (written for Eden).**
 
 ## Android
 
 ### Pre-Requisites
 
-- Eden Emulator fully set up and configured on your Android device.
+- Eglantine fully set up and configured on your Android device.
 - The cheat(s) you want to apply.
 - The **Build ID** of the game.
 
@@ -16,14 +16,14 @@ Use this guide when you want to add cheats into a game to alter gameplay for use
 
 ***TIP***: The easiest way I have found to find the Build ID is by Right-Clicking the game **IN RYUJINX ON PC** and hitting **Manage Cheats**.  Your Build ID will be displayed at the top.
 
-Another option would be to launch the game in Eden and close it - then go into the log and look for a line like this - the first 16 characters if your Build ID. Make sure that it is the MAIN line.
+Another option would be to launch the game in Eglantine and close it - then go into the log and look for a line like this - the first 16 characters if your Build ID. Make sure that it is the MAIN line.
 [ 27.098382] Loader <Info> core/file_sys/patch_manager.cpp:HasNSOPatch:304: Querying NSO patch existence for build_id=AEE6DCCC06D9C05B42061E2019123A61, name=main
 
 </aside>
 
 ### Step 1: Configuring a Cheat
 
-1. Create a directory somewhere accessible on your phone with the name of the cheat.  The name you choose only affects how it is displayed in Eden.
+1. Create a directory somewhere accessible on your phone with the name of the cheat.  The name you choose only affects how it is displayed in Eglantine.
 2. Create a directory inside of this folder called **cheats.**
 3. Create a new text file and copy the Hex Code of the cheat into it, optionally with the cheat name at the beginning like this example.  Here this code will set the timer to 999 in *New Super Mario Bros. U Deluxe.*
 
@@ -35,7 +35,7 @@ Another option would be to launch the game in Eden and close it - then go into t
     ```
 
 4. Save the file as a **txt** file with the Build ID of the game.  For my example, my Build ID is **AEE6DCCC06D9C05B** so my file would be `AEE6DCCC06D9C05B.txt`.
-5. Open Eden and press and hold the game you want to apply the cheat to.    
+5. Open Eglantine and press and hold the game you want to apply the cheat to.    
 6. Scroll down on the properties until you see **Add-ons**, select this option.
 7. Select + **Install** then select **Mods and cheats** and **OK** on the window that appears.
 8. A file explorer will now appear.  Navigate to the directory created in step 1 and select the folder.
@@ -77,7 +77,7 @@ Community Member [Ninjistix](https://github.com/Ninjistix) created a utility (Wi
 
 Cheats are enabled by default, but can be disabled so they don't affect gameplay fairly easily using the game properties.
 
-1. Open Eden and press and hold the game you want to apply the cheat to.
+1. Open Eglantine and press and hold the game you want to apply the cheat to.
 2. Scroll down on the properties until you see **Add-ons**, select this option.
 3. *Select/Deselect* the name of the cheat you wish to enable/disable.
 4. Click **OK** to close the window.
@@ -87,7 +87,7 @@ Cheats are enabled by default, but can be disabled so they don't affect gameplay
 
 ### Pre-Requisites
 
-- Eden Emulator fully set up and configured
+- Eglantine fully set up and configured
 - The cheat(s) you want to apply
 - The **Build ID** of the game.
 
@@ -95,7 +95,7 @@ Cheats are enabled by default, but can be disabled so they don't affect gameplay
 
 ***TIP***: The easiest way I have found to find the Build ID is by Right-Clicking the game **IN RYUJINX** and hitting **Manage Cheats**.  Your Build ID will be displayed at the top. 
 
-Another option would be to launch the game in Eden and close it - then go into the log and look for a line like this - the first 16 characters if your Build ID. **Make sure that it is the MAIN line**.
+Another option would be to launch the game in Eglantine and close it - then go into the log and look for a line like this - the first 16 characters if your Build ID. **Make sure that it is the MAIN line**.
 `[  27.098382] Loader <Info> core/file_sys/patch_manager.cpp:HasNSOPatch:304: Querying NSO patch existence for build_id=AEE6DCCC06D9C05B42061E2019123A61, name=main`
 
 </aside>
@@ -112,12 +112,12 @@ Another option would be to launch the game in Eden and close it - then go into t
     ```
 
 1. Save the file as a **txt** file with the Build ID of the game.  For my example, my Build ID is **AEE6DCCC06D9C05B** so my file would be `AEE6DCCC06D9C05B.txt`.
-2. Launch Eden and wait for the program to load.
-3. *Right-Click* the game in Eden and select **Open Mod Data Location**.  A file explorer window should appear.
-4. Create a folder inside of the file explorer window with the name of the cheat.  This name does not matter and only affects how it appears in the game properties inside of Eden.
+2. Launch Eglantine and wait for the program to load.
+3. *Right-Click* the game in Eglantine and select **Open Mod Data Location**.  A file explorer window should appear.
+4. Create a folder inside of the file explorer window with the name of the cheat.  This name does not matter and only affects how it appears in the game properties inside of Eglantine.
 5. Navigate inside of this folder and create another folder called **cheats.**
 6. Move the txt file you created earlier into this **cheats** folder. (e.g. `<mod_location>/Time 999/cheats/AEE6DCCC06D9C05B.txt` )
-7. Go back to Eden and *right-click* the game.  Select *Configure Game* and you should now see the cheat you created appear in the **Add-Ons** section with the name of the folder from step 6.
+7. Go back to Eglantine and *right-click* the game.  Select *Configure Game* and you should now see the cheat you created appear in the **Add-Ons** section with the name of the folder from step 6.
 8. Launch the game to verify that the cheat is enabled.
 
 ### Step 2: Multiple Cheats

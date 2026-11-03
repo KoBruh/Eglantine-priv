@@ -4,7 +4,7 @@
 
 **Note:** When installing a mod, always read the mod's installation instructions.
 
-This is especially important if a mod uses a framework such as **ARCropolis**, **Skyline**, or **Atmosphere plugins**. In those cases, follow the framework's instructions instead of using Eden's normal mod folder.
+This is especially important if a mod uses a framework such as **ARCropolis**, **Skyline**, or **Atmosphere plugins**. In those cases, follow the framework's instructions instead of using Eglantine's normal mod folder.
 
 For example, **Super Smash Bros. Ultimate** uses such a framework. See the related section below for details.
 
@@ -41,8 +41,8 @@ The emulated SD card is located at:
 Example:
 
 ```
-Switch instruction:  sd:/ultimate/mods
-Eden equivalent:     sdmc/ultimate/mods
+Switch instruction:   sd:/ultimate/mods
+Eglantine equivalent: sdmc/ultimate/mods
 ```
 
 ---
@@ -53,7 +53,7 @@ Some games require external mod frameworks instead of the built-in mod loader.
 
 The most common example is **Super Smash Bros. Ultimate**.
 
-These mods are installed directly to the **emulated SD card**, not the normal Eden mod folder.
+These mods are installed directly to the **emulated SD card**, not the normal Eglantine mod folder.
 
 ---
 
@@ -195,7 +195,7 @@ sdmc\ultimate\mods\ExampleMod\ExampleMod
 
 ## Installing mods in the wrong folder
 
-ARCropolis mods **do not go in Eden's normal mod folder**.
+ARCropolis mods **do not go in Eglantine's normal mod folder**.
 
 Do **not** install Smash mods here:
 

@@ -1,8 +1,8 @@
 # User Handbook - Using Amiibo
 
-Use this guide when you want to load Amiibo into your games for use with the Eden emulator.
+Use this guide when you want to load Amiibo into your games for use with Eglantine.
 
-**[See here](https://evilperson1337.notion.site/Using-Amiibo-with-Eden-2b057c2edaf681b1b28ec6be600c6d3e) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Using-Amiibo-with-Eden-2b057c2edaf681b1b28ec6be600c6d3e) for an illustrated guide (written for Eden).**
 
 ## Android
 
@@ -12,18 +12,18 @@ TBD
 
 ### Pre-Requisites
 
-1. The Eden Emulator fully set up and configured.
+1. Eglantine fully set up and configured.
 2. The Amiibo file you want to use.
 
     <aside>
 
-    ***NOTE***: Eden only supports the *.bin* Amiibo format, ***NOT*** the *.nfc* format.
+    ***NOTE***: Eglantine only supports the *.bin* Amiibo format, ***NOT*** the *.nfc* format.
 
     </aside> 
 
 ### Steps
 
-1. Launch Eden and launch the game you want to load Amiibo for.
+1. Launch Eglantine and launch the game you want to load Amiibo for.
     <aside>
 
     ***TIP***: You must be in-game before you can emulate scanning an Amiibo
@@ -31,7 +31,7 @@ TBD
     </aside>
 
 1. Navigate to the Amiibo section of the game.  The method for initiating the scanning varies from game to game, for *Captain Toad's Treasure Tracker*, you need to go to the press the **+** button when on the level select.  You will need to look up how to do so with your specific game.
-2. Upon activating the Amiibo scan functionality, you should get a Scan page.  Eden is now looking for an Amiibo file to be loaded, which emulates scanning an Amiibo on actual hardware.
+2. Upon activating the Amiibo scan functionality, you should get a Scan page.  Eglantine is now looking for an Amiibo file to be loaded, which emulates scanning an Amiibo on actual hardware.
 3. Navigate to **File > Load/Remove Amiibo...**, or press the hotkey to do the same (**F2** on keyboard by default).
 4. In the file explorer that opens, navigate to the amiibo file you want to use.
 

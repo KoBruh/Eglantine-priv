@@ -26,22 +26,16 @@ For more information on the license header script, run `.ci/license-header.sh -h
 
 ## Pull Requests
 
-Pull requests are only to be merged by core developers when properly tested and discussions conclude on Discord or other communication channels. Labels are recommended but not required. However, all PRs MUST be namespaced and optionally typed:
+Open pull requests against `dev`; [CONTRIBUTING.md](../CONTRIBUTING.md) describes the process. Commit messages and PR titles start with the area they touch, followed by a colon and what the change does:
 
 ```txt
-[cmake] refactor: CPM over submodules
-[desktop] feat: implement firmware install from ZIP
-[hle] stub fw20 functions
-[core] test: raise maximum CPU cores to 6
-[cmake, core] Unbreak FreeBSD Building Process
+video_core: declare GpfifoCapture::Configured with its siblings in dma_pusher.h
+ci: release only the PGO builds
+android: the app's website, source and Discord links point at this repository
 ```
 
-- The level of namespacing is generally left to the committer's choice.
-- However, we never recommend going more than two levels *except* in `hle`, in which case you may go as many as four levels depending on the specificity of your changes.
-- Ocassionally, up to two additional namespaces may be provided for more clarity.
-  - Changes that affect the entire project (sans CMake changes) should be namespaced as `meta`.
-- Maintainers are permitted to change namespaces at will.
-- Commits within PRs are not required to be namespaced, but it is highly recommended.
+- The area is usually the top-level directory under `src/` (`video_core`, `core`, `dynarmic`, ...), or `ci`, `docs`, `tools`, `dist` or `repo` for changes outside it.
+- Explain the why in the message body when the subject alone doesn't.
 
 ## Adding new settings
 

@@ -2,7 +2,7 @@
 
 ## Introduction
 
-Eden is a very complicated piece of software, there are many knobs and toggles that can be configured. Most of these are invisible to normal users, however, power users may be able to leverage them to their advantage.
+Eglantine is a very complicated piece of software, there are many knobs and toggles that can be configured. Most of these are invisible to normal users, however, power users may be able to leverage them to their advantage.
 
 This handbook primarily describes such knobs and toggles. Normal configuration options are described within the emulator itself and will not be covered in detail.
 
@@ -18,18 +18,15 @@ If your GPU doesn't support or is just behind by a minor version, see Mesa envir
 
 ## Releases and versions
 
-- Stable releases/Versioned releases: Has a version number and it's the versions we expect 3rd party repositories to host (package managers and such), these are, well, stable, have low amount of regressions (wrt. to master and nightlies) and generally focus on "keeping things without regressions", recommended for the average user.
-    - RC releases: Release candidate, generally "less stable but still stable" versions.
-    - Full release: "The stablest possible you could get".
-- Nightly: Builds done around 2PM UTC (if there are any changes), generally stable, but not recommended for the average user. These contain daily updates and may contain critical fixes for some games.
-- Master: Unstable builds, can range from games working exceptionally well to instantly crashing. These contain straight from the oven fixes, don't use them unless you plan to contribute something! They're very experimental! Still 95% of the time they will work just fine.
-- PR builds: Highly experimental builds, testers may grab from these. The average user should treat them the same as master builds.
+Eglantine has no versioned or nightly releases. Every change to the `main` branch is built and published as a prerelease on the [Releases](https://github.com/notsapinho/Eglantine/releases) page; day-to-day work happens on `dev`, which has no automatic builds. The [README](../../README.md#download) lists the files for each system.
+
+Android and macOS have no release builds; build them yourself ([Build guide](../Build.md)).
 
 ## User configuration
 
 ### Configuration directories
 
-Eden will store configuration files in the following directories:
+Eglantine will store configuration files in the following directories:
 
 - **Windows**: `%AppData%\Roaming`.
 - **Android**: Data is stored internally.
@@ -47,7 +44,7 @@ The recommended way is to create a `.bat` file alongside the emulator `.exe`; co
 ```bat
 set "__GL_THREADED_OPTIMIZATIONS=1"
 set "SOME_OTHER_VAR=1"
-eden.exe
+eglantine.exe
 ```
 
 Android doesn't have a convenient way to set environment variables.
@@ -57,11 +54,11 @@ For other platforms, the recommended method is using a shell script:
 ```sh
 export __GL_THREADED_OPTIMIZATIONS=1
 export SOME_OTHER_VAR=1
-./eden
+./eglantine
 ```
 
 Then just running `chmod +x script.sh && source script.sh`.
 
 ## Compatibility list
 
-Eden doesn't maintain a compatibility list. However, [EmuReady](https://www.emuready.com/) has more fine-grained compatibility information for multiple emulators/forks as well.
+The [README](../../README.md#compatibility) lists the games known to run; a full compatibility list will follow. [EmuReady](https://www.emuready.com/) has compatibility information for other Switch emulators.

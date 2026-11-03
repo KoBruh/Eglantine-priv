@@ -164,7 +164,7 @@ If your initial configure failed:
 - Evaluate the error and find any related settings
 - See the [CPM docs](CPMUtil.md) to see if you may need to forcefully bundle any packages
 
-Otherwise, feel free to ask for help in Stoat or Discord.
+Otherwise, feel free to ask for help on the [Discord](https://discord.gg/jCCZ58VExk).
 
 ## Caveats
 
@@ -190,17 +190,15 @@ Your compiled executable will be in:
 - `build/bin/eglantine.app/Contents/MacOS/eglantine` for macOS,
 - and `build/bin/eglantine` for others.
 
-## GitHub-hosted builds
+## Release builds
 
-The `release-binaries` workflow uses standard GitHub-hosted runners:
+The `release-binaries` workflow builds the Linux (x86_64 and arm64) and Windows (x86_64) packages. A push to `main` that changes a build input (sources, CMake files, `dist/`, `tools/`, patches or the workflow itself) builds every package and publishes them as a prerelease. To build another branch, select **Actions > release-binaries > Run workflow** and choose the branch. Clear **Publish the binaries as a GitHub release** to upload artifacts without publishing a release. Manual runs require the workflow to exist on the repository's default branch. Workflow artifacts expire after seven days.
 
-- `ubuntu-24.04` produces Linux x86-64 AppImages, with and without PGO. These require glibc 2.39 or newer.
-- `macos-15` produces an Apple Silicon app for macOS 15 or newer. The zip contains `eglantine.app`, including the CLI at `Contents/MacOS/eden-cli`.
-- `windows-2022` produces Windows x86-64 builds, with and without PGO.
+Android and macOS have no release builds; build them by hand. For Android, see its [dedicated page](build/Android.md).
 
-Pull requests targeting `nx2` or `nx2-experimental` trigger builds without publishing a release. Build-input changes pushed to either branch trigger builds and a prerelease. To build another branch, select **Actions > release-binaries > Run workflow** and choose the branch. Clear **Publish the binaries as a GitHub release** to upload artifacts without publishing a release. Manual runs require the workflow to exist on the repository's default branch. Workflow artifacts expire after seven days.
+## macOS packages
 
-The macOS package bundles Qt, its plugins, MoltenVK, and linked non-system libraries. Packaging checks the extracted archive for ARM64 binaries, bundled dependencies, valid signatures, JIT entitlements, frontend startup, and MoltenVK loading. To package a local macOS build with the same checks:
+`tools/macos/package.sh` turns a local macOS build into a self-contained app bundle. It bundles Qt, its plugins, MoltenVK, and linked non-system libraries, then checks the extracted archive for ARM64 binaries, bundled dependencies, valid signatures, JIT entitlements, frontend startup, and MoltenVK loading:
 
 ```sh
 QT_ROOT_DIR=/path/to/Qt/6.8.3/macos sh tools/macos/package.sh build eglantine-macos-arm64.zip

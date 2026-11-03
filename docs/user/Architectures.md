@@ -4,7 +4,7 @@ Notes and caveats for different architectures and platforms.
 
 # Architectures
 
-Eden is primarily designed to run on amd64 (x86_64--Intel/AMD 64-bit) and aarch64 (arm64--ARM 64-bit) CPUs. Each architecture tends to have their own quirks and fun stuff; this page serves as a reference for these quirks.
+Eglantine is primarily designed to run on amd64 (x86_64--Intel/AMD 64-bit) and aarch64 (arm64--ARM 64-bit) CPUs. Each architecture tends to have their own quirks and fun stuff; this page serves as a reference for these quirks.
 
 ## amd64
 
@@ -14,7 +14,7 @@ AMD64, aka x86_64, is the most tested and supported architecture for desktop tar
 
 AMD64 systems are almost always limited by the CPU. For example, a Zen 5/RX 6600 system will often hit max CPU usage before the GPU ever reaches 70% usage, with minimal exceptions (that tend to pop up only at >200fps). JIT is slow!
 
-Computers on Linux will almost always run Eden strictly better than an equivalent machine on Windows. This is largely due to the way the Linux kernel handles memory management (and the lack of Microsoft spyware).
+Computers on Linux will almost always run Eglantine strictly better than an equivalent machine on Windows. This is largely due to the way the Linux kernel handles memory management (and the lack of Microsoft spyware).
 
 Intel Macs are believed to be supported, but no CI is provided for them. Performance will likely be awful on all but the highest-end iMacs and Pro-level Macs, and the MoltenVK requirement generally means Vulkan compatibility will suffer.
 
@@ -50,7 +50,7 @@ IA-64 (Itanium) support is completely unknown. Existing amd64 packages will not 
 
 # Platforms
 
-The vast majority of Eden's testing is done on Windows, Linux, and Android. However, first-class support is also provided for:
+Most of Eglantine's testing is done on Windows and Linux. The code it inherits from Eden also supports:
 
 - FreeBSD (amd64, aarch64)
 - HaikuOS (amd64)
@@ -63,15 +63,15 @@ The vast majority of Eden's testing is done on Windows, Linux, and Android. Howe
 
 While all modern Linux distributions are supported (Fedora >40, Ubuntu >24.04, Debian >12, Arch, Gentoo, etc.), the vast majority of testing and development for Linux is on Arch and Gentoo. Most major build system changes are tested on Gentoo first and foremost, so if builds fail on any modern distribution no matter what you do, it's likely a bug and should be reported.
 
-Intel and NVIDIA GPU support is limited. AMD (RADV) drivers receive first-class testing and are known to provide the most stable Eden experience possible.
+Intel and NVIDIA GPU support is limited. AMD (RADV) drivers are known to provide the most stable experience.
 
-Wayland is not recommended. Testing has shown significantly worse performance on most Wayland compositors compared to X11, alongside mysterious bugs and compatibility errors. For now, set `QT_QPA_PLATFORM=xcb` when running Eden, or pass `-platform xcb` to the launch arguments.
+Wayland is not recommended. Testing has shown significantly worse performance on most Wayland compositors compared to X11, alongside mysterious bugs and compatibility errors. For now, set `QT_QPA_PLATFORM=xcb` when running Eglantine, or pass `-platform xcb` to the launch arguments.
 
 ## Windows
 
 Windows 10 and 11 are supported. Anything below is unsupported.
 
-To run Eden, you'll need to install [Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170).
+To run Eglantine, you'll need to install [Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170).
 
 Neither AMD/NVIDIA drivers work nearly as well as Linux's RADV drivers. Compatibility is still largely the same, but performance and some hard-to-run games may suffer compared to Linux.
 
@@ -88,10 +88,10 @@ Adreno 6xx and 7xx GPUs with Turnip drivers will always have the best compatibil
 Android 16 is always recommended, as it brought major improvements to Vulkan requirements and compatibility, *plus* significant performance gains. Some users reported an over 50% performance gain on some Pixel phones after updating.
 
 Mali, PowerVR, Xclipse, and other GPU vendors generally lack in performance and compatibility. Notably:
-- No PowerVR GPUs *except* the DXT-48-1536 are known to work with Eden at all.
-- No Xclipse GPUs *except* the very latest (e.g. Xclipse 950) are known to work with Eden at all.
+- No PowerVR GPUs *except* the DXT-48-1536 are known to work with Eglantine at all.
+- No Xclipse GPUs *except* the very latest (e.g. Xclipse 950) are known to work with Eglantine at all.
 - Mali has especially bad performance, though the Mali-G715 (Tensor G4) and Immortalis-G925 are known to generally run surprisingly well, especially on Android 16.
-- The status of all other GPU vendors is unknown. As long as they support Vulkan, they theoretically can run Eden.
+- The status of all other GPU vendors is unknown. As long as they support Vulkan, they theoretically can run Eglantine.
 - Note that these GPUs generally don't play well with driver injection. If you choose to inject custom drivers via a rooted system (Panfrost, RADV, etc), you may see good results.
 
 Qualcomm Snapdragon SoCs are generally the most well supported.
@@ -117,13 +117,13 @@ Custom ROMs are recommended, *as long as* you know what you're doing.
   * Keep checking the [FAQ page](https://grapheneos.org/faq#supported-devices) for news.
 - Custom ROMs will likely be exclusively recommended in the future due to Google's upcoming [draconian](https://archive.is/hGIjZ), [anti-privacy, anti-user](https://archive.is/mc1CJ) verification requirements.
 
-Eden is currently unavailable on F-Droid or the Play Store. Check back occasionally.
+Eglantine is not on F-Droid or the Play Store, and there are no Android release builds; build the app yourself ([Android build guide](../build/Android.md)).
 
 ## macOS
 
 macOS is relatively stable, with only the occasional crash and bug. Compatibility may suffer due to the MoltenVK layer, however.
 
-Do note that building the GUI version with Qt versions higher than 6.7.3 will cause mysterious bugs, Vulkan errors, and crashes, alongside the cool feature of freezing the entire system UI randomly; we recommend you build with 6.7.3 (via aqtinstall) or earlier as the CI does.
+Do note that building the GUI version with Qt versions higher than 6.7.3 will cause mysterious bugs, Vulkan errors, and crashes, alongside the cool feature of freezing the entire system UI randomly; we recommend you build with 6.7.3 (via aqtinstall) or earlier.
 
 ## *BSD, Solaris
 
@@ -140,6 +140,6 @@ HaikuOS supports (see below) Vulkan 1.3 and has Mesa 24.0. Because OpenGL ES is 
 
 ## VMs
 
-Eden "can" run in a VM, but only with the software renderer, *unless* you create a hardware-accelerated KVM with GPU passthrough. If you *really* want to do this and don't have a spare GPU lying around, RX 570 and 580 GPUs are extremely cheap on the black market and are powerful enough to run most commercial games at 60 FPS.
+Eglantine "can" run in a VM, but only with the software renderer, *unless* you create a hardware-accelerated KVM with GPU passthrough. If you *really* want to do this and don't have a spare GPU lying around, RX 570 and 580 GPUs are extremely cheap on the black market and are powerful enough to run most commercial games at 60 FPS.
 
 Some users and developers have had success using a pure OpenGL-accelerated KVM on Linux with a Windows VM, but this is ridiculously tedious to set up. You're probably better off dual-booting.

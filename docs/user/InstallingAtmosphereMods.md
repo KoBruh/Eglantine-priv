@@ -1,14 +1,14 @@
 # User Handbook - Installing Atmosphere Mods
 
-Use this guide for when you want to install an Atmosphere-based mod for use in Eden.
+Use this guide for when you want to install an Atmosphere-based mod for use in Eglantine.
 
-**[See here](https://evilperson1337.notion.site/Installing-Atmosphere-Mods-2b057c2edaf681fe8d39cbfc2d0cc799) for an illustrated guide.**
+**[See here](https://evilperson1337.notion.site/Installing-Atmosphere-Mods-2b057c2edaf681fe8d39cbfc2d0cc799) for an illustrated guide (written for Eden).**
 
 ---
 
 ### Pre-Requisites
 
-- Eden already set up and functioning with keys and firmware
+- Eglantine already set up and functioning with keys and firmware
 - The mod you want to install
 
 ---
@@ -20,7 +20,7 @@ Use this guide for when you want to install an Atmosphere-based mod for use in E
 3. Extract the downloaded mod (if applicable) to a temporary directory.
 4. Locate the ***exefs*** and ***romfs*** folders inside the extracted mod - usually *atmosphere/contents/<TITLE_ID>*.
 5. Copy the ***exefs*** and ***romfs*** folders into the mod folder you created earlier.
-6. Restart Eden.
+6. Restart Eglantine.
 7. Right-Click the game you installed the mod to and hit *Configure Game*.
 8. Look in the **Add-Ons** tab and observe that the Mod Name (or whatever you named the folder to earlier) now appears on the list and is selected.
 9. Hit **OK** and launch the game.  Your mod should now be active.
