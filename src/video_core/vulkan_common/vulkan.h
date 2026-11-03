@@ -36,6 +36,7 @@
 #undef Always
 #undef False
 #undef None
+#undef Success
 #undef True
 
 // "Catch-all" handle for both Android and.. the rest of platforms

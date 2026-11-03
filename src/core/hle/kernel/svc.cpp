@@ -2672,7 +2672,7 @@ struct SvcTimelineEvent {
     u64 lr;
 };
 
-std::pair<u64, u64> SvcTimelineRange() {
+static std::pair<u64, u64> SvcTimelineRange() {
     static const std::pair<u64, u64> range = [] {
         const char* text = std::getenv("EDEN_NX2_SVC_TIMELINE");
         if (text == nullptr || std::strchr(text, ':') == nullptr) {
@@ -2684,7 +2684,7 @@ std::pair<u64, u64> SvcTimelineRange() {
     return range;
 }
 
-void RecordSvcTimeline(const SvcTimelineEvent& event) {
+static void RecordSvcTimeline(const SvcTimelineEvent& event) {
     static std::mutex mutex;
     static std::vector<SvcTimelineEvent> events;
     static bool written = false;

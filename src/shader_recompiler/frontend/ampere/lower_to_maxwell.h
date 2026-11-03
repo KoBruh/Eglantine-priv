@@ -3717,7 +3717,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 emit(0xe24000000000000fULL | predicate);
                 break;
             }
-            if (atexit_active) {
+            if (atexit_active && atexit_target) {
                 if (insn.Bits(84, 2) || insn.Bits(87, 4) != 7 ||
                     index * 16 >= *atexit_target)
                     return fail(index, "native ATEXIT transfer mode");
