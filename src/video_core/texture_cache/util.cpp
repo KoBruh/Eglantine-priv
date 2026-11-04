@@ -1268,10 +1268,10 @@ UnswizzlePlan PlanUnswizzleImageRows(
     const LevelInfo level_info = MakeLevelInfo(info);
     const s32 num_levels = info.resources.levels;
     const std::array level_sizes = CalculateLevelSizes(level_info, num_levels);
-    [[maybe_unused]] const Extent2D gob = GobSize(bpp_log2, info.block.height, info.tile_width_spacing);
-    const u32 layer_size = CalculateLevelBytes(level_sizes, num_levels);
-    const u32 layer_stride = AlignLayerSize(layer_size, info.size, level_info.block, tile_size.height,
-                                            info.tile_width_spacing);
+    // As UnswizzleImageRows and the guest size: render target and depth arrays have an explicit
+    // array pitch, which the computed stride does not match.
+    const u32 layer_stride =
+        info.layer_stride != 0 ? info.layer_stride : CalculateLayerStride(info);
     // Tiles across one GOB (64 bytes). Runs of blocks are unswizzled one GOB aligned: tile width
     // spacing only pads the end of each block row.
     const u32 gob_tiles = 1U << (GOB_SIZE_X_SHIFT - bpp_log2);
