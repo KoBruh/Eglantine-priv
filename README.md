@@ -70,7 +70,7 @@ The [User Handbook](./docs/user/README.md) covers setup, with a [Quick Start](./
 
 ## Mods
 
-The [`mods`](./mods) folder has ready-made mods for some games, such as frame-rate mods. Its README lists them, the game version each one needs, and how to install one. A frame-rate mod also needs the game's **FPS Limit (FPS mods)** setting, under **Properties → Graphics**, raised to the mod's frame rate.
+The [`mods`](./mods) folder has ready-made mods for some games. Its README lists them and shows how to install one.
 
 ## Building
 
