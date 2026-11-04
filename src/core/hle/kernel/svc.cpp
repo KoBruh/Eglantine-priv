@@ -2795,16 +2795,23 @@ void Call(Core::System& system, u32 imm) {
             LOG_INFO(Kernel_SVC, "svc 0x18 t{} waits on{}", GetCurrentThread(kernel).GetThreadId(), list);
         }
     }
-    if (imm == 0x7d) {
+    // svc 0x7d and 0x7e are CreateResourceLimit and SetResourceLimitLimitValue: only the svcs the
+    // diagnostic hooks below put in the main module's code (nso.cpp) are taken over.
+    const auto at_guest_probe = [&] {
+        if (g_guest_probes.empty()) {
+            return false;
+        }
+        Svc::ThreadContext ctx{};
+        process.GetArmInterface(kernel.CurrentPhysicalCoreIndex())->GetContext(ctx);
+        return g_guest_probes.contains(ctx.pc - 4) || g_guest_probes.contains(ctx.pc);
+    };
+    static const bool guest_log_hook = std::getenv("EDEN_GUEST_LOG_HOOK") != nullptr;
+    if (imm == 0x7d && at_guest_probe()) {
         auto* const arm = process.GetArmInterface(kernel.CurrentPhysicalCoreIndex());
         Svc::ThreadContext ctx{};
         arm->GetContext(ctx);
         auto it = g_guest_probes.find(ctx.pc - 4);
         if (it == g_guest_probes.end()) it = g_guest_probes.find(ctx.pc);
-        if (it == g_guest_probes.end()) {
-            LOG_ERROR(Debug_Emulated, "probe svc at unknown pc {:#x}", ctx.pc);
-            return;
-        }
         auto& memory = process.GetMemory();
         static const u64 voff = [] {
             const char* t = std::getenv("EDEN_GUEST_PROBE_VOFF");
@@ -2866,7 +2873,7 @@ void Call(Core::System& system, u32 imm) {
         arm->SetContext(ctx);
         return;
     }
-    if (imm == 0x7e) {
+    if (imm == 0x7e && guest_log_hook) {
         // Diagnostic guest log hook (EDEN_GUEST_LOG_HOOK in nso.cpp): format the printf-style
         // call in x0..x7. Floating-point and stack arguments are not available.
         auto& memory = process.GetMemory();

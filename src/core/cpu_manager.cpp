@@ -134,7 +134,8 @@ void CpuManager::SingleCoreRunIdleThread(Kernel::KernelCore& kernel) {
 }
 
 void CpuManager::PreemptSingleCore(Kernel::KernelCore& kernel, bool from_running_environment) {
-    if (idle_count >= 4 || from_running_environment) {
+    // Idle once every core was found idle in a row, not while another core still has work.
+    if (idle_count >= Core::Hardware::NUM_CPU_CORES || from_running_environment) {
         if (!from_running_environment) {
             system.CoreTiming().Idle();
             idle_count = 0;
