@@ -1976,6 +1976,45 @@ void TextureCache<P>::RefreshContents(Image& image, ImageId image_id) {
 }
 
 template <class P>
+bool TextureCache<P>::UploadInChunks(Image& image) {
+    // A whole upload of a very large image needs a staging buffer of its full size (rounded up to
+    // a power of two: 1 GiB for 600 MiB of data), which can fail when memory is tight.
+    constexpr u64 min_size = 64_MiB;
+    constexpr u64 chunk_size = 32_MiB;
+    constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::Converted |
+                                       ImageFlagBits::AcceleratedUpload | ImageFlagBits::Unbacked |
+                                       ImageFlagBits::TrimmedLevels;
+    if (True(image.flags & excluded) || image.info.type != ImageType::e2D ||
+        MapSizeBytes(image) < min_size) {
+        return false;
+    }
+    for (u64 offset = 0; offset < image.guest_size_bytes; offset += chunk_size) {
+        const std::array range{
+            std::pair<u64, u64>{offset, std::min<u64>(offset + chunk_size, image.guest_size_bytes)}};
+        const auto plan = PlanUnswizzleImageRows(image.gpu_addr, image.info, range);
+        if (!plan.layout_valid) {
+            if (offset == 0) {
+                return false; // layout not handled: one staging buffer after all
+            }
+            continue;
+        }
+        if (plan.copies.empty()) {
+            continue; // padding between levels or layers
+        }
+        auto staging = runtime.UploadStagingBuffer(plan.total_host_bytes);
+        ExecuteUnswizzlePlan(*gpu_memory, plan, staging.mapped_span);
+        image.UploadMemory(staging, plan.copies);
+        if (offset + chunk_size < image.guest_size_bytes) {
+            // Submit and wait so this chunk's staging memory can be reused by the next one;
+            // without it every chunk's buffer stays alive until the next scheduler flush.
+            runtime.Finish();
+        }
+    }
+    runtime.InsertUploadMemoryBarrier();
+    return true;
+}
+
+template <class P>
 bool TextureCache<P>::UploadsByLayer(const ImageBase& image) const noexcept {
     // Title 1's terrain arrays (8192x8192x68 ASTC, 1.45 GB each) get a few layers streamed in at a
     // time; re-decoding all of them for each took a 2 GiB staging buffer and stalled the GPU.
@@ -3642,39 +3681,6 @@ bool TextureCache<P>::MarkPartialWrite(ImageBase& image, DAddr cpu_addr, size_t 
         // Most of the image changed: untrack it whole and upload it whole.
         UntrackImage(image, ImageId{});
     }
-    return true;
-}
-
-template <class P>
-bool TextureCache<P>::UploadInChunks(Image& image) {
-    // A whole upload of a very large image needs a staging buffer of its full size (rounded up to
-    // a power of two: 1 GiB for 600 MiB of data), which can fail when memory is tight.
-    constexpr u64 min_size = 64_MiB;
-    constexpr u64 chunk_size = 32_MiB;
-    constexpr ImageFlagBits excluded = ImageFlagBits::Sparse | ImageFlagBits::Converted |
-                                       ImageFlagBits::AcceleratedUpload | ImageFlagBits::Unbacked |
-                                       ImageFlagBits::TrimmedLevels;
-    if (True(image.flags & excluded) || image.info.type != ImageType::e2D ||
-        MapSizeBytes(image) < min_size) {
-        return false;
-    }
-    std::vector<u8> data;
-    for (u64 offset = 0; offset < image.guest_size_bytes; offset += chunk_size) {
-        const std::array range{
-            std::pair<u64, u64>{offset, std::min<u64>(offset + chunk_size, image.guest_size_bytes)}};
-        data.clear();
-        const auto copies = UnswizzleImageRows(*gpu_memory, image.gpu_addr, image.info, range, data);
-        if (copies.empty()) {
-            if (offset == 0) {
-                return false; // layout not handled: one staging buffer after all
-            }
-            continue; // padding between levels or layers
-        }
-        auto staging = runtime.UploadStagingBuffer(data.size());
-        std::memcpy(staging.mapped_span.data(), data.data(), data.size());
-        image.UploadMemory(staging, copies);
-    }
-    runtime.InsertUploadMemoryBarrier();
     return true;
 }
 

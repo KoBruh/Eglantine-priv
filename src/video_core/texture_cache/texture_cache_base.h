@@ -168,6 +168,9 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     static constexpr u32 LayerUploadMinSize = 64U << 20;
     static constexpr size_t LargeScratchCapacity = 64U << 20;
 
+    /// Splits large 2D image uploads into smaller chunks, avoiding multi-hundred MiB staging buffers.
+    bool UploadInChunks(Image& image);
+
     /// Large layered images whose refresh can decode only the layers written since the last one.
     [[nodiscard]] bool UploadsByLayer(const ImageBase& image) const noexcept;
 
@@ -470,9 +473,6 @@ private:
     /// Records a CPU write into a large 2D image page by page instead of untracking it whole.
     /// Returns false when the image does not qualify (the caller marks it modified as usual).
     bool MarkPartialWrite(ImageBase& image, DAddr cpu_addr, size_t size);
-
-    /// Uploads a large plain 2D image in chunks; false if it does not qualify.
-    bool UploadInChunks(Image& image);
 
     /// Records a GPU remap of a small part of a large 2D image for a partial re-upload instead of
     /// marking the whole image remapped (which replaces it). False if the image does not qualify.
