@@ -243,7 +243,7 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             } else if (setting->Id() == Settings::values.nx2_refresh_rate.Id()) {
                 return builder.BuildWidget(setting, apply_funcs, nullptr,
                                            ConfigurationShared::RequestType::Default,
-                                           tr(" Hz", "Emulated refresh rate unit (e.g. 120 Hz)"));
+                                           tr(" FPS", "FPS limit unit (e.g. 120 FPS)"));
             } else {
                 return builder.BuildWidget(setting, apply_funcs);
             }
