@@ -38,8 +38,9 @@ u32 ReadSemaphoreWord(DmaPusher& dma_pusher, GPUVAddr address) {
     if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address);
         device && dma_pusher.rasterizer->MustFlushRegion(*device, sizeof(u32),
                                                           VideoCommon::CacheType::BufferCache)) {
-        dma_pusher.rasterizer->FlushRegion(*device, sizeof(u32),
-                                           VideoCommon::CacheType::BufferCache);
+        VideoCommon::GpuSplit::Get().Run([rasterizer = dma_pusher.rasterizer, address = *device] {
+            rasterizer->FlushRegion(address, sizeof(u32), VideoCommon::CacheType::BufferCache);
+        });
     }
     return dma_pusher.memory_manager.Read<u32>(address);
 }

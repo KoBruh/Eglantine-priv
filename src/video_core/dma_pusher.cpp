@@ -1035,8 +1035,10 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
     const GPUVAddr end_page = (address + size + 0xfff) & ~GPUVAddr{0xfff};
     if (memory_manager.IsMemoryDirty(first_page, end_page - first_page,
                                      VideoCommon::CacheType::BufferCache)) {
-        memory_manager.FlushRegion(first_page, end_page - first_page,
-                                   VideoCommon::CacheType::BufferCache);
+        VideoCommon::GpuSplit::Get().Run(
+            [memory = &memory_manager, first_page, size = end_page - first_page] {
+                memory->FlushRegion(first_page, size, VideoCommon::CacheType::BufferCache);
+            });
     }
     if (rasterizer == nullptr) {
         return;
