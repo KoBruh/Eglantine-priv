@@ -20,6 +20,7 @@
 #include <limits>
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <map>
 #include <limits>
 #include <optional>
@@ -188,6 +189,43 @@ inline void Nx2LogSessionClosed(std::string_view kind) {
         count.logged = now;
         LOG_INFO(Service, "{} session closed ({} so far)", kind, count.closed);
     }
+}
+
+// The rate of the Switch 2 vsync events (nx2:vi2 31/32): the display's refresh rate,
+// nx2_refresh_rate ("FPS Limit (FPS mods)"), which can change while a game runs and which presents
+// are paced to as well (INx2Vi2Session::PaceToVblank), unless EDEN_NX2_VSYNC_HZ=<rate>
+// (experiment) overrides it.
+inline long long Nx2VsyncHz() {
+    static const long long forced = [] {
+        const char* text = std::getenv("EDEN_NX2_VSYNC_HZ");
+        return text != nullptr ? (std::max)(std::strtoll(text, nullptr, 10), 1LL) : 0LL;
+    }();
+    if (forced != 0) {
+        return forced;
+    }
+    return (std::max)(static_cast<long long>(Settings::values.nx2_refresh_rate.GetValue()), 1LL);
+}
+
+inline std::chrono::nanoseconds Nx2VsyncInterval() {
+    return std::chrono::nanoseconds{1'000'000'000LL / Nx2VsyncHz()};
+}
+
+// Creates the looping CoreTiming event behind the vsync events, to be scheduled every
+// Nx2VsyncInterval(); it calls `on_vblank` at each vblank. It reads the rate at every vblank, so a
+// changed setting takes effect from the next one (logged once per change).
+inline std::shared_ptr<Core::Timing::EventType> Nx2CreateVsyncTimer(
+    std::function<void()> on_vblank) {
+    return Core::Timing::CreateEvent(
+        "nx2:vi2 vsync",
+        [on_vblank = std::move(on_vblank), hz = Nx2VsyncHz()](
+            s64, std::chrono::nanoseconds) mutable -> std::optional<std::chrono::nanoseconds> {
+            on_vblank();
+            if (const long long current = Nx2VsyncHz(); current != hz) {
+                hz = current;
+                LOG_INFO(Service, "nx2:vi2 vsync interval now {} Hz", hz);
+            }
+            return std::chrono::nanoseconds{1'000'000'000LL / hz};
+        });
 }
 
 // nn::gs::sdk::QueryApplicationGpuTimeSpan opens this session with GSV 1121.
@@ -2289,6 +2327,11 @@ private:
 
     // nn::vi2::QueryDisplayRefreshRate(display name): u32 refresh rate in Hz, then a bool. The sdk
     // takes only -1, 60 or 120; Minecraft polled it forever on the empty reply.
+    // Always 60, also when nx2_refresh_rate (the FPS limit for frame-rate mods) is higher. That
+    // setting only lets a modded game present and see vsyncs faster; the mods change the game's
+    // own frame clock and were made against the console's 60 Hz display. Reporting the setting
+    // could change how a game times itself (a present's word 12 carries this rate), and the SDK
+    // takes no rate but 60 or 120 while the setting goes from 30 to 360.
     void QueryDisplayRefreshRate(HLERequestContext& ctx) {
         TipcReplyWords(ctx, {60, 0});
     }
@@ -2457,28 +2500,18 @@ private:
             m_vsync->events.push_back(event);
         }
         if (!m_vsync_timer) {
-            m_vsync_timer = Core::Timing::CreateEvent(
-                "nx2:vi2 vsync",
-                [vsync_state = m_vsync, &kernel = system.Kernel()](
-                    s64, std::chrono::nanoseconds) -> std::optional<std::chrono::nanoseconds> {
+            // Fires at the display's refresh rate, following changes of the setting while the
+            // game runs (Nx2VsyncHz). The game starts frames on this event, so a frame that misses
+            // a tick idles until the next one.
+            m_vsync_timer =
+                Nx2CreateVsyncTimer([vsync_state = m_vsync, &kernel = system.Kernel()] {
                     std::scoped_lock lk{vsync_state->mutex};
                     for (auto* vsync : vsync_state->events) {
                         vsync->Signal(kernel);
                     }
-                    return std::nullopt;
                 });
-            // EDEN_NX2_VSYNC_HZ=<rate> (experiment): the game starts frames on this event, so a
-            // frame that misses a 60 Hz tick idles until the next one.
-            // Fires at the display's refresh rate (nx2_refresh_rate) unless EDEN_NX2_VSYNC_HZ says
-            // otherwise.
-            const std::chrono::nanoseconds VblankInterval{[] {
-                const char* text = std::getenv("EDEN_NX2_VSYNC_HZ");
-                const long long hz =
-                    text ? (std::max)(std::strtoll(text, nullptr, 10), 1LL)
-                         : (std::max)(static_cast<long long>(Settings::values.nx2_refresh_rate.GetValue()), 1LL);
-                return 1'000'000'000LL / hz;
-            }()};
-            system.CoreTiming().ScheduleLoopingEvent(VblankInterval, VblankInterval, m_vsync_timer);
+            const auto interval = Nx2VsyncInterval();
+            system.CoreTiming().ScheduleLoopingEvent(interval, interval, m_vsync_timer);
         }
         IPC::ResponseBuilder rb{ctx, 2, 1, 0};
         rb.Push(ResultSuccess);

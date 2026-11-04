@@ -42,6 +42,7 @@ add_executable(tests
     core/nup_writer.cpp
     core/priority_queue.cpp
     core/vfs_vector.cpp
+    core/nx2_vsync.cpp
     core/internal_network/network.cpp
     shader_recompiler/compilation_memory.cpp
     video_core/memory_tracker.cpp
