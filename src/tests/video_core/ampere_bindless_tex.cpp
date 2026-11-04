@@ -613,9 +613,10 @@ TEST_CASE("Ampere uniform bindless TEX rejects unsupported texture modes",
     }
 }
 
-// Left failing on purpose: neither the 2D path nor the operand-list fallback checks these bits
-// (bit 96 is ignored by both, 80/84/91 by the fallback), while every other TEX path requires
-// bit 80 clear. Whether they change the sample is not known, so this documents the gap.
+// Bit 80 is the high bit of the .F16 result field (79-80), bit 84 the low bit of the eviction
+// priority (84-86, normal is 1), bit 91 marks the handle as a uniform register, and bit 96 is in
+// the bits no texture form uses (92-104; Mesa NAK, sm70_encode.rs). The 2D path and the
+// operand-list fallback take only the values they model, so each of these encodings is rejected.
 TEST_CASE("Ampere uniform bindless TEX rejects unvalidated control bits",
           "[video_core][ampere][bindless_tex]") {
     for (const u32 bit : {80U, 84U, 91U, 96U}) {

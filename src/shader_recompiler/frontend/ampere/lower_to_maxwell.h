@@ -2327,7 +2327,8 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             const u32 count = static_cast<u32>(std::popcount(mask)), first = std::min(count, 2U);
             const u32 lod = insn.Bits(87, 1);
             if ((insn.words[1] & ~0x3fffU) != 0x30000000U ||
-                (insn.words[2] & ~0x04800fffU) != 0x081e0000U || handle == ~0U || handle == 255 ||
+                (insn.words[2] & ~0x04800fffU) != 0x081e0000U || insn.Bits(96, 9) ||
+                handle == ~0U || handle == 255 ||
                 (a != 255 && a >= 216) || (b != 255 && b >= 216) || count == 0 ||
                 (dest != 255 && (dest + first > 216 || (first > 1 && (dest & 1)))) ||
                 (count > 2 && second != 255 && (second + count - 2 > 216 ||
@@ -2868,10 +2869,15 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
             constexpr std::array<u32, 8> maxwell_type{0, 2, 4, 6, 1, 3, 0, 7};
             const u32 reg_limit = uses_uniform_bank ? 216U : 246U;
+            // The same control bits as the 2D form above (Mesa NAK, sm70_encode.rs): no .NDV (77),
+            // no .F16 result (79-80), no fault predicate (81-83), the normal eviction priority
+            // (84-86), the uniform handle (91), and nothing in the bits no texture form uses
+            // (92-104), so no encoding is lowered as if a bit it does not check were clear.
             if (handle_reg == ~0U || handle_reg == 255 || insn.Bits(46, 14) != 0 ||
-                dimension == 6 || insn.Bits(77, 1) || insn.Bits(81, 3) != 7 ||
+                dimension == 6 || insn.Bits(77, 1) || insn.Bits(79, 2) || insn.Bits(81, 3) != 7 ||
+                insn.Bits(84, 3) != 1 || !insn.Bits(91, 1) || insn.Bits(92, 13) ||
                 (lod > 3 && lod != 6 && lod != 7) || (depth_compare && mask != 1) || mask == 0 ||
-                insn.Bits(79, 1) || !insn.Bits(60, 1))
+                !insn.Bits(60, 1))
                 return fail(index, "native uniform texture mode");
             const u32 coordinates = coordinate_count[dimension];
             const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
