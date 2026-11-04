@@ -4,7 +4,9 @@
 #pragma once
 
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include "common/common_types.h"
@@ -14,6 +16,8 @@ namespace Common::Net {
 struct Asset {
     std::string name;
     std::string url;
+    // Lowercase hex SHA-256 GitHub lists for the file, or empty when it lists none.
+    std::string sha256;
 };
 
 struct Release {
@@ -30,12 +34,13 @@ struct Release {
     u64 published;
     bool prerelease;
 
-    // The release file built for the same platform and variant as this build, if it has one.
+    // The release file built for the same platform and package as this build, if it has one.
     std::optional<Asset> GetPlatformAsset() const;
 
     static std::optional<Release> FromJson(const nlohmann::json& json);
-    static std::vector<Release> ListFromJson(const nlohmann::json& json);
-    static std::vector<Release> ListFromJson(const std::string_view& json);
+    // Nullopt when the response is not a list of releases (an error page, a truncated body).
+    static std::optional<std::vector<Release>> ListFromJson(const nlohmann::json& json);
+    static std::optional<std::vector<Release>> ListFromJson(const std::string_view& json);
 };
 
 struct Commit {
@@ -44,10 +49,28 @@ struct Commit {
     std::string author;
 };
 
+// A release tag CI publishes builds under: build-<number>, or <channel>-build-<number>.
+struct BuildTag {
+    // Empty for build-<number>. Points into the parsed tag.
+    std::string_view channel;
+    u64 number;
+};
+
+std::optional<BuildTag> ParseBuildTag(std::string_view tag);
+
+// The highest numbered of `releases` on `current`'s channel, if it is numbered above `current`.
+std::optional<Release> FindNewerRelease(const std::vector<Release>& releases,
+                                        const BuildTag& current);
+
+// The asset named <anything>-<platform><extension>, trying `extensions` in order.
+std::optional<Asset> FindPlatformAsset(const std::vector<Asset>& assets, std::string_view platform,
+                                       std::span<const std::string_view> extensions);
+
 // Make a request via httplib, and return the response body if applicable.
 std::optional<std::string> MakeRequest(const std::string& url, const std::string& path);
 
-// Get the newest releases of the update repository, or nullopt if GitHub could not be reached.
+// Get the newest releases of the update repository, or nullopt if GitHub could not be reached
+// or did not answer with a list of releases.
 std::optional<std::vector<Release>> GetReleases();
 
 // Get the newest releases of the update repository as GitHub's JSON.

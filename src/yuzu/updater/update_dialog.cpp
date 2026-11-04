@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <QCryptographicHash>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
@@ -101,6 +102,13 @@ void UpdateDialog::Download() {
     constexpr std::size_t timeout_seconds = 15;
 
     std::unique_ptr<httplib::Client> client = std::make_unique<httplib::Client>(host);
+    if (!client->is_valid()) {
+        LOG_ERROR(Frontend, "Invalid download URL {}", m_asset.url);
+        file.cancelWriting();
+        QtCommon::Frontend::Critical(tr("Failed to download file"),
+                                     tr("Could not download %1.").arg(url.toString()));
+        return;
+    }
     client->set_connection_timeout(timeout_seconds);
     client->set_read_timeout(timeout_seconds);
     client->set_write_timeout(timeout_seconds);
@@ -125,8 +133,10 @@ void UpdateDialog::Download() {
         return !progress->wasCanceled();
     };
 
-    // Write file in chunks.
-    auto content_receiver = [&file, filename](const char* t_data, size_t data_length) -> bool {
+    // Write file in chunks, hashing them for the checksum check below.
+    QCryptographicHash sha256{QCryptographicHash::Sha256};
+    auto content_receiver = [&file, &sha256, filename](const char* t_data,
+                                                       size_t data_length) -> bool {
         if (file.write(t_data, data_length) == -1) {
             LOG_WARNING(Frontend, "Could not write {} bytes to file {}", data_length,
                         filename.toStdString());
@@ -135,6 +145,7 @@ void UpdateDialog::Download() {
             return false;
         }
 
+        sha256.addData(QByteArrayView{t_data, static_cast<qsizetype>(data_length)});
         return true;
     };
 
@@ -166,6 +177,26 @@ void UpdateDialog::Download() {
             tr("Could not download %1\nError code: %2")
                 .arg(url.toString(), QString::number(response.status)));
         return;
+    }
+
+    // GitHub lists the SHA-256 of every release file. A download that does not match it was
+    // damaged or altered on the way, so it is not kept.
+    if (!m_asset.sha256.empty()) {
+        const std::string actual = sha256.result().toHex().toStdString();
+        if (actual != m_asset.sha256) {
+            LOG_ERROR(Frontend, "{} has SHA-256 {}, but the release lists {}", m_asset.name,
+                      actual, m_asset.sha256);
+            file.cancelWriting();
+            QtCommon::Frontend::Critical(
+                tr("Failed to download file"),
+                tr("The downloaded %1 does not match the checksum GitHub lists for it, so it was "
+                   "not saved. Please try again.")
+                    .arg(QString::fromStdString(m_asset.name)));
+            return;
+        }
+    } else {
+        LOG_WARNING(Frontend, "The release lists no SHA-256 for {}, so it was not verified",
+                    m_asset.name);
     }
 
     if (!file.commit()) {

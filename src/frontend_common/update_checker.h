@@ -27,6 +27,7 @@ struct Update {
 enum class Failure {
     // Only builds CI publishes under a release tag know which releases follow them.
     NotReleaseBuild,
+    // GitHub could not be reached, or did not answer with a list of releases.
     Unreachable,
 };
 

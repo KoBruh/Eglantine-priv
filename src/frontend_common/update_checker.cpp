@@ -5,9 +5,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
-#include <charconv>
 #include <optional>
-#include <string_view>
 
 #include "common/logging.h"
 #include "common/net/net.h"
@@ -20,31 +18,11 @@ namespace {
 
 constexpr u32 max_changes = 100;
 
-// Release tags are <channel>-build-<number>, where the channel is the branch CI built.
-struct BuildTag {
-    std::string_view channel;
-    u64 number;
-};
-
-std::optional<BuildTag> ParseBuildTag(std::string_view tag) {
-    constexpr std::string_view marker = "-build-";
-    const auto pos = tag.rfind(marker);
-    if (pos == std::string_view::npos || pos == 0)
-        return std::nullopt;
-
-    const auto digits = tag.substr(pos + marker.size());
-    u64 number{};
-    const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), number);
-    if (digits.empty() || error != std::errc{} || end != digits.data() + digits.size())
-        return std::nullopt;
-
-    return BuildTag{tag.substr(0, pos), number};
-}
-
 } // namespace
 
 Result Check() {
-    const auto current = ParseBuildTag(Common::g_build_release_tag);
+    // CI publishes release builds as build-<run number> (Common::Net::ParseBuildTag).
+    const auto current = Common::Net::ParseBuildTag(Common::g_build_release_tag);
     if (!current)
         return Failure::NotReleaseBuild;
 
@@ -52,16 +30,7 @@ Result Check() {
     if (!releases)
         return Failure::Unreachable;
 
-    std::optional<Common::Net::Release> latest;
-    u64 latest_number = current->number;
-    for (const auto& release : *releases) {
-        const auto tag = ParseBuildTag(release.tag);
-        if (tag && tag->channel == current->channel && tag->number > latest_number) {
-            latest = release;
-            latest_number = tag->number;
-        }
-    }
-
+    const auto latest = Common::Net::FindNewerRelease(*releases, *current);
     if (!latest)
         return UpToDate{};
 

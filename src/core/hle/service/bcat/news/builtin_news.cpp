@@ -465,9 +465,9 @@ void EnsureBuiltinNewsLoaded() {
         LoadDefaultLogos();
 
         if (const auto cached = ReadCachedJson()) {
-            const std::string_view body = cached.value();
-            const auto releases = Common::Net::Release::ListFromJson(body);
-            ImportReleases(releases);
+            if (const auto releases = Common::Net::Release::ListFromJson(std::string_view{*cached})) {
+                ImportReleases(*releases);
+            }
 
             LOG_INFO(Service_BCAT, "news: {} entries loaded from cache", NewsStorage::Instance().ListAll().size());
         }
@@ -475,9 +475,12 @@ void EnsureBuiltinNewsLoaded() {
         std::thread([] {
             if (const auto fresh = Common::Net::GetReleasesBody()) {
                 const std::string_view body = fresh.value();
-                WriteCachedJson(body);
                 const auto releases = Common::Net::Release::ListFromJson(body);
-                ImportReleases(releases);
+                if (!releases) {
+                    return;
+                }
+                WriteCachedJson(body);
+                ImportReleases(*releases);
 
                 LOG_INFO(Service_BCAT, "news: {} entries updated from GitHub", NewsStorage::Instance().ListAll().size());
             }
