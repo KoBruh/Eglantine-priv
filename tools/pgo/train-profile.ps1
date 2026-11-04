@@ -29,6 +29,10 @@ param(
     [string] $BuildDir = 'build\pgo-generate',
     # Run reports and the raw profiles.
     [string] $WorkDir = 'build\pgo-training',
+    # The sdl2-config.ini the runs read their key mappings and settings from. Default: the one in
+    # the emulator's user folder. With a portable user folder next to the instrumented eden-cli
+    # (<BuildDir>\bin\user) and its config here, the training leaves %APPDATA%\eden alone.
+    [string] $Config,
     [string] $Output = 'eglantine.profdata',
     [string[]] $Scenarios = @(
         'tools\nx2\scenarios\pokopia_explore.txt',
@@ -180,6 +184,7 @@ if (-not $SkipTraining) {
             $clock = [Diagnostics.Stopwatch]::StartNew()
             $runArgs = @('tools\nx2\run_scenario.py', $scenario, '--exe', $exe, '--game', $Game,
                 '--set', "use_docked_mode=$docked", '--clean-exit', '--out', (Join-Path $runs $name))
+            if ($Config) { $runArgs += @('--config', $Config) }
             & $python @($pythonArgs + $runArgs)
             $code = $LASTEXITCODE
             Remove-Item Env:LLVM_PROFILE_FILE

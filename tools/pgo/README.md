@@ -8,7 +8,8 @@ our own code playing Pokémon Pokopia, and `train-profile.ps1` rebuilds it from 
 ## How it is made
 
 1. **Instrumented build.** An MSYS2 UCRT64 clang (MinGW) build configured like the workflow's
-   "Configure MinGW PGO" step, with `-fprofile-generate` in place of `-fprofile-use`, then bundled
+   "Configure MinGW PGO" step (the `v3` preset and ThinLTO included), with `-fprofile-generate` in
+   place of `-fprofile-use`, then bundled
    like "Package MinGW binary" (`windeployqt6` plus every non-system DLL) so it runs outside MSYS2.
 2. **Training.** `tools/nx2/run_scenario.py --clean-exit` plays each scenario below, docked
    (`use_docked_mode=1`) and handheld (`use_docked_mode=0`). The window renders off-screen, never
@@ -45,7 +46,7 @@ our own code playing Pokémon Pokopia, and `train-profile.ps1` rebuilds it from 
   format changes between majors). The profile is written by the `llvm-profdata` of the older of
   the two CI compilers: MSYS2's UCRT64 clang (Windows PGO job) and apt.llvm.org's
   `clang-$PGO_LLVM_VERSION` (Linux PGO jobs). Both are LLVM 23 today (MSYS2 23.1.4,
-  apt.llvm.org 23.1.5), and the script uses MSYS2's `llvm-profdata`, which is the older one. The
+  apt.llvm.org 23.1.6), and the script uses MSYS2's `llvm-profdata`, which is the older one. The
   script stops before building if MSYS2's LLVM major is newer than `PGO_LLVM_VERSION`.
 
 ## Training a new profile
@@ -63,7 +64,11 @@ powershell -ExecutionPolicy Bypass -File tools\pgo\train-profile.ps1 -Game E:\Po
 
 It installs the MSYS2 packages it needs (`--needed`), builds into `build\pgo-generate`, runs the
 eight trainings (about 20 minutes), keeps their reports in `build\pgo-training\runs` and writes
-`eglantine.profdata`. `-SkipBuild` reuses the instrumented build; `-SkipTraining` only merges the
+`eglantine.profdata`. To keep the training out of your own user folder, put a portable one next to
+the instrumented program (`<BuildDir>\bin\user`, with a Pokopia save) and pass its config with
+`-Config <BuildDir>\bin\user\config\sdl2-config.ini`. Check that config's `[Data Storage]`
+first: a `nand_directory`, `load_directory` or `sdmc_directory` that is set (`\default=false`)
+points every run back at that folder, saves and mods included. `-SkipBuild` reuses the instrumented build; `-SkipTraining` only merges the
 `.profraw` files already in `build\pgo-training\raw`. Each clang process can take 2 GB or more, so
 pick `-Jobs` for the RAM you have.
 
@@ -89,26 +94,36 @@ never breaks the build, it just stops helping. Retrain:
 
 **Staleness.** Build with the profile and count the mismatches: configure like "Configure MinGW
 PGO", but replace `-Wno-backend-plugin` with `-Wno-error=backend-plugin` (sirit builds with
-`-Werror`) and add `-mllvm -pgo-warn-missing-function`. Then count `hash mismatch` (functions
-changed since training) and `no profile data available` (functions training never ran, or new
+`-Werror`) and add `-mllvm -pgo-warn-missing-function` and
+`-mllvm -no-pgo-warn-mismatch-comdat-weak=false` (without it, inline and template functions that
+changed are not reported). Then count `hash mismatch` (functions changed since training) and `no profile data available` (functions training never ran, or new
 ones) in the build log. Build it from a checkout in another directory to also check that the
 profile matches a checkout elsewhere, as on the CI.
 
 **Speed.** Build the same commit without the profile and run `pokopia_walk.txt` with `--uncapped`
 on both builds, alternating them, a few times each. Compare the boot loading time ("Boot loading
 screen ends" in `report.md`) and the CPU time per frame once the world is up (`threads.csv`, less
-the host timer thread, which spins). Pokopia paces itself to about 120 fps even uncapped, so its
-frame time barely moves; the CPU each frame costs is what PGO lowers.
+the host timer thread, which spins). With the `120 FPS` mod Pokopia paces itself to 120 fps
+even uncapped, so its mean frame rate barely moves; the CPU each frame costs, and the frames that
+miss the 120 fps slot (over 9 ms in `EDEN_NX2_FRAME_LOG`), are what PGO lowers.
 
 ## The profile in the repository
 
-- Trained on `dev` at 79214e383b (after the first upstream integration) with MSYS2's clang and
-  `llvm-profdata` 23.1.4. apt.llvm.org's `llvm-profdata` 23.1.5, the Linux jobs' LLVM, reads it.
-- 8 runs (four scenarios, docked and handheld), 1,261 s of play. 2.1 MB; 7,630 of the 32,581
-  instrumented functions ran.
-- A MinGW `-fprofile-use` build of the same commit, in another directory: no hash mismatches, and
-  every profiled function matched, 1,950 of them static. 50,483 functions have no profile and are
-  built as without PGO.
-- Against a MinGW build without PGO, `pokopia_walk` docked and uncapped, five alternating pairs:
-  boot to the title 32.8 s → 30.6 s, CPU per world frame 34.1 ms → 30.7 ms, frame time
-  8.79 ms → 8.59 ms.
+- Trained on `dev` at ea3ae74a75 with MSYS2's clang and `llvm-profdata` 23.1.4, configured as
+  the release builds are now (`v3` preset, ThinLTO). The previous profile was trained at 79214e383b,
+  173 commits earlier.
+- 8 runs (four scenarios, docked and handheld), 1,271 s of play, with the `120 FPS` mod. 3.7 MB;
+  13,999 of the 53,843 instrumented functions ran.
+- A MinGW `-fprofile-use` build in another directory, configured as the release (`v3`, ThinLTO):
+  2 functions with a hash mismatch, both cold library templates (a `boost::algorithm` string
+  search and an `nlohmann::json` constructor); 44,624 functions have no profile and are built as
+  without PGO. The same profile in a build without `v3` and LTO: 5 mismatches.
+- What it replaced: the previous profile against this code had 78 mismatched functions, among them
+  the GPU thread's hottest (`Tegra::DmaPusher::ProcessCommands`, 3.5 billion counts discarded; the
+  graphics pipeline's configure function, 1.7 billion; `Maxwell3D::Front`, 1.1 billion;
+  `ShaderCache::RefreshStages`; `GraphicsPipeline::Next`; `Kernel::Svc::Call`), and 51,017
+  functions without a profile.
+- Against the previous profile, in the earlier release configuration (no `v3`, no LTO),
+  `pokopia_walk` docked and uncapped with the `120 FPS` mod, alternating runs: in-world frames over
+  9 ms 377 → 347 (of 7,500), CPU per world frame 25.4 → 24.2 ms (all threads but the timer),
+  1% low 98.3 → 99.8 fps; the mean stays at the game's 120 fps.
