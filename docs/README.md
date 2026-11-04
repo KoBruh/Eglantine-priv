@@ -31,18 +31,6 @@ This contains documentation created by developers, build instructions, guideline
   - **[HOS Kernel](./HosKernel.md)**
   - **[Settings](./Settings.md)**
 
-## Developer notes
-
-Notes on the Switch 2 work, kept in [dev](./dev):
-
-- **[Switch 2 titles: setup, blockers and fixes](./dev/NX2_NOTES.md)**
-- **[Splitting the GPU thread](./dev/NX2_GPU_THREAD_SPLIT.md)**
-- **[Experimental NV cooperative-matrix lowering](./dev/experimental-cooperative-matrix.md)**
-- Game bring-up:
-  - **[Fire Emblem: Fortune's Weave](./dev/bringup/FE_FORTUNES_WEAVE.md)**
-  - **[Kirby Air Riders](./dev/bringup/KIRBY_AIR_RIDERS.md)**
-  - **[Welcome Tour](./dev/bringup/WELCOME_TOUR.md)**
-
 ## Externals
 
 Other useful resources in general, take a quick read if you need.

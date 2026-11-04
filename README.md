@@ -44,7 +44,7 @@
 | Mario Kart World | Runs at decent to full speed, depending on your hardware and settings. |
 | Splatoon Raiders | Runs, with variable performance. |
 
-Other games are being brought up; their notes are in [docs/dev/bringup](./docs/dev/bringup). A full compatibility list will follow.
+Other games are being brought up. A full compatibility list will follow.
 
 ## Download
 
@@ -74,7 +74,7 @@ The [`mods`](./mods) folder has ready-made mods for some games. Its README lists
 
 ## Building
 
-See the [General Build Guide](./docs/Build.md). On Windows, [`tools/windows/build.ps1`](./tools/windows/build.ps1) builds with MSVC and needs no administrator rights. The other development tools are described in the [tools directory](./tools), and developer notes are in [docs/dev](./docs/dev).
+See the [General Build Guide](./docs/Build.md). On Windows, [`tools/windows/build.ps1`](./tools/windows/build.ps1) builds with MSVC and needs no administrator rights. The other development tools are described in the [tools directory](./tools).
 
 ## Contributing
 

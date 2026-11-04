@@ -29,7 +29,7 @@ class EngineInterface;
 
 namespace VideoCommon {
 
-// Splits the GPU thread in two (docs/dev/NX2_GPU_THREAD_SPLIT.md). The GPU thread (the front) takes the
+// Splits the GPU thread in two. The GPU thread (the front) takes the
 // CPU's commands, parses command lists and runs the puller; engine method calls and everything
 // behind them (register state, macros, draws, the rasterizer and its caches) run in order on a
 // second thread (the back), fed through a single-producer single-consumer ring. Work the front
