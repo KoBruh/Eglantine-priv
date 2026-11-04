@@ -50,12 +50,6 @@ void FSR3::CreateImages(const Device& device) {
         images.image_views[Rcas] =
             CreateWrappedImageView(device, images.images[Rcas], VK_FORMAT_R16G16B16A16_SFLOAT);
     }
-
-    // Allocate a history image for temporal accumulation feedback.
-    m_prev_frame_image =
-        CreateWrappedImage(m_memory_allocator, m_extent, VK_FORMAT_R16G16B16A16_SFLOAT);
-    m_prev_frame_view =
-        CreateWrappedImageView(device, m_prev_frame_image, VK_FORMAT_R16G16B16A16_SFLOAT);
 }
 
 void FSR3::CreateRenderPasses(const Device& device) {
@@ -149,7 +143,6 @@ void FSR3::UploadImages(const Device& device, Scheduler& scheduler) {
                 ClearColorImage(cmdbuf, *image.images[Easu]);
                 ClearColorImage(cmdbuf, *image.images[Rcas]);
             }
-            ClearColorImage(cmdbuf, *m_prev_frame_image);
         });
         scheduler.Finish();
     }
@@ -189,10 +182,10 @@ VkImageView FSR3::Draw(const Device& device, Scheduler& scheduler, size_t image_
                      input_image_height, output_image_width, output_image_height, viewport_x,
                      viewport_y);
 
-    // FSR 3 uses a slightly reduced default sharpening compared to FSR 1
-    // to avoid over-sharpening on temporally accumulated detail.
+    // Softer than the FSR filter: FsrRcasCon takes stops of sharpness reduction (0 is the
+    // sharpest), so the slider's stops are scaled up, not down.
     const float sharpening =
-        static_cast<float>(Settings::values.fsr_sharpening_slider.GetValue()) / 100.0f * 0.8f;
+        static_cast<float>(Settings::values.fsr_sharpening_slider.GetValue()) / 100.0f / 0.8f;
     FsrRcasCon(rcas_con.data(), sharpening);
 
     UploadImages(device, scheduler);
@@ -225,7 +218,6 @@ VkImageView FSR3::Draw(const Device& device, Scheduler& scheduler, size_t image_
         TransitionImageLayout(cmdbuf, rcas_image, VK_IMAGE_LAYOUT_GENERAL);
     });
 
-    ++m_frame_counter;
     return *images.image_views[Rcas];
 }
 

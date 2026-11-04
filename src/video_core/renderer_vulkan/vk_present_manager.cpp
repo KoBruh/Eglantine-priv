@@ -8,6 +8,7 @@
 #include "common/thread.h"
 #include "core/frontend/emu_window.h"
 #ifdef HAS_LSFG
+#include "video_core/renderer_vulkan/present/fsr3_frame_gen.h"
 #include "video_core/renderer_vulkan/present/lsfg_common.h"
 #endif
 #include "video_core/renderer_vulkan/vk_present_manager.h"
@@ -26,6 +27,8 @@ constexpr size_t MAX_FRAMES_IN_FLIGHT = 7;
 constexpr u32 MAX_PRESENT_ATTEMPTS = 3;
 #ifdef HAS_LSFG
 static_assert(MAX_FRAMES_IN_FLIGHT <= LSFG_MAX_TARGETS);
+// FSR 3 frame generation keeps one descriptor set per present frame.
+static_assert(MAX_FRAMES_IN_FLIGHT <= Fsr3FrameGen::MAX_TARGETS);
 #endif
 
 bool CanStoreToFrame(const vk::PhysicalDevice& physical_device, VkFormat format) {

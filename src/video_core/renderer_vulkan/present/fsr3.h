@@ -12,22 +12,9 @@ namespace Vulkan {
 class Device;
 class Scheduler;
 
-/// AMD FidelityFX Super Resolution 3 upscaler implementation.
-///
-/// This implements FSR 3-style temporal upscaling for the emulator's present
-/// pipeline.  Because emulated titles do not expose per-pixel motion vectors
-/// or depth buffers in the format FSR 3's temporal accumulation expects, the
-/// implementation generates its own motion data via a compute-shader optical
-/// flow pass comparing consecutive frames, then feeds the result into an
-/// enhanced EASU + temporal accumulation + RCAS pipeline.
-///
-/// The pipeline runs entirely in compute shaders:
-///   1. **Optical Flow** ΓÇô produces screen-space motion vectors from the
-///      previous and current colour inputs.
-///   2. **Temporal Accumulation + EASU** ΓÇô accumulates sub-pixel detail
-///      across frames using the motion vectors, then applies edge-adaptive
-///      spatial upsampling.
-///   3. **RCAS** ΓÇô robust contrast-adaptive sharpening on the final output.
+/// The ScalingFilter::Fsr3 present filter ("FSR 1 Soft" in the UI): FSR 1's EASU
+/// spatial upscale followed by RCAS, with less sharpening than the plain FSR filter at the same
+/// nonzero sharpness setting (at 0 both are the sharpest). It keeps no history between frames.
 class FSR3 {
 public:
     explicit FSR3(const Device& device, MemoryAllocator& memory_allocator,
@@ -86,12 +73,7 @@ private:
     };
     std::vector<Images> m_dynamic_images;
 
-    // Previous-frame history for temporal accumulation
-    vk::Image m_prev_frame_image;
-    vk::ImageView m_prev_frame_view;
     bool m_images_ready{};
-    bool m_has_prev_frame{};
-    u32 m_frame_counter{};
 };
 
 } // namespace Vulkan

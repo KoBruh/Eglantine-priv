@@ -32,7 +32,8 @@ public:
     void GenerateInto(const Device& device, Frame* destination, size_t generation);
 
 private:
-    void Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale);
+    void Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale,
+                 bool use_fsr3);
     void DumpDebugImages(u64 count);
 
     MemoryAllocator& memory_allocator;

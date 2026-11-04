@@ -5,18 +5,21 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(binding = 0) uniform sampler2D CurrentFrame;
 layout(binding = 1) uniform sampler2D PreviousFrame;
 layout(binding = 2) uniform sampler2D MotionVectors;
-layout(binding = 3, rgba8) uniform writeonly image2D OutGeneratedFrame;
+// The generated frame is a present frame in the swapchain format (often B8G8R8A8, or a 10-bit or
+// half-float format), so it is written without a format qualifier and the view's own format
+// decides how the colour is stored.
+layout(binding = 3) uniform writeonly image2D OutGeneratedFrame;
 
 layout(push_constant) uniform PushConstants {
     vec2 inv_render_size;
     vec2 render_size;
-    float blend_factor; // timestamp between 0.0 and 1.0
-    float flow_scale;
+    vec2 inv_flow_size; // the motion vectors are in half-resolution flow pixels
+    float blend_factor; // timestamp between 0.0 (previous frame) and 1.0 (current frame)
 };
 
-// ΓöÇΓöÇ Optimized 3├ù3 motion vector median using textureGather ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
-// textureGather fetches a 2├ù2 quad per call, so we only need 4 calls
-// to cover a 3├ù3 neighbourhood (vs 9 individual texture() calls).
+// -- Optimized 3x3 motion vector median using textureGather --------------------
+// textureGather fetches a 2x2 quad per call, so we only need 4 calls
+// to cover a 3x3 neighbourhood (vs 9 individual texture() calls).
 // We extract the median of X and Y components independently.
 void insertionSort5(inout float a[5]) {
     for (int i = 1; i < 5; i++) {
@@ -31,10 +34,11 @@ void insertionSort5(inout float a[5]) {
 }
 
 vec2 sampleMotionMedian(vec2 uv) {
-    vec2 texel = inv_render_size;
+    // One motion texel, so the four gathers cover a 3x3 block of motion vectors
+    vec2 texel = inv_flow_size;
 
-    // textureGather returns 2├ù2 quads: (x-0.5, y-0.5) to (x+0.5, y+0.5)
-    // We use 4 gathers offset to cover the 3├ù3 region
+    // textureGather returns 2x2 quads: (x-0.5, y-0.5) to (x+0.5, y+0.5)
+    // We use 4 gathers offset to cover the 3x3 region
     // Gather component 0 = R (motion X), component 1 = G (motion Y)
     vec4 gx0 = textureGather(MotionVectors, uv + vec2(-0.5, -0.5) * texel, 0); // TL quad
     vec4 gx1 = textureGather(MotionVectors, uv + vec2( 0.5, -0.5) * texel, 0); // TR quad
@@ -46,9 +50,9 @@ vec2 sampleMotionMedian(vec2 uv) {
     vec4 gy2 = textureGather(MotionVectors, uv + vec2(-0.5,  0.5) * texel, 1);
     vec4 gy3 = textureGather(MotionVectors, uv + vec2( 0.5,  0.5) * texel, 1);
 
-    // Extract 9 unique samples from overlapping 2├ù2 quads
+    // Extract 9 unique samples from overlapping 2x2 quads
     // gatherN.w=TL, .z=TR, .x=BL, .y=BR of each quad
-    // 3├ù3 grid: row0=[gx0.w, gx0.z/gx1.w, gx1.z]
+    // 3x3 grid: row0=[gx0.w, gx0.z/gx1.w, gx1.z]
     //           row1=[gx0.x/gx2.w, center, gx1.y/gx3.z]
     //           row2=[gx2.x, gx2.y/gx3.x, gx3.y]
     float xs[9] = float[](gx0.w, gx1.w, gx1.z, gx0.x, texture(MotionVectors, uv).x, gx1.y, gx2.x, gx3.x, gx3.y);
@@ -78,10 +82,11 @@ void main() {
 
     vec2 uv = (vec2(pixel_coord) + 0.5) * inv_render_size;
 
-    // Median-filtered motion vector (reduces outlier jitter)
-    vec2 motion = sampleMotionMedian(uv) * (flow_scale * inv_render_size);
+    // Median-filtered motion (reduces outlier jitter) from the previous frame to the current
+    // one, converted from flow pixels to UV units
+    vec2 motion = sampleMotionMedian(uv) * inv_flow_size;
 
-    // Forward and backward warped coordinates
+    // Where the content shown here at blend_factor was in the previous and in the current frame
     vec2 forward_uv  = clamp(uv - motion * blend_factor,        0.0, 1.0);
     vec2 backward_uv = clamp(uv + motion * (1.0 - blend_factor), 0.0, 1.0);
 
@@ -92,14 +97,14 @@ void main() {
     vec3 color_diff = abs(forward_color.rgb - backward_color.rgb);
     float occlusion = clamp(dot(color_diff, vec3(0.333)) * 2.0, 0.0, 1.0);
 
-    // Smooth bilateral interpolation ΓÇö bias toward centre on occlusion
+    // Smooth bilateral interpolation - bias toward centre on occlusion
     float alpha = mix(blend_factor, 0.5, occlusion * 0.4);
     vec4 interpolated = mix(forward_color, backward_color, alpha);
 
-    // ΓöÇΓöÇ Anti-flicker: blend with un-warped centre pixel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+    // -- Anti-flicker: blend with un-warped centre pixel -----------------------
     float motion_magnitude = length(motion * render_size);
     float direct_weight = exp(-motion_magnitude * 0.5);
-    vec4 center_color = mix(texture(CurrentFrame, uv), texture(PreviousFrame, uv), blend_factor);
+    vec4 center_color = mix(texture(PreviousFrame, uv), texture(CurrentFrame, uv), blend_factor);
     interpolated = mix(interpolated, center_color, direct_weight * 0.3);
 
     imageStore(OutGeneratedFrame, pixel_coord, interpolated);

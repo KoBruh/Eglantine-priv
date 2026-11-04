@@ -216,7 +216,9 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
         return;
     }
 
-    if (!shaders->IsValid() && Settings::values.frame_gen_type.GetValue() != Settings::FrameGenType::Fsr3) {
+    const bool use_fsr3 =
+        Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;
+    if (!shaders->IsValid() && !use_fsr3) {
         unavailable = true;
         return;
     }
@@ -231,9 +233,12 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
 
     const VkExtent2D extent{.width = frame->width, .height = frame->height};
     const f32 flow_scale = ConfiguredFlowScale(peak_guest_extent, extent);
-    if ((!chain && !fsr3_chain) || built_extent.width != extent.width || built_extent.height != extent.height ||
-        built_format != format || built_flow_scale != flow_scale) {
-        Rebuild(device, extent, format, flow_scale);
+    // The FSR 3 flow always runs at half resolution, so only Lossless Scaling's chain depends on
+    // the flow scale. A change of frame generation type builds the other chain.
+    const bool built = use_fsr3 ? fsr3_chain.has_value() : chain.has_value();
+    if (!built || built_extent.width != extent.width || built_extent.height != extent.height ||
+        built_format != format || (!use_fsr3 && built_flow_scale != flow_scale)) {
+        Rebuild(device, extent, format, flow_scale, use_fsr3);
     }
 
     const u64 count = frame_count++;
@@ -244,11 +249,11 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
     warm_streak = warm ? warm_streak + 1 : 0;
     generated = warm && warm_streak >= LSFG_RECURRENCE_FRAMES && plan.generations > 0;
 
-    const bool use_fsr3 = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;
-
-    if (use_fsr3 && fsr3_chain) {
+    if (fsr3_chain) {
+        // The flow is only needed when frames are generated after this one; the copies always
+        // run, so the history stays the previous frame.
         scheduler.RequestOutsideRenderPassOperationContext();
-        fsr3_chain->Process(device, scheduler, *frame->image, *frame->storage_view, count);
+        fsr3_chain->Process(scheduler, *frame->image, generated);
     } else if (chain) {
         scheduler.RequestOutsideRenderPassOperationContext();
         scheduler.Record([this, source = *frame->image, extent, count,
@@ -283,14 +288,13 @@ size_t FrameGen::GeneratedFrameCount() const {
 }
 
 void FrameGen::GenerateInto(const Device& device, Frame* destination, size_t generation) {
-    const bool use_fsr3 = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;
-
-    if (use_fsr3 && fsr3_chain) {
+    // Process built the chain of the configured type, so the one that exists is the one in use.
+    if (fsr3_chain) {
         const f32 blend = static_cast<f32>(generation + 1) / static_cast<f32>(last_generations + 1);
-        const f32 flow_scale = ConfiguredFlowScale(peak_guest_extent, built_extent);
 
         scheduler.RequestOutsideRenderPassOperationContext();
-        fsr3_chain->Generate(device, scheduler, *destination->storage_view, blend, flow_scale);
+        fsr3_chain->Generate(device, scheduler, destination->index, *destination->image,
+                             *destination->storage_view, blend);
     } else if (chain) {
         chain->SetTarget(device, last_generations, generation, destination->index,
                          *destination->storage_view);
@@ -307,14 +311,15 @@ void FrameGen::GenerateInto(const Device& device, Frame* destination, size_t gen
     }
 }
 
-void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale) {
+void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale,
+                       bool use_fsr3) {
     scheduler.Finish();
     chain.reset();
     fsr3_chain.reset();
 
     built_flow_scale = flow_scale;
 
-    if (Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3) {
+    if (use_fsr3) {
         fsr3_chain.emplace(device, memory_allocator, extent, format);
     } else {
         chain.emplace(device, memory_allocator, *shaders, extent, format, built_flow_scale);
