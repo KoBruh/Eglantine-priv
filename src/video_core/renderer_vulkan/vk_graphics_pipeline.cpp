@@ -385,7 +385,13 @@ GraphicsPipeline::GraphicsPipeline(
     if (!worker_thread) {
         func();
     } else if (!LinkFromCachedParts(render_pass_cache, shader_notify)) {
-        worker_thread->QueueWork(std::move(func));
+        // The build still uses the pipeline after it sets is_built (it queues the optimized
+        // compile then): counted until it is done.
+        pending_jobs.fetch_add(1, std::memory_order_relaxed);
+        worker_thread->QueueWork([this, func = std::move(func)] {
+            func();
+            pending_jobs.fetch_sub(1, std::memory_order_release);
+        });
     }
 }
 
@@ -1320,7 +1326,9 @@ void GraphicsPipeline::QueueOptimizedPipeline(VkRenderPass render_pass) {
     // optimizes across stages. The monolithic compile also stores in the VkPipelineCache what the
     // disk cache replay at the next boot asks for.
     // Everything MakePipeline reads is immutable once the pipeline is built, and the pool is
-    // destroyed before the pipelines (PipelineCache member order).
+    // destroyed before the pipelines (PipelineCache member order). The cache's eviction keeps
+    // the pipeline until the job is done (HasPendingJobs).
+    pending_jobs.fetch_add(1, std::memory_order_relaxed);
     optimize_worker->QueueWork([this, render_pass] {
         const PipelineStats::ScopedRole stats_role{PipelineStats::Role::Opt};
         try {
@@ -1332,12 +1340,15 @@ void GraphicsPipeline::QueueOptimizedPipeline(VkRenderPass render_pass) {
                         "Optimized graphics pipeline {:016X} failed ({}), keeping the linked one",
                         key.Hash(), exception.what());
             spv_modules = {};
+            pending_jobs.fetch_sub(1, std::memory_order_release);
             return;
         }
         spv_modules = {};
         // Draws recorded from now on bind it (BoundPipeline, read on the command thread).
         optimized_ready.store(true, std::memory_order_release);
         PipelineStats::NoteLibrary(PipelineStats::Registry::LibraryEvent::Optimized);
+        // The job's last access to the pipeline: from here the cache may destroy it.
+        pending_jobs.fetch_sub(1, std::memory_order_release);
     });
 }
 

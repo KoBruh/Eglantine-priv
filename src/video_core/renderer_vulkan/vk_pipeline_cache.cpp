@@ -819,6 +819,8 @@ bool PreloadAllPipelines() {
 } // Anonymous namespace
 
 PipelineCache::~PipelineCache() {
+    // A queued driver cache flush writes the same temporary file as the one below.
+    serialization_thread.WaitForRequests();
     SaveUsedPipelines();
     if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty()) {
         SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
@@ -1213,10 +1215,19 @@ void PipelineCache::EvictUnusedPipelines() {
     const u64 cutoff = use_seconds - EvictAfterSeconds;
     const u64 tick = scheduler.CurrentTick();
     size_t evicted = 0;
+    size_t busy = 0;
     for (auto it = graphics_cache.begin(); it != graphics_cache.end();) {
         GraphicsPipeline* const pipeline = it->second.get();
         if (pipeline == nullptr || pipeline == current_pipeline || !pipeline->IsBuilt() ||
             pipeline->LastUse() >= cutoff) {
+            ++it;
+            continue;
+        }
+        // A fast-linked pipeline is built before its optimized compile runs, and that queue can
+        // be minutes behind: destroyed now, the queued job would compile from freed memory.
+        // Evicted at a later check instead.
+        if (pipeline->HasPendingJobs()) {
+            ++busy;
             ++it;
             continue;
         }
@@ -1235,8 +1246,9 @@ void PipelineCache::EvictUnusedPipelines() {
             pipeline->ClearTransitions();
         }
     }
-    LOG_INFO(Render_Vulkan, "Evicted {} graphics pipelines unused for {} s, {} left", evicted,
-             EvictAfterSeconds, graphics_cache.size());
+    LOG_INFO(Render_Vulkan,
+             "Evicted {} graphics pipelines unused for {} s, {} left ({} kept for queued work)",
+             evicted, EvictAfterSeconds, graphics_cache.size(), busy);
 }
 
 GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) const noexcept {

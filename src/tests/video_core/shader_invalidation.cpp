@@ -23,6 +23,23 @@ struct ShaderCacheTestAccess {
     static const ShaderInfo* Find(const ShaderCache& cache, VAddr address) {
         return cache.TryGet(address);
     }
+    static void RegisterLowered(ShaderCache& cache, VAddr address, size_t size,
+                                std::shared_ptr<const LoweredNativeCode> lowered) {
+        auto info = std::make_unique<ShaderInfo>();
+        info->lowered_native = std::move(lowered);
+        cache.Register(std::move(info), address, size);
+    }
+    // What RefreshStages leaves in a stage it read.
+    static void BindStage(ShaderCache& cache, size_t stage, const ShaderInfo* info) {
+        cache.shader_infos[stage] = info;
+    }
+    static const ShaderInfo* Stage(const ShaderCache& cache, size_t stage) {
+        return cache.shader_infos[stage];
+    }
+    // What RefreshStages and ComputeShader do first, on the GPU thread.
+    static void FreeRemoved(ShaderCache& cache) {
+        cache.FreeRemovedShaders();
+    }
 };
 } // namespace VideoCommon
 
@@ -79,6 +96,33 @@ TEST_CASE("Shader empty batches preserve pending invalidations", "[shader_invali
     const std::array unrelated{std::pair<DAddr, size_t>{address + 0x100000, 4096}};
     cache->InvalidateRegions(unrelated);
     REQUIRE_FALSE(ShaderCacheTestAccess::Find(*cache, address));
+}
+
+TEST_CASE("A removed shader a stage points at is freed only after the stage lets go of it",
+          "[shader_invalidation]") {
+    Core::DeviceMemory memory;
+    Tegra::MaxwellDeviceMemoryManager device_memory{memory};
+    auto cache = ShaderCacheTestAccess::Create(device_memory);
+    constexpr VAddr address = 0x100000;
+    // Freed with the shader: tells whether it still exists.
+    std::shared_ptr<const VideoCommon::LoweredNativeCode> lowered =
+        std::make_shared<VideoCommon::LoweredNativeCode>();
+    const std::weak_ptr<const VideoCommon::LoweredNativeCode> observer = lowered;
+    ShaderCacheTestAccess::RegisterLowered(*cache, address, 256, std::move(lowered));
+    ShaderCacheTestAccess::BindStage(*cache, 1, ShaderCacheTestAccess::Find(*cache, address));
+
+    // The game rewrites the bound program in place, and draws without writing the shader
+    // registers (the stage is not read again).
+    cache->InvalidateRegion(address, 4);
+    REQUIRE_FALSE(ShaderCacheTestAccess::Find(*cache, address));
+    // Freed here, the next draw read the stage's freed shader (and so would a draw racing a
+    // removal on a guest CPU thread).
+    REQUIRE(ShaderCacheTestAccess::Stage(*cache, 1) != nullptr);
+    REQUIRE_FALSE(observer.expired());
+
+    ShaderCacheTestAccess::FreeRemoved(*cache);
+    REQUIRE(ShaderCacheTestAccess::Stage(*cache, 1) == nullptr);
+    REQUIRE(observer.expired());
 }
 
 TEST_CASE("Shader invalidation CPU benchmark", "[.][cache_bench]") {

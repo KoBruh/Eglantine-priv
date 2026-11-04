@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <fmt/ranges.h>
 #include <array>
 #include <vector>
@@ -96,11 +98,15 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         }
         return compatible;
     };
+    // A stage whose program was removed (rewritten in place, say) is read again even with the
+    // shader registers unchanged.
+    FreeRemovedShaders();
     auto& dirty{maxwell3d->dirty.flags};
-    if (!dirty[VideoCommon::Dirty::Shaders]) {
+    if (!dirty[VideoCommon::Dirty::Shaders] && !std::exchange(stages_cleared, false)) {
         return last_shaders_valid && clip_compatible();
     }
     dirty[VideoCommon::Dirty::Shaders] = false;
+    stages_cleared = false;
 
     const GPUVAddr base_addr{maxwell3d->regs.program_region.Address()};
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
@@ -205,6 +211,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
 }
 
 const ShaderInfo* ShaderCache::ComputeShader() {
+    FreeRemovedShaders();
     const GPUVAddr program_base{kepler_compute->regs.code_loc.Address()};
     const auto& qmd{kepler_compute->launch_description};
     const GPUVAddr shader_addr{program_base + qmd.program_start};
@@ -355,16 +362,51 @@ void ShaderCache::RemovePendingShaders() {
     marked_for_removal.clear();
 
     if (!removed_shaders.empty()) {
+        // Moved to removed_storage, not freed: the GPU thread's stages may point at them.
+        const auto retire = [this](auto is_removed) {
+            const auto removed = std::partition(
+                storage.begin(), storage.end(),
+                [&is_removed](const std::unique_ptr<ShaderInfo>& shader) {
+                    return !is_removed(shader.get());
+                });
+            removed_storage.insert(removed_storage.end(), std::make_move_iterator(removed),
+                                   std::make_move_iterator(storage.end()));
+            storage.erase(removed, storage.end());
+        };
         if (removed_shaders.size() > 16) {
             std::ranges::sort(removed_shaders, std::less<ShaderInfo*>{});
-            std::erase_if(storage, [&removed_shaders](const std::unique_ptr<ShaderInfo>& shader) {
-                return std::binary_search(removed_shaders.begin(), removed_shaders.end(),
-                                          shader.get(), std::less<ShaderInfo*>{});
+            retire([&removed_shaders](const ShaderInfo* shader) {
+                return std::binary_search(removed_shaders.begin(), removed_shaders.end(), shader,
+                                          std::less<const ShaderInfo*>{});
             });
         } else {
-            std::erase_if(storage, [&removed_shaders](const std::unique_ptr<ShaderInfo>& shader) {
-                return std::ranges::find(removed_shaders, shader.get()) != removed_shaders.end();
+            retire([&removed_shaders](const ShaderInfo* shader) {
+                return std::ranges::find(removed_shaders, shader) != removed_shaders.end();
             });
+        }
+        has_removed_shaders.store(true, std::memory_order_release);
+    }
+}
+
+void ShaderCache::FreeRemovedShaders() {
+    if (!has_removed_shaders.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::vector<std::unique_ptr<ShaderInfo>> removed;
+    {
+        std::scoped_lock lock{invalidation_mutex};
+        removed.swap(removed_storage);
+        has_removed_shaders.store(false, std::memory_order_relaxed);
+    }
+    for (const ShaderInfo*& info : shader_infos) {
+        if (info && std::ranges::any_of(removed, [info](const std::unique_ptr<ShaderInfo>& shader) {
+                return shader.get() == info;
+            })) {
+            info = nullptr;
+            stages_cleared = true;
+            // The stage hashes no longer match the stages: no draw uses them until a refresh of
+            // every stage succeeds.
+            last_shaders_valid = false;
         }
     }
 }

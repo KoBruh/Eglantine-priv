@@ -153,6 +153,12 @@ public:
         return is_built.load(std::memory_order::relaxed);
     }
 
+    /// Whether a worker job still uses the pipeline (its build, or its optimized compile, which
+    /// starts after IsBuilt): it must not be destroyed until none does.
+    [[nodiscard]] bool HasPendingJobs() const noexcept {
+        return pending_jobs.load(std::memory_order_acquire) != 0;
+    }
+
     template <typename Spec>
     static auto MakeConfigureSpecFunc() {
         return [](GraphicsPipeline* pl, bool is_indexed) { return pl->ConfigureImpl<Spec>(is_indexed); };
@@ -240,6 +246,9 @@ private:
     /// `pipeline` stays alive with it: command buffers still in flight may use it.
     vk::Pipeline optimized_pipeline;
     std::atomic_bool optimized_ready{false};
+    /// Worker jobs queued with this pipeline (HasPendingJobs). Each job's last access to it is
+    /// its decrement; the build's comes after it queued the optimized compile.
+    std::atomic<u32> pending_jobs{0};
 
     DescriptorBufferLayout descriptor_buffer_layout;
     std::vector<DescriptorUpdateEntry> last_descriptor_payload;
