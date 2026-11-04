@@ -248,3 +248,19 @@ TEST_CASE("Ampere IADD3.X inverts a modified source instead of negating it",
                 .first_input = 9},
                random);
 }
+
+TEST_CASE("Ampere IADD3 with an immediate and a third source keeps the immediate's sign",
+          "[video_core][ampere][integer_add]") {
+    std::mt19937 random{0x1add31};
+    // IADD3 R43, R35, -0x7e, -R36 from a Pokopia compute program, and the other signs.
+    for (const u32 immediate : {0xffffff82U, 0x7eU, 0x80000000U, 0U}) {
+        CAPTURE(immediate);
+        CheckIadd3({.dest = 43, .a = 35, .b = immediate, .c = 36, .negate_c = true,
+                    .immediate = true},
+                   random);
+        CheckIadd3({.dest = 43, .a = 35, .b = immediate, .c = 36, .immediate = true}, random);
+        CheckIadd3({.dest = 43, .a = 35, .b = immediate, .c = 36, .negate_a = true,
+                    .immediate = true},
+                   random);
+    }
+}
