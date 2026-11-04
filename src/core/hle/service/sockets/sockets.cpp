@@ -64,9 +64,10 @@ public:
 void LoopProcess(Core::System& system) {
     auto server_manager = std::make_unique<ServerManager>(system);
 
-    // Selects, Polls and blocking eventfd reads and writes that have to wait are deferred, so they
-    // hold none of the server's threads. The notifier signals the deferral event once they may be
-    // done, which retries them; it has to be set up before the server manager takes requests.
+    // Selects, Polls and the blocking receives, sends, accepts, connects and eventfd reads and
+    // writes that have to wait are deferred, so they hold none of the server's threads. The
+    // notifier signals the deferral event once they may be done, which retries them; it has to be
+    // set up before the server manager takes requests.
     const auto select_notifier = BSD_USA::CreateSelectNotifier(system, *server_manager);
 
     server_manager->RegisterNamedService("ethc:c", std::make_shared<ETHC_C>(system), 5);

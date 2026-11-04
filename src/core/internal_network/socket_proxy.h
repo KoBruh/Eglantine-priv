@@ -19,8 +19,18 @@ namespace Network {
 
 class ProxySocket : public SocketBase {
 public:
+    /// How long a blocking receive waits for a packet when SO_RCVTIMEO sets no limit, so that a
+    /// lost packet does not hold its caller indefinitely; such a wait fails with AGAIN, as an
+    /// SO_RCVTIMEO timeout does.
+    static constexpr u32 UNLIMITED_RECEIVE_WAIT_MS = 5000;
+
     explicit ProxySocket() noexcept;
     ~ProxySocket() override;
+
+    /// Ends the blocking receives waiting on every room socket, as socket operations are
+    /// cancelled (see CancelPendingSocketOperations); they fail with AGAIN, and later ones do not
+    /// wait until operations restart.
+    static void InterruptWaits();
 
     bool AcceptsProxyPacket(const ProxyPacket& packet) override;
 
@@ -32,9 +42,9 @@ public:
 
     Errno Close() override;
 
-    std::pair<AcceptResult, Errno> Accept() override;
+    std::pair<AcceptResult, Errno> Accept(int flags) override;
 
-    Errno Connect(SockAddrIn addr_in) override;
+    Errno Connect(SockAddrIn addr_in, int flags) override;
 
     std::pair<SockAddrIn, Errno> GetPeerName() override;
 
@@ -99,7 +109,7 @@ private:
     bool MatchesPacket(const ProxyPacket& packet) const;
 
     /// Takes the front packet as RecvFrom does, waiting for one as the socket's mode has it unless
-    /// flags holds FLAG_MSG_DONTWAIT
+    /// flags holds FLAG_MSG_DONTWAIT or socket operations are cancelled
     std::pair<s32, Errno> Receive(int flags, std::span<u8> message, SockAddrIn* addr,
                                   u32& msg_flags);
 

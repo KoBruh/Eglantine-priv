@@ -131,18 +131,21 @@ public:
 
     ~ISslConnection() {
         shared_data->connection_count--;
+        // The connection owns the duplicate it made of the guest's socket unless the guest asked
+        // to keep it (DoNotCloseSocket), in which case it got the duplicate and fd_to_close is
+        // unset.
         if (fd_to_close.has_value()) {
             const s32 fd = *fd_to_close;
-            if (!do_not_close_socket) {
-                LOG_ERROR(Service_SSL,
-                          "do_not_close_socket was changed after setting socket; is this right?");
-            } else {
-                auto bsd = system.ServiceManager().GetService<Service::Sockets::BSD_USA>("bsd:u");
-                if (bsd) {
-                    auto err = bsd->CloseImpl(fd);
-                    if (err != Service::Sockets::Errno::SUCCESS) {
-                        LOG_ERROR(Service_SSL, "Failed to close duplicated socket: {}", err);
-                    }
+            if (do_not_close_socket) {
+                LOG_WARNING(Service_SSL,
+                            "do_not_close_socket was set after setting the socket; closing the "
+                            "duplicate the guest never received");
+            }
+            auto bsd = system.ServiceManager().GetService<Service::Sockets::BSD_USA>("bsd:u");
+            if (bsd) {
+                auto err = bsd->CloseImpl(fd);
+                if (err != Service::Sockets::Errno::SUCCESS) {
+                    LOG_ERROR(Service_SSL, "Failed to close duplicated socket: {}", err);
                 }
             }
         }
@@ -196,6 +199,7 @@ private:
         if (auto *res = std::get_if<s32>(&res_v)) {
             const s32 dup_fd = *res;
             *out_fd = do_not_close_socket ? dup_fd : -1;
+            guest_fd = *out_fd;
             if (!do_not_close_socket)
                 fd_to_close = dup_fd;
             auto const sock = bsd->GetSocket(dup_fd);
@@ -239,8 +243,10 @@ private:
     }
 
     Result GetSocketDescriptor(Out<u32> out_fd) {
-        LOG_WARNING(Service_SSL, "(STUBBED)");
-        *out_fd = uint32_t(socket->GetFD());
+        R_UNLESS(socket, ResultNoSocket);
+        // The guest's descriptor, as SetSocketDescriptor returned it: not the host socket's
+        // handle, which means nothing in the guest's descriptor table.
+        *out_fd = static_cast<u32>(guest_fd);
         R_SUCCEED();
     }
 
@@ -442,6 +448,9 @@ private:
     std::shared_ptr<SslContextSharedData> shared_data;
     std::unique_ptr<SSLConnectionBackend> backend;
     std::optional<int> fd_to_close;
+    /// The descriptor SetSocketDescriptor gave the guest: the duplicate, or -1 when the
+    /// connection keeps it.
+    s32 guest_fd = -1;
     std::shared_ptr<Network::SocketBase> socket;
     std::vector<u8> next_alpn_proto;
     u32 verify_option = 0;

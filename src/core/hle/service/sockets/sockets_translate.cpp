@@ -43,9 +43,27 @@ Errno Translate(Network::Errno value) {
         return Errno::INPROGRESS;
     case Network::Errno::ISCONN:
         return Errno::ISCONN;
+    case Network::Errno::HOSTUNREACH:
+        return Errno::HOSTUNREACH;
+    case Network::Errno::NETDOWN:
+        return Errno::NETDOWN;
+    case Network::Errno::NETUNREACH:
+        return Errno::NETUNREACH;
+    case Network::Errno::MSGSIZE:
+        return Errno::MSGSIZE;
+    case Network::Errno::ADDRINUSE:
+        return Errno::ADDRINUSE;
+    case Network::Errno::NOPROTOOPT:
+        return Errno::NOPROTOOPT;
+    case Network::Errno::ALREADY:
+        return Errno::ALREADY;
+    case Network::Errno::OTHER:
+        // A host error without a guest equivalent (logged where it was translated): it is still a
+        // failure, which the guest has to see as one, not as success with a -1 result.
+        return Errno::INVAL;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={}", value);
-        return Errno::SUCCESS;
+        return Errno::INVAL;
     }
 }
 

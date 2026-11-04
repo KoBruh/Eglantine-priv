@@ -3,11 +3,14 @@
 
 #include <array>
 #include <chrono>
+#include <future>
 #include <thread>
+#include <utility>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "common/socket_types.h"
+#include "core/internal_network/network.h"
 #include "core/internal_network/socket_proxy.h"
 
 namespace {
@@ -258,4 +261,45 @@ TEST_CASE("Room sockets accept only packets for their port and protocol", "[core
 TEST_CASE("Native sockets accept no room packets", "[core][sockets]") {
     Network::Socket socket;
     REQUIRE_FALSE(socket.AcceptsProxyPacket(MakePacket(Network::Protocol::UDP)));
+}
+
+TEST_CASE("Room UDP sockets refuse a sendto without an address", "[core][sockets]") {
+    Network::ProxySocket socket;
+    BindSocket(socket, Network::Protocol::UDP);
+
+    const std::array<u8, 4> payload{1, 2, 3, 4};
+    const auto [count, error] = socket.SendTo(0, payload, nullptr);
+    REQUIRE(count == -1);
+    REQUIRE(error == Network::Errno::NOTCONN);
+}
+
+TEST_CASE("Cancelling socket operations ends a blocked room receive", "[core][sockets]") {
+    Network::NetworkInstance network_instance;
+    Network::ProxySocket socket;
+    BindSocket(socket, Network::Protocol::UDP);
+    // Far past the watchdog below, so that only the cancellation can end the wait in time.
+    REQUIRE(socket.SetRcvTimeo(600'000) == Network::Errno::SUCCESS);
+
+    std::promise<std::pair<s32, Network::Errno>> received;
+    std::future<std::pair<s32, Network::Errno>> receive_done = received.get_future();
+    std::thread receiver([&socket, &received] {
+        std::array<u8, 4> buffer{};
+        received.set_value(socket.Recv(0, buffer));
+    });
+    // Whether the receive waits already or is yet to, the cancellation ends it.
+    Network::CancelPendingSocketOperations();
+    const bool woke = receive_done.wait_for(std::chrono::seconds{10}) == std::future_status::ready;
+    if (!woke) {
+        // End the wait as a close would, so that the thread can be joined.
+        socket.Close();
+    }
+    receiver.join();
+    // While operations stay cancelled, a later blocking receive does not wait either.
+    std::array<u8, 4> buffer{};
+    const auto later = socket.Recv(0, buffer);
+    Network::RestartSocketOperations();
+
+    REQUIRE(woke);
+    REQUIRE(receive_done.get() == std::pair<s32, Network::Errno>{-1, Network::Errno::AGAIN});
+    REQUIRE(later == std::pair<s32, Network::Errno>{-1, Network::Errno::AGAIN});
 }

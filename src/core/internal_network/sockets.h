@@ -48,9 +48,15 @@ public:
 
     virtual Errno Close() = 0;
 
-    virtual std::pair<AcceptResult, Errno> Accept() = 0;
+    /// Accepts a connection. Given FLAG_MSG_DONTWAIT in flags, it does not wait for one, whatever
+    /// the socket's mode, and fails with AGAIN instead; otherwise it waits as the mode has it, until
+    /// a connection comes or socket operations are cancelled.
+    virtual std::pair<AcceptResult, Errno> Accept(int flags) = 0;
 
-    virtual Errno Connect(SockAddrIn addr_in) = 0;
+    /// Connects to addr_in. Given FLAG_MSG_DONTWAIT in flags, it starts the connection without
+    /// waiting for it, whatever the socket's mode, as on a nonblocking socket: INPROGRESS until it
+    /// is made or fails, when Poll reports the socket writable and GetPendingError the outcome.
+    virtual Errno Connect(SockAddrIn addr_in, int flags) = 0;
 
     virtual std::pair<SockAddrIn, Errno> GetPeerName() = 0;
 
@@ -141,9 +147,9 @@ public:
 
     Errno Close() override;
 
-    std::pair<AcceptResult, Errno> Accept() override;
+    std::pair<AcceptResult, Errno> Accept(int flags) override;
 
-    Errno Connect(SockAddrIn addr_in) override;
+    Errno Connect(SockAddrIn addr_in, int flags) override;
 
     std::pair<SockAddrIn, Errno> GetPeerName() override;
 
@@ -213,20 +219,28 @@ private:
     template <typename Operation>
     std::pair<s32, Errno> Transfer(int flags, Operation operation);
 
-#ifdef _WIN32
-    // Winsock has no MSG_DONTWAIT, so a call given FLAG_MSG_DONTWAIT makes the host socket
-    // nonblocking while it runs. It stays nonblocking while any such call or the socket's mode
-    // needs it, so that no such call ever waits and none undoes SetNonBlock. A blocking call that
-    // failed with EAGAIN only because such a call ran meanwhile is retried once none runs.
+    /// Accepts a connection as the host socket's mode has it, and gives the accepted host socket
+    /// the blocking mode its Socket starts with.
+    std::pair<AcceptResult, Errno> AcceptPending();
+
+    // Winsock has no MSG_DONTWAIT, and accept and connect have no such flag anywhere, so a call
+    // given FLAG_MSG_DONTWAIT that cannot pass one to the host makes the host socket nonblocking
+    // while it runs. It stays nonblocking while any such call or the socket's mode needs it, so
+    // that no such call ever waits and none undoes SetNonBlock. On Windows, a blocking receive or
+    // send that failed with EAGAIN only because such a call ran meanwhile is retried once none
+    // runs; elsewhere only accept and connect make the host socket nonblocking, which run on a
+    // socket that has no receive or send to wait on.
 
     /// Makes the host socket nonblocking for a call given FLAG_MSG_DONTWAIT
     Errno BeginDontWait();
     /// Gives the host socket back the socket's mode once no call given FLAG_MSG_DONTWAIT runs
     void EndDontWait();
+#ifdef _WIN32
     /// Whether a blocking call that failed with EAGAIN, having started at dont_wait_epoch epoch,
     /// only did because calls given FLAG_MSG_DONTWAIT made the host socket nonblocking; if so,
     /// waits for the host socket to block again, for the call to be retried.
     bool WaitOutDontWait(u64 epoch);
+#endif
 
     /// Guards the host socket's mode, is_non_blocking and dont_wait_calls.
     std::mutex mode_mutex;
@@ -238,7 +252,6 @@ private:
     /// Bumped each time the host socket starts or stops being nonblocking only for calls given
     /// FLAG_MSG_DONTWAIT, the socket's mode being blocking; odd while it is.
     std::atomic<u64> dont_wait_epoch{0};
-#endif
 
     /// The mode SetNonBlock gave the socket.
     std::atomic_bool is_non_blocking{false};

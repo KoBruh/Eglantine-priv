@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <mutex>
+#include <vector>
 
 #include "common/assert.h"
 #include "common/logging.h"
@@ -21,13 +23,55 @@
 
 namespace Network {
 
-ProxySocket::ProxySocket() noexcept {}
+namespace {
+
+/// Every room socket, so that cancelling socket operations reaches the receives waiting on them.
+struct LiveProxySockets {
+    std::mutex mutex;
+    std::vector<ProxySocket*> sockets;
+};
+
+LiveProxySockets& GetLiveProxySockets() {
+    // Never destroyed: a room socket left in a static table may go after this would.
+    static LiveProxySockets* const live = new LiveProxySockets;
+    return *live;
+}
+
+} // Anonymous namespace
+
+ProxySocket::ProxySocket() noexcept {
+    LiveProxySockets& live = GetLiveProxySockets();
+    std::scoped_lock lock{live.mutex};
+    live.sockets.push_back(this);
+}
 
 ProxySocket::~ProxySocket() {
+    {
+        LiveProxySockets& live = GetLiveProxySockets();
+        std::scoped_lock lock{live.mutex};
+        if (const auto it = std::find(live.sockets.begin(), live.sockets.end(), this);
+            it != live.sockets.end()) {
+            live.sockets.erase(it);
+        }
+    }
     if (fd == INVALID_SOCKET) {
         return;
     }
     fd = INVALID_SOCKET;
+}
+
+void ProxySocket::InterruptWaits() {
+    // Lock order: the list, then a socket's packets_mutex. A receive checks for cancellation
+    // under its packets_mutex before it waits, so taking that mutex here, after cancelling,
+    // means it either sees the cancellation or is waiting for this notification.
+    LiveProxySockets& live = GetLiveProxySockets();
+    std::scoped_lock lock{live.mutex};
+    for (ProxySocket* const socket : live.sockets) {
+        {
+            std::scoped_lock packets_lock{socket->packets_mutex};
+        }
+        socket->packets_cv.notify_all();
+    }
 }
 
 bool ProxySocket::MatchesPacket(const ProxyPacket& packet) const {
@@ -91,12 +135,12 @@ Errno ProxySocket::Initialize(Domain domain, Type type, Protocol socket_protocol
     return Errno::SUCCESS;
 }
 
-std::pair<ProxySocket::AcceptResult, Errno> ProxySocket::Accept() {
+std::pair<ProxySocket::AcceptResult, Errno> ProxySocket::Accept(int flags) {
     LOG_WARNING(Network, "(STUBBED) called");
     return {AcceptResult{}, Errno::SUCCESS};
 }
 
-Errno ProxySocket::Connect(SockAddrIn addr_in) {
+Errno ProxySocket::Connect(SockAddrIn addr_in, int flags) {
     LOG_WARNING(Network, "(STUBBED) called");
     return Errno::SUCCESS;
 }
@@ -176,13 +220,17 @@ std::pair<s32, Errno> ProxySocket::Receive(int flags, std::span<u8> message, Soc
         // When receive_timeout is set to zero, the socket is supposed to wait indefinitely until a
         // packet arrives. In order to prevent lost packets from hanging the emulation thread, we set
         // the timeout to 5s instead. An expired wait is reported like an SO_RCVTIMEO timeout.
-        const u32 timeout = receive_timeout == 0 ? 5000 : receive_timeout;
-        if (!packets_cv.wait_for(lock, std::chrono::milliseconds{timeout},
-                                 [this] { return closed || !received_packets.empty(); })) {
-            return {-1, Errno::AGAIN};
-        }
+        const u32 timeout = receive_timeout == 0 ? UNLIMITED_RECEIVE_WAIT_MS : receive_timeout;
+        // Cancelled socket operations, as emulation stops, end the wait too (see InterruptWaits),
+        // which fails like an expired one.
+        (void)packets_cv.wait_for(lock, std::chrono::milliseconds{timeout}, [this] {
+            return closed || !received_packets.empty() || SocketOperationsCancelled();
+        });
         if (closed) {
             return {-1, Errno::BADF};
+        }
+        if (received_packets.empty()) {
+            return {-1, Errno::AGAIN};
         }
     }
 
@@ -248,6 +296,12 @@ std::pair<s32, Errno> ProxySocket::SendTo(u32 flags, std::span<const u8> message
     if (!is_bound) {
         LOG_ERROR(Network, "ProxySocket is not bound!");
         return {static_cast<s32>(message.size()), Errno::SUCCESS};
+    }
+
+    // A sendto without an address: room sockets are never connected (Connect is a stub), so there
+    // is no peer to send to.
+    if (addr == nullptr) {
+        return {-1, Errno::NOTCONN};
     }
 
     if (auto room_member = Network::GetRoomMember().lock()) {

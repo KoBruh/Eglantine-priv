@@ -7,6 +7,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -37,8 +38,8 @@ namespace Service::Sockets {
 
 class BSD_USA final : public ServiceFramework<BSD_USA> {
 public:
-    /// Retries the Selects, Polls and eventfd reads and writes that wait, deferred, on the bsd
-    /// services of one server manager.
+    /// Retries the Selects, Polls, receives, sends, accepts, connects and eventfd reads and writes
+    /// that wait, deferred, on the bsd services of one server manager.
     class SelectNotifier;
 
     /// Creates the notifier for a server manager, which manages its deferral: the notifier signals
@@ -84,75 +85,10 @@ private:
         u32 send_timeout = 0;
     };
 
-    /// What a deferred Select, Poll, RecvMMsg, SendMMsg, Read or Write goes on with when retried.
+    /// What a deferred request goes on with when retried.
     struct SelectRequest;
-    /// What a deferred Select, Poll, RecvMMsg, SendMMsg, Read or Write waits on to be retried.
+    /// What a deferred request waits on to be retried.
     struct SelectWait;
-
-    struct AcceptWork {
-        void Execute(BSD_USA* bsd);
-        void Response(HLERequestContext& ctx);
-
-        s32 fd;
-        std::vector<u8> write_buffer;
-        s32 ret{};
-        Errno bsd_errno{};
-    };
-
-    struct ConnectWork {
-        void Execute(BSD_USA* bsd);
-        void Response(HLERequestContext& ctx);
-
-        s32 fd;
-        std::span<const u8> addr;
-        Errno bsd_errno{};
-    };
-
-    struct RecvWork {
-        void Execute(BSD_USA* bsd);
-        void Response(HLERequestContext& ctx);
-
-        s32 fd;
-        u32 flags;
-        std::vector<u8> message;
-        s32 ret{};
-        Errno bsd_errno{};
-    };
-
-    struct RecvFromWork {
-        void Execute(BSD_USA* bsd);
-        void Response(HLERequestContext& ctx);
-
-        s32 fd;
-        u32 flags;
-        std::vector<u8> message;
-        std::vector<u8> addr;
-        s32 ret{};
-        Errno bsd_errno{};
-    };
-
-    struct SendWork {
-        void Execute(BSD_USA* bsd);
-        void Response(HLERequestContext& ctx);
-
-        s32 fd;
-        u32 flags;
-        std::span<const u8> message;
-        s32 ret{};
-        Errno bsd_errno{};
-    };
-
-    struct SendToWork {
-        void Execute(BSD_USA* bsd);
-        void Response(HLERequestContext& ctx);
-
-        s32 fd;
-        u32 flags;
-        std::span<const u8> message;
-        std::span<const u8> addr;
-        s32 ret{};
-        Errno bsd_errno{};
-    };
 
     void RegisterClient(HLERequestContext& ctx);
     void StartMonitoring(HLERequestContext& ctx);
@@ -183,9 +119,6 @@ private:
     void DuplicateSocket(HLERequestContext& ctx);
     void EventFd(HLERequestContext& ctx);
 
-    template <typename Work>
-    void ExecuteWork(HLERequestContext& ctx, Work work);
-
     std::pair<s32, Errno> SocketImpl(Domain domain, Type type, Protocol protocol);
     /// Examines the pollfds once without waiting. While none has an event and the deadline is
     /// ahead, defers ctx, to be retried once one may have, and returns nullopt. On success,
@@ -199,9 +132,14 @@ private:
     std::optional<std::pair<s32, Errno>> SelectImpl(const SelectRequest& request,
                                                     std::array<std::vector<u8>, 3>& ready_sets,
                                                     SelectWait& wait);
-    std::pair<s32, Errno> AcceptImpl(s32 fd, std::vector<u8>& write_buffer);
+    /// Accepts a connection on fd for ctx, write_buffer getting its address. Returns nullopt when a
+    /// blocking accept has to wait, having deferred ctx instead.
+    std::optional<std::pair<s32, Errno>> AcceptImpl(HLERequestContext& ctx, s32 fd,
+                                                    std::vector<u8>& write_buffer);
     Errno BindImpl(s32 fd, std::span<const u8> addr);
-    Errno ConnectImpl(s32 fd, std::span<const u8> addr);
+    /// Connects fd to addr for ctx. Returns nullopt when a blocking connect has to wait for the
+    /// connection, having deferred ctx instead.
+    std::optional<Errno> ConnectImpl(HLERequestContext& ctx, s32 fd, std::span<const u8> addr);
     Errno GetPeerNameImpl(s32 fd, std::vector<u8>& write_buffer);
     Errno GetSockNameImpl(s32 fd, std::vector<u8>& write_buffer);
     Errno ListenImpl(s32 fd, s32 backlog);
@@ -209,12 +147,33 @@ private:
     Errno GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8>& optval);
     Errno SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<const u8> optval);
     Errno ShutdownImpl(s32 fd, s32 how);
-    std::pair<s32, Errno> RecvImpl(s32 fd, u32 flags, std::vector<u8>& message);
-    std::pair<s32, Errno> RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& message,
-                                       std::vector<u8>& addr);
-    std::pair<s32, Errno> SendImpl(s32 fd, u32 flags, std::span<const u8> message);
-    std::pair<s32, Errno> SendToImpl(s32 fd, u32 flags, std::span<const u8> message,
-                                     std::span<const u8> addr);
+    /// Receives on fd for ctx, as recv or, given addr, as recvfrom, addr then getting the source
+    /// address. Returns nullopt when a blocking receive has to wait, having deferred ctx instead.
+    std::optional<std::pair<s32, Errno>> RecvFromImpl(HLERequestContext& ctx, s32 fd, u32 flags,
+                                                      std::span<u8> message,
+                                                      std::vector<u8>* addr);
+    /// Sends on fd for ctx, as send or, given an address in addr, as sendto. Returns nullopt when a
+    /// blocking send has to wait, having deferred ctx instead.
+    std::optional<std::pair<s32, Errno>> SendToImpl(HLERequestContext& ctx, s32 fd, u32 flags,
+                                                    std::span<const u8> message,
+                                                    std::span<const u8> addr);
+    /// The receive of RecvFromImpl and of a Read on a socket, on descriptor, found at fd in a slot
+    /// of the given generation; retried is the request ctx was deferred with, or null.
+    std::optional<std::pair<s32, Errno>> SocketReceiveImpl(HLERequestContext& ctx, s32 fd,
+                                                           const FileDescriptor& descriptor,
+                                                           u64 generation,
+                                                           const SelectRequest* retried, u32 flags,
+                                                           std::span<u8> message,
+                                                           std::vector<u8>* addr);
+    /// The send of SendToImpl and of a Write on a socket, to addr unless that is null, on
+    /// descriptor, found at fd in a slot of the given generation; retried is the request ctx was
+    /// deferred with, or null.
+    std::optional<std::pair<s32, Errno>> SocketSendImpl(HLERequestContext& ctx, s32 fd,
+                                                        const FileDescriptor& descriptor,
+                                                        u64 generation,
+                                                        const SelectRequest* retried, u32 flags,
+                                                        std::span<const u8> message,
+                                                        const Network::SockAddrIn* addr);
     /// Receives the messages serialized in messages for ctx, which then holds the reply. Returns
     /// nullopt when a blocking receive has to wait, having deferred ctx instead.
     std::optional<std::pair<s32, Errno>> RecvMMsgImpl(HLERequestContext& ctx, s32 fd, u32 vlen,
@@ -225,12 +184,12 @@ private:
     /// nullopt when a blocking send has to wait, having deferred ctx instead.
     std::optional<std::pair<s32, Errno>> SendMMsgImpl(HLERequestContext& ctx, s32 fd, u32 vlen,
                                                       u32 flags, std::vector<u8>& messages);
-    /// Reads fd for ctx. Returns nullopt when it has to wait on a blocking eventfd, having
-    /// deferred ctx instead.
+    /// Reads fd for ctx. Returns nullopt when it has to wait on a blocking eventfd or socket,
+    /// having deferred ctx instead.
     std::optional<std::pair<s32, Errno>> ReadImpl(HLERequestContext& ctx, s32 fd,
                                                   std::vector<u8>& message);
-    /// Writes fd for ctx. Returns nullopt when it has to wait on a blocking eventfd, having
-    /// deferred ctx instead.
+    /// Writes fd for ctx. Returns nullopt when it has to wait on a blocking eventfd or socket,
+    /// having deferred ctx instead.
     std::optional<std::pair<s32, Errno>> WriteImpl(HLERequestContext& ctx, s32 fd,
                                                    std::span<const u8> message);
     /// Runs operation, a read or write of the eventfd of descriptor, found at fd in a slot of the
@@ -259,12 +218,14 @@ private:
     /// socket to its caller to wait out.
     static bool IsBlocking(s32 fd, const FileDescriptor& descriptor);
     /// Defers ctx, rather than wait in a thread of the service, until the socket of descriptor at
-    /// fd, in a slot of the given generation, may be ready to receive or, given send, to send.
-    /// It is retried then, once request.deadline passes, fd closes, or emulation stops; the
-    /// retry is to call Take and check the generation. Returns false, having deferred nothing,
-    /// once requests can no longer wait.
+    /// fd, in a slot of the given generation, may be ready to receive (or accept) or, given send,
+    /// to send (or have connected). It is retried then, once request.deadline passes, fd closes,
+    /// or emulation stops, and also every recheck_interval unless that is zero; the retry is to
+    /// call Take and check the generation. Returns false, having deferred nothing, once requests
+    /// can no longer wait.
     bool DeferSocketWait(HLERequestContext& ctx, s32 fd, const FileDescriptor& descriptor,
-                         u64 generation, bool send, SelectRequest& request);
+                         u64 generation, bool send, SelectRequest& request,
+                         std::chrono::milliseconds recheck_interval = {});
 
     void BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const noexcept;
 
@@ -281,6 +242,11 @@ private:
 
     /// Callback to parse and handle a received wifi packet. Returns whether a socket took it.
     static bool OnProxyPacketReceived(const Network::ProxyPacket& packet);
+
+    /// Closes every descriptor left open once the last bsd service goes away (emulation stops):
+    /// the table is shared and static, so they would hold their host sockets, ports and slots
+    /// into the next game.
+    static void CloseAllFileDescriptors();
 
     // Callback identifier for the OnProxyPacketReceived event. bsd:s, bsd:u and bsd:a share
     // file_descriptors, so they bind once; otherwise each packet is queued once per service.

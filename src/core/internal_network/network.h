@@ -50,7 +50,10 @@ enum class Errno {
     MSGSIZE,
     INPROGRESS,
     ISCONN,
-    OTHER,
+    ADDRINUSE,
+    NOPROTOOPT,
+    ALREADY,
+    OTHER, ///< Any other host error; keep it last.
 };
 
 enum class GetAddrInfoError {

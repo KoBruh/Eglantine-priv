@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <thread>
 #include <tuple>
 #include <unordered_map>
@@ -97,6 +98,26 @@ SelectClock::time_point TimeoutDeadline(u32 timeout_ms) {
     return SelectClock::now() + std::chrono::milliseconds{timeout_ms};
 }
 
+/// When a deferred receive on socket gives up, failing with EAGAIN: once its SO_RCVTIMEO of
+/// receive_timeout passes, or never without one. A room socket without one waits as long as its
+/// own blocking receive would.
+SelectClock::time_point ReceiveDeadline(Network::SocketBase& socket, u32 receive_timeout) {
+    if (receive_timeout == 0 && socket.EmulatedPoll(Network::PollEvents{}).has_value()) {
+        return TimeoutDeadline(Network::ProxySocket::UNLIMITED_RECEIVE_WAIT_MS);
+    }
+    return TimeoutDeadline(receive_timeout);
+}
+
+/// The outcome of a send that ends with bsd_errno after sending sent bytes. As FreeBSD's, a send
+/// cut short by a timeout, an interruption or a nonblocking wait reports what it sent; one that
+/// sent nothing fails.
+std::pair<s32, Errno> SendOutcome(size_t sent, Errno bsd_errno) {
+    if (sent > 0) {
+        return {static_cast<s32>(sent), Errno::SUCCESS};
+    }
+    return {-1, bsd_errno};
+}
+
 /// Opens a non-blocking host loopback UDP socket connected to its own address, so that it receives
 /// what it sends: one datagram on it wakes a host poll.
 Network::Errno OpenSignalSocket(Network::Socket& socket) {
@@ -117,7 +138,7 @@ Network::Errno OpenSignalSocket(Network::Socket& socket) {
     if (name_errno != Network::Errno::SUCCESS) {
         return name_errno;
     }
-    host_errno = socket.Connect(address);
+    host_errno = socket.Connect(address, 0);
     if (host_errno != Network::Errno::SUCCESS) {
         return host_errno;
     }
@@ -314,13 +335,14 @@ struct BSD_USA::SelectRequest {
     std::vector<PollFD> pollfds;
     /// SelectClock::time_point::max() for no timeout.
     SelectClock::time_point deadline = SelectClock::time_point::max();
-    /// For an eventfd Read or Write: the generation of the descriptor's slot. The retry goes on
+    /// For a call on one descriptor: the generation of the descriptor's slot. The retry goes on
     /// only if the descriptor has not closed since.
     u64 file_descriptor_generation = 0;
     /// For a RecvMMsg or SendMMsg: how many of its messages are done. Its buffer in the guest is
     /// only written by the reply, so the retry parses the messages from it again.
     u32 messages_done = 0;
-    /// For a SendMMsg: how much of the next message a blocking stream socket has sent.
+    /// For a SendMMsg: how much of the next message a blocking stream socket has sent; for a Send,
+    /// SendTo or Write: how much of the message.
     size_t message_offset = 0;
     /// For a RecvMMsg: the reply serialized so far, with the messages done.
     std::vector<u8> reply;
@@ -675,12 +697,14 @@ std::shared_ptr<BSD_USA::SelectNotifier> BSD_USA::CreateSelectNotifier(
 }
 
 bool BSD_USA::DeferSocketWait(HLERequestContext& ctx, s32 fd, const FileDescriptor& descriptor,
-                              u64 generation, bool send, SelectRequest& request) {
+                              u64 generation, bool send, SelectRequest& request,
+                              std::chrono::milliseconds recheck_interval) {
     if (Network::SocketOperationsCancelled()) {
         return false;
     }
     // RdNorm rather than In: on Windows, In also reports out-of-band data, which a receive does
-    // not take, so the wait would end over and over.
+    // not take, so the wait would end over and over. A listening socket reports a connection to
+    // accept as RdNorm, and a connecting one its connection made as Out.
     const Network::PollEvents events = send ? Network::PollEvents::Out : Network::PollEvents::RdNorm;
     request.file_descriptor_generation = generation;
     SelectWait wait{
@@ -692,90 +716,14 @@ bool BSD_USA::DeferSocketWait(HLERequestContext& ctx, s32 fd, const FileDescript
             .emulated = descriptor.socket->EmulatedPoll(events).has_value(),
         }},
     };
+    if (recheck_interval > std::chrono::milliseconds::zero()) {
+        wait.recheck = SelectClock::now() + recheck_interval;
+    }
     if (!select_notifier->Defer(ctx, request, wait)) {
         return false;
     }
     ctx.SetIsDeferred();
     return true;
-}
-
-void BSD_USA::AcceptWork::Execute(BSD_USA* bsd) {
-    std::tie(ret, bsd_errno) = bsd->AcceptImpl(fd, write_buffer);
-}
-
-void BSD_USA::AcceptWork::Response(HLERequestContext& ctx) {
-    if (write_buffer.size() > 0) {
-        ctx.WriteBuffer(write_buffer);
-    }
-
-    IPC::ResponseBuilder rb{ctx, 5};
-    rb.Push(ResultSuccess);
-    rb.Push<s32>(ret);
-    rb.PushEnum(bsd_errno);
-    rb.Push<u32>(static_cast<u32>(write_buffer.size()));
-}
-
-void BSD_USA::ConnectWork::Execute(BSD_USA* bsd) {
-    bsd_errno = bsd->ConnectImpl(fd, addr);
-}
-
-void BSD_USA::ConnectWork::Response(HLERequestContext& ctx) {
-    IPC::ResponseBuilder rb{ctx, 4};
-    rb.Push(ResultSuccess);
-    rb.Push<s32>(bsd_errno == Errno::SUCCESS ? 0 : -1);
-    rb.PushEnum(bsd_errno);
-}
-
-void BSD_USA::RecvWork::Execute(BSD_USA* bsd) {
-    std::tie(ret, bsd_errno) = bsd->RecvImpl(fd, flags, message);
-}
-
-void BSD_USA::RecvWork::Response(HLERequestContext& ctx) {
-    ctx.WriteBuffer(message);
-
-    IPC::ResponseBuilder rb{ctx, 4};
-    rb.Push(ResultSuccess);
-    rb.Push<s32>(ret);
-    rb.PushEnum(bsd_errno);
-}
-
-void BSD_USA::RecvFromWork::Execute(BSD_USA* bsd) {
-    std::tie(ret, bsd_errno) = bsd->RecvFromImpl(fd, flags, message, addr);
-}
-
-void BSD_USA::RecvFromWork::Response(HLERequestContext& ctx) {
-    ctx.WriteBuffer(message, 0);
-    if (!addr.empty()) {
-        ctx.WriteBuffer(addr, 1);
-    }
-
-    IPC::ResponseBuilder rb{ctx, 5};
-    rb.Push(ResultSuccess);
-    rb.Push<s32>(ret);
-    rb.PushEnum(bsd_errno);
-    rb.Push<u32>(static_cast<u32>(addr.size()));
-}
-
-void BSD_USA::SendWork::Execute(BSD_USA* bsd) {
-    std::tie(ret, bsd_errno) = bsd->SendImpl(fd, flags, message);
-}
-
-void BSD_USA::SendWork::Response(HLERequestContext& ctx) {
-    IPC::ResponseBuilder rb{ctx, 4};
-    rb.Push(ResultSuccess);
-    rb.Push<s32>(ret);
-    rb.PushEnum(bsd_errno);
-}
-
-void BSD_USA::SendToWork::Execute(BSD_USA* bsd) {
-    std::tie(ret, bsd_errno) = bsd->SendToImpl(fd, flags, message, addr);
-}
-
-void BSD_USA::SendToWork::Response(HLERequestContext& ctx) {
-    IPC::ResponseBuilder rb{ctx, 4};
-    rb.Push(ResultSuccess);
-    rb.Push<s32>(ret);
-    rb.PushEnum(bsd_errno);
 }
 
 void BSD_USA::RegisterClient(HLERequestContext& ctx) {
@@ -972,10 +920,23 @@ void BSD_USA::Accept(HLERequestContext& ctx) {
 
     LOG_DEBUG(Service, "called. fd={}", fd);
 
-    ExecuteWork(ctx, AcceptWork{
-                         .fd = fd,
-                         .write_buffer = std::vector<u8>(ctx.GetWriteBufferSize()),
-                     });
+    std::vector<u8> write_buffer(ctx.GetWriteBufferSize());
+    const auto result = AcceptImpl(ctx, fd, write_buffer);
+    // A deferred accept is answered once retried; no reply is built, so the command buffer keeps
+    // the request for the retry.
+    if (!result) {
+        return;
+    }
+    const auto [ret, bsd_errno] = *result;
+    if (!write_buffer.empty()) {
+        ctx.WriteBuffer(write_buffer);
+    }
+
+    IPC::ResponseBuilder rb{ctx, 5};
+    rb.Push(ResultSuccess);
+    rb.Push<s32>(ret);
+    rb.PushEnum(bsd_errno);
+    rb.Push<u32>(static_cast<u32>(write_buffer.size()));
 }
 
 void BSD_USA::Bind(HLERequestContext& ctx) {
@@ -992,10 +953,13 @@ void BSD_USA::Connect(HLERequestContext& ctx) {
 
     LOG_DEBUG(Service, "called. fd={} addrlen={}", fd, ctx.GetReadBufferSize());
 
-    ExecuteWork(ctx, ConnectWork{
-                         .fd = fd,
-                         .addr = ctx.ReadBuffer(),
-                     });
+    const auto result = ConnectImpl(ctx, fd, ctx.ReadBuffer());
+    // A deferred connect is answered once retried; no reply is built, so the command buffer keeps
+    // the request for the retry.
+    if (!result) {
+        return;
+    }
+    BuildErrnoResponse(ctx, *result);
 }
 
 void BSD_USA::GetPeerName(HLERequestContext& ctx) {
@@ -1125,11 +1089,23 @@ void BSD_USA::Recv(HLERequestContext& ctx) {
 
     LOG_DEBUG(Service, "called. fd={} flags={:#x} len={}", fd, flags, ctx.GetWriteBufferSize());
 
-    ExecuteWork(ctx, RecvWork{
-                         .fd = fd,
-                         .flags = flags,
-                         .message = std::vector<u8>(ctx.GetWriteBufferSize()),
-                     });
+    std::vector<u8> message(ctx.GetWriteBufferSize());
+    const auto result = RecvFromImpl(ctx, fd, flags, message, nullptr);
+    // A deferred receive is answered once retried; no reply is built, so the command buffer keeps
+    // the request for the retry.
+    if (!result) {
+        return;
+    }
+    const auto [ret, bsd_errno] = *result;
+    // As in FreeBSD, only what was received is written.
+    if (ret > 0) {
+        ctx.WriteBuffer(message.data(), static_cast<size_t>(ret));
+    }
+
+    IPC::ResponseBuilder rb{ctx, 4};
+    rb.Push(ResultSuccess);
+    rb.Push<s32>(ret);
+    rb.PushEnum(bsd_errno);
 }
 
 void BSD_USA::RecvFrom(HLERequestContext& ctx) {
@@ -1141,12 +1117,28 @@ void BSD_USA::RecvFrom(HLERequestContext& ctx) {
     LOG_DEBUG(Service, "called. fd={} flags={:#x} len={} addrlen={}", fd, flags,
               ctx.GetWriteBufferSize(0), ctx.GetWriteBufferSize(1));
 
-    ExecuteWork(ctx, RecvFromWork{
-                         .fd = fd,
-                         .flags = flags,
-                         .message = std::vector<u8>(ctx.GetWriteBufferSize(0)),
-                         .addr = std::vector<u8>(ctx.GetWriteBufferSize(1)),
-                     });
+    std::vector<u8> message(ctx.GetWriteBufferSize(0));
+    std::vector<u8> addr(ctx.GetWriteBufferSize(1));
+    const auto result = RecvFromImpl(ctx, fd, flags, message, &addr);
+    // A deferred receive is answered once retried; no reply is built, so the command buffer keeps
+    // the request for the retry.
+    if (!result) {
+        return;
+    }
+    const auto [ret, bsd_errno] = *result;
+    // As in FreeBSD, only what was received is written.
+    if (ret > 0) {
+        ctx.WriteBuffer(message.data(), static_cast<size_t>(ret), 0);
+    }
+    if (!addr.empty()) {
+        ctx.WriteBuffer(addr, 1);
+    }
+
+    IPC::ResponseBuilder rb{ctx, 5};
+    rb.Push(ResultSuccess);
+    rb.Push<s32>(ret);
+    rb.PushEnum(bsd_errno);
+    rb.Push<u32>(static_cast<u32>(addr.size()));
 }
 
 void BSD_USA::Send(HLERequestContext& ctx) {
@@ -1157,11 +1149,18 @@ void BSD_USA::Send(HLERequestContext& ctx) {
 
     LOG_DEBUG(Service, "called. fd={} flags={:#x} len={}", fd, flags, ctx.GetReadBufferSize());
 
-    ExecuteWork(ctx, SendWork{
-                         .fd = fd,
-                         .flags = flags,
-                         .message = ctx.ReadBuffer(),
-                     });
+    const auto result = SendToImpl(ctx, fd, flags, ctx.ReadBuffer(), {});
+    // A deferred send is answered once retried; no reply is built, so the command buffer keeps
+    // the request for the retry.
+    if (!result) {
+        return;
+    }
+    const auto [ret, bsd_errno] = *result;
+
+    IPC::ResponseBuilder rb{ctx, 4};
+    rb.Push(ResultSuccess);
+    rb.Push<s32>(ret);
+    rb.PushEnum(bsd_errno);
 }
 
 void BSD_USA::SendTo(HLERequestContext& ctx) {
@@ -1172,12 +1171,18 @@ void BSD_USA::SendTo(HLERequestContext& ctx) {
     LOG_DEBUG(Service, "called. fd={} flags=0x{} len={} addrlen={}", fd, flags,
               ctx.GetReadBufferSize(0), ctx.GetReadBufferSize(1));
 
-    ExecuteWork(ctx, SendToWork{
-                         .fd = fd,
-                         .flags = flags,
-                         .message = ctx.ReadBuffer(0),
-                         .addr = ctx.ReadBuffer(1),
-                     });
+    const auto result = SendToImpl(ctx, fd, flags, ctx.ReadBuffer(0), ctx.ReadBuffer(1));
+    // A deferred send is answered once retried; no reply is built, so the command buffer keeps
+    // the request for the retry.
+    if (!result) {
+        return;
+    }
+    const auto [ret, bsd_errno] = *result;
+
+    IPC::ResponseBuilder rb{ctx, 4};
+    rb.Push(ResultSuccess);
+    rb.Push<s32>(ret);
+    rb.PushEnum(bsd_errno);
 }
 
 void BSD_USA::RecvMMsg(HLERequestContext& ctx) {
@@ -1366,12 +1371,6 @@ void BSD_USA::EventFd(HLERequestContext& ctx) {
     rb.Push(ResultSuccess);
     rb.Push<s32>(fd);
     rb.PushEnum(bsd_errno);
-}
-
-template <typename Work>
-void BSD_USA::ExecuteWork(HLERequestContext& ctx, Work work) {
-    work.Execute(this);
-    work.Response(ctx);
 }
 
 std::pair<s32, Errno> BSD_USA::SocketImpl(Domain domain, Type type, Protocol protocol) {
@@ -1725,28 +1724,57 @@ std::optional<std::pair<s32, Errno>> BSD_USA::SelectImpl(const SelectRequest& re
     return Outcome{count, Errno::SUCCESS};
 }
 
-std::pair<s32, Errno> BSD_USA::AcceptImpl(s32 fd, std::vector<u8>& write_buffer) {
-    const auto descriptor = CopyDescriptor(fd);
-    if (!descriptor) {
-        return {-1, Errno::BADF};
+std::optional<std::pair<s32, Errno>> BSD_USA::AcceptImpl(HLERequestContext& ctx, s32 fd,
+                                                         std::vector<u8>& write_buffer) {
+    using Outcome = std::pair<s32, Errno>;
+    // An accept retried after waiting goes on only while its descriptor has not closed since.
+    const std::optional<SelectRequest> retried = select_notifier->Take(ctx);
+    u64 generation = 0;
+    const auto descriptor = CopyFileDescriptor(fd, &generation);
+    if (!descriptor || (retried && generation != retried->file_descriptor_generation)) {
+        return Outcome{-1, Errno::BADF};
+    }
+    if (!descriptor->socket) {
+        LOG_ERROR(Service, "File descriptor handle={} is an eventfd, not a socket", fd);
+        return Outcome{-1, Errno::BADF};
     }
 
-    auto [result, bsd_errno] = descriptor->socket->Accept();
-    if (bsd_errno != Network::Errno::SUCCESS) {
-        return {-1, Translate(bsd_errno)};
+    // Tried without waiting whatever the socket's mode: waiting for a connection would hold one
+    // of the few threads of the service, beyond the reach of cancellation. A blocking accept is
+    // deferred instead until the socket has a connection to accept; as FreeBSD's, it waits
+    // without limit, SO_RCVTIMEO aside.
+    auto [result, accept_errno] = descriptor->socket->Accept(Network::FLAG_MSG_DONTWAIT);
+    if (accept_errno == Network::Errno::AGAIN && IsBlocking(fd, *descriptor)) {
+        SelectRequest request{};
+        if (!DeferSocketWait(ctx, fd, *descriptor, generation, false, request)) {
+            // Requests can no longer wait, as emulation stops.
+            return Outcome{-1, Errno::INTR};
+        }
+        return std::nullopt;
+    }
+    if (accept_errno != Network::Errno::SUCCESS) {
+        return Outcome{-1, Translate(accept_errno)};
     }
 
-    // Accept may block, so the fd is picked afterwards, in the same critical section as the write
+    // As FreeBSD's accept (and Winsock's), the new socket takes the listening socket's
+    // O_NONBLOCK: a game that polls its accepted sockets every frame must not block in them.
+    const s32 accepted_flags = descriptor->flags & Network::FLAG_O_NONBLOCK;
+    if (accepted_flags != 0 && result.socket->SetNonBlock(true) != Network::Errno::SUCCESS) {
+        LOG_ERROR(Service, "Failed to make the socket accepted on fd={} nonblocking", fd);
+    }
+
+    // The fd is picked once a connection is accepted, in the same critical section as the write
     s32 new_fd;
     {
         std::scoped_lock lock{file_descriptors_mutex};
         new_fd = FindFreeFileDescriptorHandle();
         if (new_fd < 0) {
             LOG_ERROR(Service, "No more file descriptors available");
-            return {-1, Errno::MFILE};
+            return Outcome{-1, Errno::MFILE};
         }
         file_descriptors[new_fd] = FileDescriptor{
             .socket = std::move(result.socket),
+            .flags = accepted_flags,
             .is_connection_based = descriptor->is_connection_based,
             // As in FreeBSD, an accepted socket takes the listening socket's timeouts.
             .receive_timeout = descriptor->receive_timeout,
@@ -1757,7 +1785,7 @@ std::pair<s32, Errno> BSD_USA::AcceptImpl(s32 fd, std::vector<u8>& write_buffer)
     const SockAddrIn guest_addr_in = Translate(result.sockaddr_in);
     PutSockAddr(write_buffer, guest_addr_in);
 
-    return {new_fd, Errno::SUCCESS};
+    return Outcome{new_fd, Errno::SUCCESS};
 }
 
 Errno BSD_USA::BindImpl(s32 fd, std::span<const u8> addr) {
@@ -1772,24 +1800,80 @@ Errno BSD_USA::BindImpl(s32 fd, std::span<const u8> addr) {
     return Translate(descriptor->socket->Bind(Translate(addr_in)));
 }
 
-Errno BSD_USA::ConnectImpl(s32 fd, std::span<const u8> addr) {
-    const auto descriptor = CopyDescriptor(fd);
-    if (!descriptor) {
+std::optional<Errno> BSD_USA::ConnectImpl(HLERequestContext& ctx, s32 fd,
+                                          std::span<const u8> addr) {
+#ifdef _WIN32
+    // WSAPoll before Windows 10 2004 reports no failed connection, which SO_ERROR alone then
+    // tells: a blocking connect looks at it again every so often.
+    constexpr auto recheck_interval = std::chrono::milliseconds{500};
+#else
+    constexpr auto recheck_interval = std::chrono::milliseconds::zero();
+#endif
+
+    // A connect retried after waiting goes on with the connection it started, while its
+    // descriptor has not closed since.
+    const std::optional<SelectRequest> retried = select_notifier->Take(ctx);
+    u64 generation = 0;
+    const auto descriptor = CopyFileDescriptor(fd, &generation);
+    if (!descriptor || (retried && generation != retried->file_descriptor_generation)) {
         return Errno::BADF;
     }
+    if (!descriptor->socket) {
+        LOG_ERROR(Service, "File descriptor handle={} is an eventfd, not a socket", fd);
+        return Errno::BADF;
+    }
+    Network::SocketBase& socket = *descriptor->socket;
 
-    ASSERT(addr.size() >= 16);
+    if (!retried) {
+        ASSERT(addr.size() >= 16);
+        const auto addr_in = GetValue<SockAddrIn>(addr);
+        // Started without waiting whatever the socket's mode: on a blocking socket, waiting for
+        // the connection, which a host can take minutes to give up on, would hold one of the few
+        // threads of the service beyond the reach of cancellation. That wait is deferred instead.
+        const Errno result =
+            Translate(socket.Connect(Translate(addr_in), Network::FLAG_MSG_DONTWAIT));
+        if (result == Errno::ISCONN) {
+            LOG_DEBUG(Service, "returned ISCONN - socket already connected");
+            return Errno::SUCCESS;
+        }
+        if (result != Errno::INPROGRESS || !IsBlocking(fd, *descriptor)) {
+            return result;
+        }
+    }
 
-    auto addr_in = GetValue<SockAddrIn>(addr);
-
-    const Errno result = Translate(descriptor->socket->Connect(Translate(addr_in)));
-
-    if (result == Errno::ISCONN) {
-        LOG_DEBUG(Service, "returned ISCONN - socket already connected");
+    // The socket polls writable, or with an error, once the connection is made or failed, and
+    // SO_ERROR tells which, as for FreeBSD's blocking connect.
+    std::vector<Network::PollFD> pollfds{Network::PollFD{
+        .socket = &socket,
+        .events = Network::PollEvents::Out,
+        .revents = Network::PollEvents{},
+    }};
+    const auto [polled, poll_errno] = Network::Poll(pollfds, 0);
+    if (polled < 0) {
+        return Network::SocketOperationsCancelled() ? Errno::INTR : Translate(poll_errno);
+    }
+    const auto [pending_errno, getsockopt_errno] = socket.GetPendingError();
+    if (getsockopt_errno != Network::Errno::SUCCESS) {
+        return Translate(getsockopt_errno);
+    }
+    if (pending_errno != Network::Errno::SUCCESS) {
+        return Translate(pending_errno);
+    }
+    constexpr Network::PollEvents done_events =
+        Network::PollEvents::Out | Network::PollEvents::Err | Network::PollEvents::Hup;
+    if (True(pollfds.front().revents & done_events)) {
         return Errno::SUCCESS;
     }
 
-    return result;
+    // As FreeBSD's, a blocking connect waits until the host's TCP gives up, without a limit of its
+    // own.
+    SelectRequest request{};
+    if (!DeferSocketWait(ctx, fd, *descriptor, generation, true, request, recheck_interval)) {
+        // Requests can no longer wait, as emulation stops; as FreeBSD's interrupted connect, the
+        // connection goes on without the caller.
+        return Errno::INTR;
+    }
+    return std::nullopt;
 }
 
 Errno BSD_USA::GetPeerNameImpl(s32 fd, std::vector<u8>& write_buffer) {
@@ -1948,6 +2032,17 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
         return Errno::SUCCESS;
     }
 
+    // FreeBSD takes these socket-level options on any socket; a host can refuse some of them for
+    // the socket's type (Winsock: SO_LINGER and SO_KEEPALIVE on a UDP socket), which the guest
+    // never sees on the console.
+    const auto socket_option = [optname](Network::Errno error) {
+        if (error == Network::Errno::NOPROTOOPT) {
+            LOG_DEBUG(Service, "The host refused socket option {} for this socket", optname);
+            return Errno::SUCCESS;
+        }
+        return Translate(error);
+    };
+
     if (optname == OptName::LINGER) {
         if (optval.size() < sizeof(Linger)) {
             return Errno::INVAL;
@@ -1955,7 +2050,7 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
         auto linger = GetValue<Linger>(optval);
         ASSERT(linger.onoff == 0 || linger.onoff == 1);
 
-        return Translate(socket->SetLinger(linger.onoff != 0, linger.linger));
+        return socket_option(socket->SetLinger(linger.onoff != 0, linger.linger));
     }
 
     if (optval.size() < sizeof(u32)) {
@@ -1966,17 +2061,17 @@ Errno BSD_USA::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<cons
     switch (optname) {
     case OptName::REUSEADDR:
         ASSERT(value == 0 || value == 1);
-        return Translate(socket->SetReuseAddr(value != 0));
+        return socket_option(socket->SetReuseAddr(value != 0));
     case OptName::KEEPALIVE:
         ASSERT(value == 0 || value == 1);
-        return Translate(socket->SetKeepAlive(value != 0));
+        return socket_option(socket->SetKeepAlive(value != 0));
     case OptName::BROADCAST:
         ASSERT(value == 0 || value == 1);
-        return Translate(socket->SetBroadcast(value != 0));
+        return socket_option(socket->SetBroadcast(value != 0));
     case OptName::SNDBUF:
-        return Translate(socket->SetSndBuf(value));
+        return socket_option(socket->SetSndBuf(value));
     case OptName::RCVBUF:
-        return Translate(socket->SetRcvBuf(value));
+        return socket_option(socket->SetRcvBuf(value));
     case OptName::SNDTIMEO:
     case OptName::RCVTIMEO: {
         // A timeval of two 64-bit fields, as libnx's and FreeBSD's; as FreeBSD's sooptcopyin, a
@@ -2028,74 +2123,169 @@ Errno BSD_USA::ShutdownImpl(s32 fd, s32 how) {
     return Translate(descriptor->socket->Shutdown(host_how));
 }
 
-std::pair<s32, Errno> BSD_USA::RecvImpl(s32 fd, u32 flags, std::vector<u8>& message) {
-    const auto descriptor = CopyDescriptor(fd);
-    if (!descriptor) {
-        return {-1, Errno::BADF};
+std::optional<std::pair<s32, Errno>> BSD_USA::RecvFromImpl(HLERequestContext& ctx, s32 fd,
+                                                           u32 flags, std::span<u8> message,
+                                                           std::vector<u8>* addr) {
+    // A receive retried after waiting goes on only while its descriptor has not closed since.
+    const std::optional<SelectRequest> retried = select_notifier->Take(ctx);
+    u64 generation = 0;
+    const auto descriptor = CopyFileDescriptor(fd, &generation);
+    if (!descriptor || (retried && generation != retried->file_descriptor_generation) ||
+        !descriptor->socket) {
+        if (descriptor && !descriptor->socket) {
+            LOG_ERROR(Service, "File descriptor handle={} is an eventfd, not a socket", fd);
+        }
+        if (addr != nullptr) {
+            addr->clear();
+        }
+        return std::pair<s32, Errno>{-1, Errno::BADF};
     }
-
-    // MSG_DONTWAIT keeps this receive alone from waiting; the socket's mode is left alone, as
-    // other calls on it, on other threads, depend on it.
-    return Translate(descriptor->socket->Recv(flags, message));
+    return SocketReceiveImpl(ctx, fd, *descriptor, generation, retried ? &*retried : nullptr,
+                             flags, message, addr);
 }
 
-std::pair<s32, Errno> BSD_USA::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& message,
-                                        std::vector<u8>& addr) {
-    const auto descriptor = CopyDescriptor(fd);
-    if (!descriptor) {
-        return {-1, Errno::BADF};
+std::optional<std::pair<s32, Errno>> BSD_USA::SendToImpl(HLERequestContext& ctx, s32 fd,
+                                                         u32 flags, std::span<const u8> message,
+                                                         std::span<const u8> addr) {
+    // A send retried after waiting goes on with the rest of the message, while its descriptor
+    // has not closed since.
+    const std::optional<SelectRequest> retried = select_notifier->Take(ctx);
+    u64 generation = 0;
+    const auto descriptor = CopyFileDescriptor(fd, &generation);
+    if (!descriptor || (retried && generation != retried->file_descriptor_generation)) {
+        return SendOutcome(retried ? retried->message_offset : 0, Errno::BADF);
+    }
+    if (!descriptor->socket) {
+        LOG_ERROR(Service, "File descriptor handle={} is an eventfd, not a socket", fd);
+        return std::pair<s32, Errno>{-1, Errno::BADF};
     }
 
     Network::SockAddrIn addr_in{};
-    Network::SockAddrIn* p_addr_in = nullptr;
-    if (descriptor->is_connection_based) {
-        // Connection based file descriptors (e.g. TCP) zero addr
-        addr.clear();
-    } else {
-        p_addr_in = &addr_in;
+    if (!addr.empty()) {
+        ASSERT(addr.size() >= 16);
+        addr_in = Translate(GetValue<SockAddrIn>(addr));
+    }
+    return SocketSendImpl(ctx, fd, *descriptor, generation, retried ? &*retried : nullptr, flags,
+                          message, addr.empty() ? nullptr : &addr_in);
+}
+
+std::optional<std::pair<s32, Errno>> BSD_USA::SocketReceiveImpl(
+    HLERequestContext& ctx, s32 fd, const FileDescriptor& descriptor, u64 generation,
+    const SelectRequest* retried, u32 flags, std::span<u8> message, std::vector<u8>* addr) {
+    using Network::FLAG_MSG_DONTWAIT;
+    using Network::FLAG_MSG_PEEK;
+    using Outcome = std::pair<s32, Errno>;
+
+    // MSG_PEEK goes to the receive, and MSG_DONTWAIT decides whether it may wait. Other flags,
+    // MSG_WAITALL among them, are not supported and are dropped.
+    if (const u32 unsupported = flags & ~(FLAG_MSG_PEEK | FLAG_MSG_DONTWAIT);
+        unsupported != 0 && retried == nullptr) {
+        LOG_WARNING(Service, "Ignoring unsupported receive flags={:#x}, fd={}", unsupported, fd);
     }
 
-    // MSG_DONTWAIT keeps this receive alone from waiting; the socket's mode is left alone, as
-    // other calls on it, on other threads, depend on it.
-    const auto [ret, bsd_errno] =
-        Translate(descriptor->socket->RecvFrom(flags, message, p_addr_in));
+    // Connection based sockets (e.g. TCP) report no source address.
+    const bool wants_source = addr != nullptr && !descriptor.is_connection_based;
+    Network::SockAddrIn source{};
+    // Tried without waiting whatever the socket's mode: waiting would hold one of the few threads
+    // of the service, beyond the reach of cancellation. A blocking receive is deferred instead,
+    // until its socket's receive timeout, which then fails it with EAGAIN, as SO_RCVTIMEO does.
+    u32 msg_flags = 0;
+    const Outcome result = Translate(descriptor.socket->RecvMsg(
+        static_cast<int>((flags & FLAG_MSG_PEEK) | FLAG_MSG_DONTWAIT), message,
+        wants_source ? &source : nullptr, msg_flags));
+    // The source address goes back only with a datagram received.
+    const auto finish = [addr, wants_source, &source](Outcome outcome) {
+        if (addr != nullptr) {
+            if (wants_source && outcome.first >= 0) {
+                PutSockAddr(*addr, Translate(source));
+            } else {
+                addr->clear();
+            }
+        }
+        return std::optional<Outcome>{outcome};
+    };
+    if (result.second != Errno::AGAIN || (flags & FLAG_MSG_DONTWAIT) != 0 ||
+        !IsBlocking(fd, descriptor)) {
+        return finish(result);
+    }
+    SelectRequest request{
+        .deadline = retried != nullptr
+                        ? retried->deadline
+                        : ReceiveDeadline(*descriptor.socket, descriptor.receive_timeout),
+    };
+    if (SelectClock::now() >= request.deadline) {
+        return finish(result);
+    }
+    if (!DeferSocketWait(ctx, fd, descriptor, generation, false, request)) {
+        // Requests can no longer wait, as emulation stops.
+        return finish(Outcome{-1, Errno::INTR});
+    }
+    return std::nullopt;
+}
 
-    if (p_addr_in) {
+std::optional<std::pair<s32, Errno>> BSD_USA::SocketSendImpl(
+    HLERequestContext& ctx, s32 fd, const FileDescriptor& descriptor, u64 generation,
+    const SelectRequest* retried, u32 flags, std::span<const u8> message,
+    const Network::SockAddrIn* addr) {
+    using Network::FLAG_MSG_DONTWAIT;
+    using Outcome = std::pair<s32, Errno>;
+
+    // MSG_DONTWAIT decides whether the send may wait, and MSG_NOSIGNAL asks for nothing. Other
+    // flags are not supported and are dropped.
+    if (const u32 unsupported = flags & ~(FLAG_MSG_DONTWAIT | FLAG_MSG_NOSIGNAL);
+        unsupported != 0 && retried == nullptr) {
+        LOG_WARNING(Service, "Ignoring unsupported send flags={:#x}, fd={}", unsupported, fd);
+    }
+
+    // Tried without waiting whatever the socket's mode: waiting would hold one of the few threads
+    // of the service, beyond the reach of cancellation. A blocking send is deferred instead, until
+    // its socket's send timeout, and on a stream goes on until all of the message is sent, as
+    // FreeBSD's does.
+    const bool may_wait = (flags & FLAG_MSG_DONTWAIT) == 0 && IsBlocking(fd, descriptor);
+    // What the send sent before it was deferred.
+    size_t sent = retried != nullptr ? retried->message_offset : 0;
+    while (true) {
+        sent = (std::min)(sent, message.size());
+        const std::span<const u8> rest = message.subspan(sent);
+        const auto [ret, send_errno] =
+            addr != nullptr ? Translate(descriptor.socket->SendTo(FLAG_MSG_DONTWAIT, rest, addr))
+                            : Translate(descriptor.socket->Send(rest, FLAG_MSG_DONTWAIT));
         if (ret < 0) {
-            addr.clear();
-        } else {
-            PutSockAddr(addr, Translate(addr_in));
+            if (send_errno != Errno::AGAIN) {
+                // As FreeBSD's, an error other than a wait cut short fails the send, whatever it
+                // sent before.
+                return Outcome{-1, send_errno};
+            }
+            break;
+        }
+        sent += static_cast<size_t>(ret);
+        // A datagram goes whole or not at all, and a nonblocking send takes what fits.
+        if (!may_wait || !descriptor.is_connection_based || sent >= message.size() || ret == 0) {
+            return Outcome{static_cast<s32>(sent), Errno::SUCCESS};
         }
     }
 
-    return {ret, bsd_errno};
-}
-
-std::pair<s32, Errno> BSD_USA::SendImpl(s32 fd, u32 flags, std::span<const u8> message) {
-    const auto descriptor = CopyDescriptor(fd);
-    if (!descriptor) {
-        return {-1, Errno::BADF};
+    if (!may_wait) {
+        return SendOutcome(sent, Errno::AGAIN);
     }
-    return Translate(descriptor->socket->Send(message, flags));
-}
-
-std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8> message,
-                                      std::span<const u8> addr) {
-    const auto descriptor = CopyDescriptor(fd);
-    if (!descriptor) {
-        return {-1, Errno::BADF};
+    // Still the wait the send was deferred for, or one for what the stream sent since, as
+    // SO_SNDTIMEO bounds each wait for room in the send buffer.
+    const SelectClock::time_point deadline =
+        retried != nullptr && retried->message_offset == sent
+            ? retried->deadline
+            : TimeoutDeadline(descriptor.send_timeout);
+    if (SelectClock::now() >= deadline) {
+        return SendOutcome(sent, Errno::AGAIN);
     }
-
-    Network::SockAddrIn addr_in;
-    Network::SockAddrIn* p_addr_in = nullptr;
-    if (!addr.empty()) {
-        ASSERT(addr.size() >= 16);
-        auto guest_addr_in = GetValue<SockAddrIn>(addr);
-        addr_in = Translate(guest_addr_in);
-        p_addr_in = &addr_in;
+    SelectRequest request{
+        .deadline = deadline,
+        .message_offset = sent,
+    };
+    if (!DeferSocketWait(ctx, fd, descriptor, generation, true, request)) {
+        // Requests can no longer wait, as emulation stops.
+        return SendOutcome(sent, Errno::INTR);
     }
-
-    return Translate(descriptor->socket->SendTo(flags, message, p_addr_in));
+    return std::nullopt;
 }
 
 std::optional<std::pair<s32, Errno>> BSD_USA::RecvMMsgImpl(HLERequestContext& ctx, s32 fd, u32 vlen,
@@ -2531,38 +2721,21 @@ std::optional<std::pair<s32, Errno>> BSD_USA::ReadImpl(HLERequestContext& ctx, s
             return descriptor->event_fd->Read(message, blocked_version);
         });
     }
-    // On a socket, read is recv without flags. Waiting on a blocking socket would hold one of the
-    // few threads of the service, beyond the reach of cancellation; the read is tried without
-    // waiting and deferred instead, until the socket's receive timeout, which then fails it with
-    // EAGAIN, as SO_RCVTIMEO does.
-    const bool blocking = IsBlocking(fd, *descriptor);
-    const std::pair<s32, Errno> result =
-        Translate(descriptor->socket->Recv(Network::FLAG_MSG_DONTWAIT, message));
-    if (!blocking || result.second != Errno::AGAIN) {
-        return result;
-    }
-    SelectRequest request{
-        .deadline = retried ? retried->deadline : TimeoutDeadline(descriptor->receive_timeout),
-    };
-    if (SelectClock::now() >= request.deadline) {
-        return result;
-    }
-    if (!DeferSocketWait(ctx, fd, *descriptor, generation, false, request)) {
-        // Requests can no longer wait, as emulation stops.
-        return std::pair<s32, Errno>{-1, Errno::INTR};
-    }
-    return std::nullopt;
+    // On a socket, read is recv without flags.
+    return SocketReceiveImpl(ctx, fd, *descriptor, generation, retried ? &*retried : nullptr, 0,
+                             message, nullptr);
 }
 
 std::optional<std::pair<s32, Errno>> BSD_USA::WriteImpl(HLERequestContext& ctx, s32 fd,
                                                         std::span<const u8> message) {
-    // A write retried after waiting on an eventfd goes on only while its descriptor has not
-    // closed since, even should the same eventfd have been put back in the slot.
+    // A write retried after waiting goes on only while its descriptor has not closed since, even
+    // should the same eventfd or socket have been put back in the slot; what a socket's write
+    // sent before is reported.
     const std::optional<SelectRequest> retried = select_notifier->Take(ctx);
     u64 generation = 0;
     const auto descriptor = CopyFileDescriptor(fd, &generation);
     if (!descriptor || (retried && generation != retried->file_descriptor_generation)) {
-        return std::pair<s32, Errno>{-1, Errno::BADF};
+        return SendOutcome(retried ? retried->message_offset : 0, Errno::BADF);
     }
     if (descriptor->event_fd) {
         return EventFdIoImpl(ctx, fd, *descriptor, generation, [&](u64& blocked_version) {
@@ -2570,7 +2743,8 @@ std::optional<std::pair<s32, Errno>> BSD_USA::WriteImpl(HLERequestContext& ctx, 
         });
     }
     // On a socket, write is send without flags.
-    return Translate(descriptor->socket->Send(message, 0));
+    return SocketSendImpl(ctx, fd, *descriptor, generation, retried ? &*retried : nullptr, 0,
+                          message, nullptr);
 }
 
 std::pair<s32, Errno> BSD_USA::EventFdImpl(u64 initval, u32 flags) {
@@ -2893,6 +3067,38 @@ BSD_USA::~BSD_USA() {
         room_member->Unbind(proxy_packet_received);
     }
     proxy_packet_received.reset();
+    // The last service lets go of the notifier first, which stops its thread: no host poll for a
+    // deferred request then holds a socket closed below.
+    select_notifier.reset();
+    CloseAllFileDescriptors();
+}
+
+void BSD_USA::CloseAllFileDescriptors() {
+    std::vector<FileDescriptor> open;
+    {
+        std::scoped_lock lock{file_descriptors_mutex};
+        for (std::size_t fd = 0; fd < file_descriptors.size(); ++fd) {
+            if (auto& entry = file_descriptors[fd]) {
+                open.push_back(std::move(*entry));
+                entry.reset();
+                ++file_descriptor_generations[fd];
+            }
+        }
+    }
+    if (!open.empty()) {
+        LOG_INFO(Service, "Closing {} socket descriptors left open", open.size());
+    }
+    // Duplicates share their socket or eventfd: close each once, outside the lock.
+    std::set<const void*> closed;
+    for (FileDescriptor& descriptor : open) {
+        if (descriptor.socket && !descriptor.socket_closed &&
+            closed.insert(descriptor.socket.get()).second) {
+            descriptor.socket->Close();
+        }
+        if (descriptor.event_fd && closed.insert(descriptor.event_fd.get()).second) {
+            descriptor.event_fd->Close();
+        }
+    }
 }
 
 std::unique_lock<std::mutex> BSD_USA::LockService() noexcept {

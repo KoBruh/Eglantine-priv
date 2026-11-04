@@ -36,6 +36,7 @@
 #include "common/settings.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/network_interface.h"
+#include "core/internal_network/socket_proxy.h"
 #include "core/internal_network/sockets.h"
 #include "network/network.h"
 
@@ -170,6 +171,12 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::INPROGRESS;
     case WSAEISCONN:
         return Errno::ISCONN;
+    case WSAEADDRINUSE:
+        return Errno::ADDRINUSE;
+    case WSAENOPROTOOPT:
+        return Errno::NOPROTOOPT;
+    case WSAEALREADY:
+        return Errno::ALREADY;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={}", e);
         return Errno::OTHER;
@@ -319,6 +326,12 @@ Errno TranslateNativeError(int e, CallType call_type = CallType::Other) {
         return Errno::INPROGRESS;
     case EISCONN:
         return Errno::ISCONN;
+    case EADDRINUSE:
+        return Errno::ADDRINUSE;
+    case ENOPROTOOPT:
+        return Errno::NOPROTOOPT;
+    case EALREADY:
+        return Errno::ALREADY;
     default:
         UNIMPLEMENTED_MSG("Unimplemented errno={} ({})", e, strerror(e));
         return Errno::OTHER;
@@ -725,6 +738,8 @@ NetworkInstance::~NetworkInstance() {
 void CancelPendingSocketOperations() {
     socket_operations_cancelled = true;
     InterruptSocketOperations();
+    // Room sockets wait for their packets on no host socket.
+    ProxySocket::InterruptWaits();
 }
 
 void RestartSocketOperations() {
@@ -902,9 +917,15 @@ Errno Socket::Initialize(Domain domain, Type type, Protocol protocol) {
     return GetAndLogLastError();
 }
 
-std::pair<SocketBase::AcceptResult, Errno> Socket::Accept() {
-    sockaddr_in addr;
-    socklen_t addrlen = sizeof(addr);
+std::pair<SocketBase::AcceptResult, Errno> Socket::Accept(int flags) {
+    if ((flags & FLAG_MSG_DONTWAIT) != 0) {
+        if (const Errno begin_errno = BeginDontWait(); begin_errno != Errno::SUCCESS) {
+            return {AcceptResult{}, begin_errno};
+        }
+        auto result = AcceptPending();
+        EndDontWait();
+        return result;
+    }
 
     const bool wait_for_accept = !is_non_blocking;
     if (wait_for_accept) {
@@ -926,10 +947,22 @@ std::pair<SocketBase::AcceptResult, Errno> Socket::Accept() {
         }
     }
 
+    return AcceptPending();
+}
+
+std::pair<SocketBase::AcceptResult, Errno> Socket::AcceptPending() {
+    sockaddr_in addr;
+    socklen_t addrlen = sizeof(addr);
     const SOCKET new_socket = accept(fd, reinterpret_cast<sockaddr*>(&addr), &addrlen);
 
     if (new_socket == INVALID_SOCKET) {
         return {AcceptResult{}, GetAndLogLastError()};
+    }
+
+    // Winsock and BSD hosts hand the accepted socket the listening socket's nonblocking mode,
+    // which accepting without waiting may have set; the new Socket starts out blocking.
+    if (!EnableNonBlock(new_socket, false)) {
+        GetAndLogLastError();
     }
 
     AcceptResult result{
@@ -940,13 +973,32 @@ std::pair<SocketBase::AcceptResult, Errno> Socket::Accept() {
     return {std::move(result), Errno::SUCCESS};
 }
 
-Errno Socket::Connect(SockAddrIn addr_in) {
+Errno Socket::Connect(SockAddrIn addr_in, int flags) {
     const sockaddr host_addr_in = TranslateFromSockAddrIn(addr_in);
-    if (connect(fd, &host_addr_in, sizeof(host_addr_in)) != SOCKET_ERROR) {
-        return Errno::SUCCESS;
-    }
+    const auto connect_host = [this, &host_addr_in] {
+        if (connect(fd, &host_addr_in, sizeof(host_addr_in)) != SOCKET_ERROR) {
+            return Errno::SUCCESS;
+        }
+#ifdef _WIN32
+        // Winsock reports a nonblocking connection in progress as WSAEWOULDBLOCK, where BSD
+        // sockets, the console's among them, report EINPROGRESS.
+        if (WSAGetLastError() == WSAEWOULDBLOCK) {
+            return Errno::INPROGRESS;
+        }
+#endif
+        return GetAndLogLastError();
+    };
 
-    return GetAndLogLastError();
+    if ((flags & FLAG_MSG_DONTWAIT) == 0) {
+        return connect_host();
+    }
+    if (const Errno begin_errno = BeginDontWait(); begin_errno != Errno::SUCCESS) {
+        return begin_errno;
+    }
+    // The connection goes on once the host socket blocks again.
+    const Errno result = connect_host();
+    EndDontWait();
+    return result;
 }
 
 std::pair<SockAddrIn, Errno> Socket::GetPeerName() {
@@ -1032,7 +1084,6 @@ std::pair<s32, Errno> Socket::Transfer(int flags, Operation operation) {
 #endif
 }
 
-#ifdef _WIN32
 Errno Socket::BeginDontWait() {
     std::scoped_lock lock{mode_mutex};
     if (dont_wait_calls == 0 && !is_non_blocking) {
@@ -1058,6 +1109,7 @@ void Socket::EndDontWait() {
     dont_wait_ended.notify_all();
 }
 
+#ifdef _WIN32
 bool Socket::WaitOutDontWait(u64 epoch) {
     std::unique_lock lock{mode_mutex};
     // Unless calls given FLAG_MSG_DONTWAIT made the host socket nonblocking while the call ran,
@@ -1205,6 +1257,14 @@ std::pair<s32, Errno> Socket::SendTo(u32 flags, std::span<const u8> message,
 }
 
 Errno Socket::Close() {
+#ifndef _WIN32
+    // close() only drops this descriptor, so a receive, send, accept or connect blocked on the
+    // socket in another thread would go on waiting; shutdown() ends those calls first. Winsock's
+    // closesocket ends them by itself. An unconnected socket fails the shutdown, which is fine.
+    if (fd != INVALID_SOCKET) {
+        (void)shutdown(fd, SHUT_RDWR);
+    }
+#endif
     [[maybe_unused]] const int result = closesocket(fd);
     if (result != 0) {
         LOG_WARNING(Network, "closesocket failed, socket may already be closed");
@@ -1266,7 +1326,6 @@ Errno Socket::SetNoDelay(bool enable) {
 }
 
 Errno Socket::SetNonBlock(bool enable) {
-#ifdef _WIN32
     std::scoped_lock lock{mode_mutex};
     if (dont_wait_calls > 0) {
         // The host socket stays nonblocking for the calls given FLAG_MSG_DONTWAIT, and the last
@@ -1278,7 +1337,6 @@ Errno Socket::SetNonBlock(bool enable) {
         }
         return Errno::SUCCESS;
     }
-#endif
     if (EnableNonBlock(fd, enable)) {
         is_non_blocking = enable;
         return Errno::SUCCESS;
