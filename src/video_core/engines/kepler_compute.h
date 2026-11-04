@@ -245,6 +245,8 @@ public:
     }
 
     bool IsNativeMode() const { return native_mode; }
+    /// Whether the dispatch being run is a pass of a game DLSS evaluation (Fortune's Weave).
+    bool IsDlssDispatch() const { return native_mode && dlss_chain.active; }
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod for native compute engines: runs their macros and macro
