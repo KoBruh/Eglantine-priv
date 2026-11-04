@@ -328,11 +328,6 @@ void RealVfsFilesystem::DropReference(std::unique_ptr<FileReference>&& reference
         reference->file.reset();
         num_open_files--;
     }
-
-    const auto it = cache.find(path);
-    if (it != cache.end() && it->second.expired()) {
-        cache.erase(it);
-    }
 }
 
 void RealVfsFilesystem::EvictSingleReferenceLocked() {

@@ -236,3 +236,29 @@ TEST_CASE("Plain files have no decrypted view", "[core][ncz]") {
     const auto window = std::make_shared<FileSys::OffsetVfsFile>(plain, 0x80, 0x10);
     REQUIRE(window->GetDecryptedView() == nullptr);
 }
+
+TEST_CASE("NCZ block tables larger than the file are rejected before reading them", "[core][ncz]") {
+    auto synthetic = MakeRawNcz(1, 1, false);
+    constexpr std::array<u8, 8> block_magic{'N', 'C', 'Z', 'B', 'L', 'O', 'C', 'K'};
+    const auto block = std::search(synthetic.ncz.begin(), synthetic.ncz.end(), block_magic.begin(),
+                                   block_magic.end());
+    REQUIRE(block != synthetic.ncz.end());
+    // Claim 2^31 - 1 blocks: their size table alone would be 8 GiB, far past the file's end.
+    const std::size_t count_offset = static_cast<std::size_t>(block - synthetic.ncz.begin()) + 12;
+    for (std::size_t i = 0; i < 4; ++i) {
+        synthetic.ncz[count_offset + i] = static_cast<u8>(0x7FFFFFFFU >> (8 * i));
+    }
+    // VfsFile::ReadBytes allocates the whole request before reading: record what was asked.
+    class RecordingFile final : public FileSys::VectorVfsFile {
+    public:
+        using VectorVfsFile::VectorVfsFile;
+        std::size_t Read(u8* out, std::size_t length, std::size_t offset) const override {
+            largest_read = std::max(largest_read, length);
+            return VectorVfsFile::Read(out, length, offset);
+        }
+        mutable std::size_t largest_read = 0;
+    };
+    const auto file = std::make_shared<RecordingFile>(synthetic.ncz, "huge.ncz");
+    REQUIRE_FALSE(Core::Crypto::IsBlockCompressedNCZ(file));
+    REQUIRE(file->largest_read <= synthetic.ncz.size());
+}

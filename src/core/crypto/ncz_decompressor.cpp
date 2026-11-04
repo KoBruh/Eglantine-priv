@@ -99,7 +99,10 @@ std::optional<std::pair<std::vector<Section>, std::optional<BlockHeader>>> Parse
         BlockHeader b{};
         b.exponent = fixed[11];
         const s32 n = static_cast<s32>(Le(fixed.data() + 12, 4));
-        if (n <= 0) return std::nullopt;
+        // The block size table has to fit in the file: n comes from it, and sized a read of up
+        // to 8 GiB before that read could fail.
+        if (n <= 0 || static_cast<u64>(n) * 4 > fsize - (block_start + BlockFixed))
+            return std::nullopt;
         b.decompressed_size = Le(fixed.data() + 16, 8);
         const auto sizes = f->ReadBytes(static_cast<u64>(n) * 4, block_start + BlockFixed);
         if (sizes.size() != static_cast<u64>(n) * 4) return std::nullopt;
