@@ -229,10 +229,12 @@ vk::Image MemoryAllocator::CreateImage(const VkImageCreateInfo &ci, bool dedicat
     VmaAllocationInfo alloc_info{};
     // On sparse-capable devices, images this large (title 1's arrays reach 4.5G texels, ~23 GB)
     // are never backed: VMA would quietly place them in system memory once VRAM is full.
-    // They take the unbacked sparse fallback below.
+    // They take the unbacked sparse fallback below, except on drivers that cannot sample unbound
+    // images (AMD's hang shortly after), which back them like any other image.
     const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
     const bool huge = texels > (u64{1} << 28) && ci.samples == VK_SAMPLE_COUNT_1_BIT &&
-                      device.IsSparseResidencyImageSupported(ci.imageType);
+                      device.IsSparseResidencyImageSupported(ci.imageType) &&
+                      device.CanUseUnbackedSparseImages();
     VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
                            : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
