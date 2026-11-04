@@ -3328,32 +3328,48 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             const bool floating = (opcode & 0x1ff) == 0xb;
             if (!floating && insn.Bits(72, 1)) {
                 // ISETP.EX: the high word of a 64-bit compare, the low word's result in the
-                // predicate at 68-71. EQ and NE are Maxwell's own combine with a source
-                // predicate. The orderings are (a strictly-ordered b) OR (a == b AND low),
-                // through P6. The instruction's own input must be PT.
+                // predicate at 68-71. EQ is (a == b AND low), NE (a != b OR low), the orderings
+                // (a strictly-ordered b) OR (a == b AND low); the first destination takes the
+                // result and the second its complement. The instruction's own input must be PT.
                 const u32 ex_compare = insn.Bits(76, 3);
+                const u32 first = insn.Bits(81, 3), second = insn.Bits(84, 3);
+                const u32 guard = native_predicate & 7;
                 if (ex_compare == 0 || ex_compare == 7 || insn.Bits(87, 4) != 7 ||
-                    insn.Bits(74, 2)) {
+                    insn.Bits(74, 2) || (first == second && first != 7)) {
                     return fail(index, "native extended integer comparison");
                 }
                 const u32 ea = operand(0, false), eb = operand(1, false);
                 const u64 sign = u64{insn.Bits(73, 1)} << 48;
                 const u64 low = (u64{insn.Bits(68, 3)} << 39) | (u64{insn.Bits(71, 1)} << 42);
-                const u64 outs = insn.Bits(84, 3) | (u64{insn.Bits(81, 3)} << 3);
-                if (ex_compare == 2 || ex_compare == 5) {
-                    emit(0x5b60000000000000ULL | predicate | outs | (u64{ea} << 8) |
-                         (u64{eb} << 20) | low | (u64{ex_compare == 5 ? 1U : 0U} << 45) |
-                         sign | (u64{ex_compare} << 49));
-                } else {
-                    const u32 strict = ex_compare <= 3 ? 1U : 4U; // LT, LE: LT. GT, GE: GT
-                    save_predicate();
-                    emit(0x5b60000000000000ULL | predicate | 7 | (u64{6} << 3) | (u64{ea} << 8) |
-                         (u64{eb} << 20) | low | sign | (u64{2} << 49));
-                    emit(0x5b60000000000000ULL | predicate | outs | (u64{ea} << 8) |
-                         (u64{eb} << 20) | (u64{6} << 39) | (u64{1} << 45) | sign |
-                         (u64{strict} << 49));
-                    restore_predicate();
+                const auto isetp = [&](u32 target, u32 x, u32 y, u32 compare, u64 input, u32 combine) {
+                    emit(0x5b60000000000000ULL | predicate | 7 | (u64{target} << 3) | (u64{x} << 8) |
+                         (u64{y} << 20) | input | (u64{combine} << 45) | sign | (u64{compare} << 49));
+                };
+                if ((ex_compare == 2 || ex_compare == 5) && second == 7) {
+                    // Maxwell's own combine with the low predicate.
+                    isetp(first, ea, eb, ex_compare, low, ex_compare == 5 ? 1U : 0U);
+                    break;
                 }
+                // The result goes through a scratch predicate, saved around it, that is neither the
+                // guard nor a destination: restoring it cannot undo an output, and the guard holds
+                // for every step. The outputs copy it (RZ == RZ AND scratch, and AND !scratch), the
+                // one that is also the guard last.
+                u32 scratch = 6;
+                while (scratch == guard || scratch == first || scratch == second) --scratch;
+                const u64 from_scratch = u64{scratch} << 39;
+                save_predicate(1U << scratch);
+                if (ex_compare == 2 || ex_compare == 5) {
+                    isetp(scratch, ea, eb, ex_compare, low, ex_compare == 5 ? 1U : 0U);
+                } else {
+                    isetp(scratch, ea, eb, 2, low, 0);
+                    isetp(scratch, ea, eb, ex_compare <= 3 ? 1U : 4U, from_scratch, 1); // LT/LE: LT, GT/GE: GT
+                }
+                const bool second_first = first == guard;
+                for (const u32 output : {second_first ? 1U : 0U, second_first ? 0U : 1U}) {
+                    const u32 target = output ? second : first;
+                    if (target != 7) isetp(target, 255, 255, 2, from_scratch | (u64{output} << 42), 0);
+                }
+                restore_predicate(1U << scratch);
                 break;
             }
             const u32 a = operand(0, floating), b = operand(1, floating);

@@ -290,3 +290,63 @@ TEST_CASE("Ampere IMAD with two zero factors is a move only when word 2 adds not
         REQUIRE(lowered.error == "native integer register multiply mode");
     }
 }
+
+TEST_CASE("Ampere ISETP.EX writes the 64-bit comparison and its complement without clobbering P6",
+          "[video_core][ampere][integer_add]") {
+    std::mt19937 random{0x15e7};
+    // [@Pg] ISETP.<cmp>.U32.AND.EX Pd, Pe, R1, R3, PT, Plow: the high words compared, the low
+    // words' result in Plow; Pd takes the 64-bit result and Pe its complement.
+    const auto isetp = [](u32 guard, u32 compare, u32 dest, u32 second, u32 low, bool is_signed) {
+        return Instruction{{0x020cU | (guard << 12) | (1U << 24), 3,
+                            (low << 4) | (1U << 8) | (u32{is_signed} << 9) | (compare << 12) |
+                                (dest << 17) | (second << 20) | (7U << 23),
+                            0}};
+    };
+    const std::array<std::array<u32, 2>, 6> highs{
+        {{0, 0}, {1, 2}, {2, 1}, {0xffffffff, 0}, {0, 0xffffffff}, {5, 5}}};
+    // {guard, first destination, second destination, low}: P6 as the destination, the guard
+    // and the low input, and destinations that are also the guard.
+    constexpr std::array<std::array<u32, 4>, 9> forms{{{7, 6, 7, 0},
+                                                       {6, 0, 7, 1},
+                                                       {14, 2, 7, 6},
+                                                       {7, 3, 7, 6},
+                                                       {0, 6, 7, 0},
+                                                       {7, 1, 2, 0},
+                                                       {9, 4, 1, 5},
+                                                       {7, 7, 6, 0},
+                                                       {3, 3, 6, 2}}};
+    for (const u32 compare : {1U, 2U, 3U, 4U, 5U, 6U}) {
+        for (const auto& [guard, dest, second, low] : forms) {
+            for (const bool is_signed : {false, true}) {
+                const std::array code{isetp(guard, compare, dest, second, low, is_signed), Exit};
+                for (const auto& [high_a, high_b] : highs) {
+                    for (u32 seed = 0; seed < 4; ++seed) {
+                        Machine start = Seed(random);
+                        start.registers[1] = high_a;
+                        start.registers[3] = high_b;
+                        CAPTURE(compare, guard, dest, second, low, is_signed, high_a, high_b,
+                                start.predicates);
+                        const Machine end = Run(start, code);
+                        const s64 x = is_signed ? s64{std::bit_cast<s32>(high_a)} : s64{high_a};
+                        const s64 y = is_signed ? s64{std::bit_cast<s32>(high_b)} : s64{high_b};
+                        const bool lower = start.Predicate(low);
+                        const bool result =
+                            compare == 2   ? x == y && lower
+                            : compare == 5 ? x != y || lower
+                            : compare <= 3 ? x < y || (x == y && lower)
+                                           : x > y || (x == y && lower);
+                        const bool runs = start.Predicate(guard & 7) != ((guard & 8) != 0);
+                        Machine expected = start;
+                        if (runs) {
+                            expected.SetPredicate(dest, result);
+                            expected.SetPredicate(second, !result);
+                        }
+                        REQUIRE(end.predicates == expected.predicates);
+                        for (u32 i = 0; i < 246; ++i)
+                            REQUIRE(end.registers[i] == expected.registers[i]);
+                    }
+                }
+            }
+        }
+    }
+}
