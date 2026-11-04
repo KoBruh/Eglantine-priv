@@ -1,0 +1,11 @@
+# Pokopia: load the save, then tilt the camera up to look at the sky.
+# Run: python tools/nx2/run_scenario.py tools/nx2/scenarios/pokopia_sky.txt --game <...\exefs\main>
+duration: 110
+capture_every: 60
+at 55: press A
+at 60: press A
+at 65: press A
+at 70: press A
+at 85: hold RS_UP 2.5
+at 92: hold RS_LEFT 1.5
+at 98: hold RS_UP 1.0
