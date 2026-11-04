@@ -539,9 +539,9 @@ TEST_CASE("Ampere per-tap gathers reject unknown modes and register aliases",
     REQUIRE(static_cast<bool>(LowerToMaxwell(suffix_branch)));
 }
 
-// Expected to fail: the TLD4 lowering never checks bit 60 (.SCR operand packing), bit 80 or
-// bit 91, so these encodings lower as if the bits were clear. Whether they change the
-// operation is unknown; decide before relaxing or fixing.
+// The gather lowering splits its operands as .SCR (bit 60) packs them and models neither the
+// .F16 field (bits 79-80) nor bit 91, so it rejects these encodings instead of lowering them as
+// if the bits were clear.
 TEST_CASE("Ampere per-tap gathers reject unvalidated control bits", "[video_core][ampere]") {
     const std::array<Instruction, 4> code{{
         {{0x00087802, 0xff00ff00, 0x00000f00, 0x000fe400}},

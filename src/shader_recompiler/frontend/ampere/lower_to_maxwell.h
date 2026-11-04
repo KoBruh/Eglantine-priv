@@ -2282,8 +2282,12 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             const bool split = second_dest != 255;
             const u32 scratch_start = uses_uniform_bank ? 216U : 246U;
             const u32 first_outputs = split ? std::min(2U, components) : components;
-            if (insn.Bits(61, 3) != 1 || offset_mode == 3 || insn.Bits(78, 2) ||
-                insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
+            // The operand split below is the .SCR packing (bit 60). Bits 78-80 are the depth
+            // compare and the .F16 precision field (Mesa NAK, sm70_encode.rs); bit 91 has no
+            // known meaning on this form. Anything else is rejected rather than lowered as if
+            // the bits were clear.
+            if (insn.Bits(61, 3) != 1 || offset_mode == 3 || !insn.Bits(60, 1) || insn.Bits(78, 3) ||
+                insn.Bits(91, 1) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
                 insn.Bits(40, 14) > 0x1fff || binding >= 18 || insn.Bits(89, 1) || mask == 0 ||
                 (source_a != 255 && source_a + in_a > scratch_start) ||
                 (source_b != 255 && source_b + operands - in_a > scratch_start) ||
