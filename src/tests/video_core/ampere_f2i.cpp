@@ -390,11 +390,21 @@ TEST_CASE("Ampere formatted buffer stores retain strict mode and operand bounds"
     REQUIRE(static_cast<bool>(one_dimensional_store));
     REQUIRE(one_dimensional_store.instructions.front() ==
             (0xeb20000000070000ULL | 4 | (15ULL << 20) | (1ULL << 51)));
-    for (const u32 bit : {59U, 60U, 72U, 80U, 84U, 91U}) {
+    for (const u32 bit : {59U, 60U, 80U, 84U, 91U}) {
         auto invalid = code;
         invalid[0].words[bit / 32] ^= 1U << (bit % 32);
         REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
     }
+    // A partial channel mask (72-75) carries over to Maxwell's (20-23), whose store keeps the
+    // texel's other channels; an empty mask stores nothing and is rejected.
+    auto partial = code;
+    partial[0].words[2] ^= 1U << 8;
+    const auto partial_store = LowerToMaxwell(partial);
+    REQUIRE(static_cast<bool>(partial_store));
+    REQUIRE(((partial_store.instructions.front() >> 20) & 0xf) == 0xe);
+    auto empty_mask = code;
+    empty_mask[0].words[2] &= ~0xf00U;
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(empty_mask)));
     auto invalid = code;
     invalid[0].words[1] = 0x20c000fd;
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));

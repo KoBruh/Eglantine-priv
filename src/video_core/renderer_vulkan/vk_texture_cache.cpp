@@ -1568,6 +1568,28 @@ bool TextureCacheRuntime::WantsTemporalUpscaleDepth() const {
     return !force_standin && !fsr3_unsupported;
 }
 
+bool TextureCacheRuntime::UsesNvidiaDlss() const {
+#ifdef EGLANTINE_STREAMLINE
+    static const bool force_fsr = [] {
+        const char* const value = std::getenv("EDEN_NX2_DLSS_REPLACEMENT");
+        return value && std::string_view{value} == "fsr";
+    }();
+    return !force_fsr && !dlss_unsupported && Streamline::IsDlssAvailable();
+#else
+    return false;
+#endif
+}
+
+std::optional<VideoCore::GameDlssProbe> TextureCacheRuntime::ProbeGameDlssOutput(
+    ImageView& input, ImageView& output) {
+    if (!dlss_network_probe) {
+        dlss_network_probe = std::make_unique<DlssNetworkProbe>(
+            device, scheduler, descriptor_pool, compute_pass_descriptor_queue, memory_allocator);
+    }
+    return dlss_network_probe->Probe(input.Handle(Shader::TextureType::Color2D),
+                                     output.Handle(Shader::TextureType::Color2D));
+}
+
 bool TextureCacheRuntime::UpscaleWithFsr3(Framebuffer* dst_framebuffer, ImageView& input_color,
                                           ImageView& motion_vectors, ImageView& depth,
                                           std::array<u32, 2> render_size,
@@ -4454,7 +4476,9 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
                                     ImageView* depth_buffer, bool is_rescaled_) {
     boost::container::small_vector<VkImageView, NUM_RT * 2 + 2> attachments;
     RenderPassKey renderpass_key{};
-    s32 num_layers = 1;
+    // A framebuffer can't have more layers than any of its attachments: one with more layers
+    // than a color target makes the driver write the extra layers past that image's memory.
+    s32 num_layers = (std::numeric_limits<s32>::max)();
 
     is_rescaled = is_rescaled_;
     const auto& resolution = runtime.resolution;
@@ -4473,7 +4497,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
                                               : color_buffer->size.height);
         attachments.push_back(color_buffer->RenderTarget());
         renderpass_key.color_formats[index] = color_buffer->format;
-        num_layers = (std::max)(num_layers, color_buffer->range.extent.layers);
+        num_layers = (std::min)(num_layers, color_buffer->range.extent.layers);
         images[num_images] = color_buffer->ImageHandle();
         image_ranges[num_images] = MakeSubresourceRange(color_buffer);
         rt_map[index] = num_images;
@@ -4490,7 +4514,7 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
                                               : depth_buffer->size.height);
         attachments.push_back(depth_buffer->RenderTarget());
         renderpass_key.depth_format = depth_buffer->format;
-        num_layers = (std::max)(num_layers, depth_buffer->range.extent.layers);
+        num_layers = (std::min)(num_layers, depth_buffer->range.extent.layers);
         images[num_images] = depth_buffer->ImageHandle();
         const VkImageSubresourceRange subresource_range = MakeSubresourceRange(depth_buffer);
         image_ranges[num_images] = subresource_range;
@@ -4502,6 +4526,9 @@ void Framebuffer::CreateFramebuffer(TextureCacheRuntime& runtime,
         depth_aspect_mask = subresource_range.aspectMask;
     } else {
         renderpass_key.depth_format = PixelFormat::Invalid;
+    }
+    if (num_layers == (std::numeric_limits<s32>::max)()) {
+        num_layers = 1;
     }
     renderpass_key.samples = samples;
     const bool do_resolve_color = ENABLE_MSAA_TILER_RESOLVE &&

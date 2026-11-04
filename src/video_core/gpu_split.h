@@ -123,7 +123,8 @@ public:
         last_writer_position = write_position;
     }
     /// Waits until the back executed the compute and copy work sent so far (not what came after).
-    void WaitForWriters();
+    /// Returns whether any of it was still queued.
+    bool WaitForWriters();
 
 private:
     enum class Kind : u64 {
@@ -196,14 +197,14 @@ private:
     static GpuSplit instance;
     static inline thread_local bool back_thread_context{};
 
-    // Aligned to 128 bytes to prevent both false sharing and spatial prefetcher interference
-    // between front and back threads on modern x86-64 multi-core architectures.
+    // 128 bytes: x86 spatial prefetchers pull 64-byte lines in pairs. back_waiting and wake are
+    // always touched together by both threads, so they share a block.
     alignas(128) std::atomic<u64> published{};
     alignas(128) std::atomic<u64> consumed{};
     /// A position the front waits for (WaitForWriters): the back stores `consumed` once past it.
     alignas(128) std::atomic<u64> wait_target{~u64{0}};
     alignas(128) std::atomic<bool> back_waiting{};
-    alignas(128) std::atomic<u32> wake{};
+    std::atomic<u32> wake{};
     std::jthread back_thread;
 };
 

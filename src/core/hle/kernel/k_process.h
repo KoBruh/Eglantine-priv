@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <map>
 
 #include "core/arm/arm_interface.h"

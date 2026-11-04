@@ -67,6 +67,10 @@ public:
 
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
 
+    [[nodiscard]] bool IsNativeProgram() const override;
+
+    [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
+
     [[nodiscard]] std::optional<u64> Analyze();
 
     void SetCachedSize(size_t size_bytes);
@@ -123,6 +127,7 @@ protected:
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;
     ::Common::unordered_map<u32, u32> texture_sampler_states;
     ::Common::unordered_map<u64, u32> cbuf_values;
+    ::Common::unordered_map<u64, u8> storage_pointer_types; ///< IsCbufStorageBufferPointer answers
     ::Common::unordered_map<u64, Shader::ReplaceConstant> cbuf_replacements;
 
     u32 local_memory_size{};
@@ -263,6 +268,10 @@ public:
 
     [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
 
+    [[nodiscard]] bool IsNativeProgram() const override;
+
+    [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
+
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 
     [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) override;
@@ -300,6 +309,7 @@ private:
     ::Common::unordered_map<u32, Shader::TexturePixelFormat> texture_pixel_formats;
     ::Common::unordered_map<u32, u32> texture_sampler_states;
     ::Common::unordered_map<u64, u32> cbuf_values;
+    ::Common::unordered_map<u64, u8> storage_pointer_types;
     ::Common::unordered_map<u64, Shader::ReplaceConstant> cbuf_replacements;
     std::array<u32, 3> workgroup_size{};
     u32 local_memory_size{};

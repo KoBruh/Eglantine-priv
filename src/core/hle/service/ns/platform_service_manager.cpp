@@ -213,6 +213,8 @@ void IPlatformServiceManager::GetBuiltInFontSharedMemory(HLERequestContext& ctx)
 // nn::pl::GetSharedFontAddress(SharedFontType) passes its argument straight through, and
 // nn::pl::GetSharedFont requests types {0, 1, 2, 3, 4, 5}, the order of Eden's shared fonts.
 void IPlatformServiceManager::GetBuiltInFontData(HLERequestContext& ctx) {
+    // The SDK packs the type in the first byte and the bool in the second; the two bytes after them
+    // are padding, left as whatever was on the caller's stack.
     IPC::RequestParser rp{ctx};
     const u8 type = rp.Pop<u8>();
     const bool flag = rp.Pop<u8>() != 0;

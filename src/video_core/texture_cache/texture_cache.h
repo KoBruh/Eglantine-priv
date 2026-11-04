@@ -696,14 +696,13 @@ SamplerId TextureCache<P>::GetSamplerId(u32 index, bool compute) {
         LOG_TRACE(HW_GPU, "Invalid sampler index={}", index);
         return NULL_SAMPLER_ID;
     }
-    auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
     if (is_new) {
         auto const id = FindSampler(descriptor, compute);
-        channel_state->sampler_ids.insert_or_assign(map_index, id);
+        table.bound_ids[index] = id;
         return id;
     }
-    return channel_state->sampler_ids.find(map_index)->second;
+    return table.bound_ids[index];
 }
 
 template <class P>
@@ -916,8 +915,6 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
         LOG_TRACE(HW_GPU, "Invalid image view index={}", index);
         return NULL_IMAGE_VIEW_ID;
     }
-    auto const map_index = index | (compute ? Common::SlotId::TAGGED_VALUE : 0);
-    // Is new (on the tegra engine side)?
     auto const [descriptor, is_new] = table.Read(*gpu_memory, index);
     if (is_new) {
         static const bool trace_native_image = std::getenv("EDEN_NX2_IMAGE_TRACE") != nullptr;
@@ -934,7 +931,6 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
                      fmt::join(descriptor.raw, " "));
         }
         if (IsValidEntry(*gpu_memory, descriptor)) {
-            // Is new (registered view) on the texture cache side?
             const auto [pair, is_new_tc] = channel_state->image_views.try_emplace(descriptor);
             if (is_new_tc) {
                 pair->second = CreateImageView(descriptor);
@@ -944,16 +940,16 @@ ImageViewId TextureCache<P>::VisitImageView(u32 index, bool compute) {
                 }
             }
             PrepareImageView(pair->second, false, false);
-            channel_state->image_view_ids.insert_or_assign(map_index, pair->second);
+            table.bound_ids[index] = pair->second;
             return pair->second;
         }
-        channel_state->image_view_ids.insert_or_assign(map_index, NULL_IMAGE_VIEW_ID);
+        table.bound_ids[index] = NULL_IMAGE_VIEW_ID;
         return NULL_IMAGE_VIEW_ID;
     }
-    auto const it = channel_state->image_view_ids.find(map_index);
-    if (it->second != NULL_IMAGE_VIEW_ID)
-        PrepareImageView(it->second, false, false);
-    return it->second;
+    const auto id = table.bound_ids[index];
+    if (id != NULL_IMAGE_VIEW_ID)
+        PrepareImageView(id, false, false);
+    return id;
 }
 
 template <class P>
@@ -1276,6 +1272,59 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
                           copy.operation);
     }
     return true;
+}
+
+template <class P>
+std::optional<VideoCore::GameDlssProbe> TextureCache<P>::ProbeGameDlssOutput(
+    const Tegra::Engines::Fermi2D::Surface& dst, const Tegra::Engines::Fermi2D::Surface& src) {
+    if constexpr (FRAMEBUFFER_BLITS) {
+        return std::nullopt;
+    } else {
+        const Tegra::Engines::Fermi2D::Config copy{
+            .operation = Tegra::Engines::Fermi2D::Operation::SrcCopy,
+            .filter = Tegra::Engines::Fermi2D::Filter::Point,
+            .must_accelerate = true,
+            .dst_x0 = 0,
+            .dst_y0 = 0,
+            .dst_x1 = static_cast<s32>(dst.width),
+            .dst_y1 = static_cast<s32>(dst.height),
+            .src_x0 = 0,
+            .src_y0 = 0,
+            .src_x1 = static_cast<s32>(src.width),
+            .src_y1 = static_cast<s32>(src.height),
+        };
+        const auto result = GetBlitImages(dst, src, copy);
+        if (!result) {
+            return std::nullopt;
+        }
+        const ImageId dst_id = result->dst_id;
+        const ImageId src_id = result->src_id;
+        PrepareImage(src_id, false, false);
+        PrepareImage(dst_id, false, false);
+        for (const ImageId id : {src_id, dst_id}) {
+            // The network runs only at the game's own resolution.
+            if (slot_images[id].info.num_samples != 1 ||
+                True(slot_images[id].flags & ImageFlagBits::Rescaled)) {
+                return std::nullopt;
+            }
+        }
+        const auto view = [&](ImageId id, const Tegra::Engines::Fermi2D::Surface& surface,
+                              PixelFormat format) -> std::optional<ImageViewId> {
+            const std::optional base = slot_images[id].TryFindBase(surface.Address());
+            if (!base) {
+                return std::nullopt;
+            }
+            const SubresourceRange range{.base = *base, .extent = {1, 1}};
+            return FindOrEmplaceImageView(id, ImageViewInfo(ImageViewType::e2D, format, range));
+        };
+        const auto src_view = view(src_id, src, result->src_format);
+        const auto dst_view = view(dst_id, dst, result->dst_format);
+        if (!src_view || !dst_view) {
+            return std::nullopt;
+        }
+        return runtime.ProbeGameDlssOutput(slot_image_views[*src_view],
+                                           slot_image_views[*dst_view]);
+    }
 }
 
 template <class P>
@@ -2354,12 +2403,10 @@ void TextureCache<P>::InvalidateScale(Image& image) {
         auto& channel_info = channel_storage[c];
 
 #ifndef NDEBUG
-        // A walk over every entry (title 1: ~5,400 in 5 channels) for each deleted image: debug
-        // builds only. The tables are invalidated below, so each entry is written again before
-        // it is read.
-        if constexpr (ENABLE_VALIDATION)
-            for (auto& e : channel_info.image_view_ids)
-                e.second = CORRUPT_ID;
+        if constexpr (ENABLE_VALIDATION) {
+            std::ranges::fill(channel_info.graphics_image_table.bound_ids, CORRUPT_ID);
+            std::ranges::fill(channel_info.compute_image_table.bound_ids, CORRUPT_ID);
+        }
 #endif
         channel_info.graphics_image_table.Invalidate();
         channel_info.compute_image_table.Invalidate();
@@ -3858,12 +3905,10 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
     for (size_t c : active_channel_ids) {
         auto& channel_info = channel_storage[c];
 #ifndef NDEBUG
-        // A walk over every entry (title 1: ~5,400 in 5 channels) for each deleted image: debug
-        // builds only. The tables are invalidated below, so each entry is written again before
-        // it is read.
-        if constexpr (ENABLE_VALIDATION)
-            for (auto& e : channel_info.image_view_ids)
-                e.second = CORRUPT_ID;
+        if constexpr (ENABLE_VALIDATION) {
+            std::ranges::fill(channel_info.graphics_image_table.bound_ids, CORRUPT_ID);
+            std::ranges::fill(channel_info.compute_image_table.bound_ids, CORRUPT_ID);
+        }
 #endif
         channel_info.graphics_image_table.Invalidate();
         channel_info.compute_image_table.Invalidate();

@@ -22,7 +22,6 @@ add_executable(tests
     common/slot_vector.cpp
     common/undefined_fix.cpp
     common/unique_function.cpp
-    common/game_presets.cpp
     common/zstd_compression.cpp
     core/core_timing.cpp
     core/deconstructed_rom_directory.cpp
@@ -63,11 +62,13 @@ add_executable(tests
     video_core/physical_alias.cpp
     video_core/h264_packet.cpp
     video_core/vertex_repack.cpp
+    video_core/ampere_lowering.cpp
+    video_core/ampere_geometry.cpp
+    video_core/ampere_i2f.cpp
     video_core/ampere_returns.cpp
     video_core/guardband.cpp
     video_core/ampere_gather.cpp
     video_core/ampere_sample.cpp
-    video_core/ampere_geometry.cpp
     video_core/native_clip.cpp
     video_core/native_qmd.cpp
     video_core/ampere_tensor.cpp
@@ -91,6 +92,7 @@ add_executable(tests
     video_core/descriptor_table.cpp
     video_core/shader_invalidation.cpp
     video_core/ampere_guarded_ulea.cpp
+    video_core/ampere_compute_lowering.cpp
     video_core/native_macro_fifo.cpp
     video_core/uniform_stream_reuse.cpp
     input_common/calibration_configuration_job.cpp
