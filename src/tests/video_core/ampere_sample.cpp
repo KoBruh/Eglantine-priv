@@ -100,10 +100,10 @@ TEST_CASE("Ampere per-lane bindless sample rejects unproven modes", "[ampere-sam
     REQUIRE_FALSE(Lower(instruction));
 }
 
-// Left failing on purpose. Both forms leave the per-lane path for the general TEX.B
-// operand-list lowering, which reads the operands in another layout (the handle first in Ra,
-// the destination at bits 16..23) and does not check bit 80. Which layout is right for these
-// encodings is not established, so this keeps the original expectation.
+// The per-lane path reads its own operand layout (u at bits 16..23, the descriptor in Rb, the
+// result at bits 64..71); the general TEX.B form reads another (u, v in Ra, the handle in Rb).
+// A scalar 2D TEX.B the per-lane path does not take is rejected rather than read in the other
+// layout.
 TEST_CASE("Ampere per-lane bindless sample rejects forms outside its captured layout",
           "[ampere-sample]") {
     auto instruction = PerLaneSample;

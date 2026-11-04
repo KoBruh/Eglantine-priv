@@ -642,10 +642,10 @@ TEST_CASE("Ampere register bindless textures preserve scalar and vector operand 
     }
 }
 
-// Expected to fail: before merge 79f5354b1a, 0x361 shared the 0xb60 case and its general path
-// lowered this vector-packed (no .SCR, bit 60 clear) array depth-compare TEX.B, coordinates
-// from Ra..Ra+2, handle and reference from Rb/Rb+1. The merge kept a separate 0x361 case whose
-// fallback requires .SCR, so it is rejected now and 0xb60's native_bindless handling is dead.
+// The TEX.B forms case 0x361 does not take itself (the per-lane 2D and the cube ones) go to
+// 0xb60's general form, as they did before merge 79f5354b1a: this vector-packed (no .SCR, bit 60
+// clear) array depth-compare TEX.B has its coordinates in Ra..Ra+2 and the handle and reference
+// in Rb/Rb+1.
 TEST_CASE("Ampere register bindless textures lower vector-packed operands",
           "[video_core][ampere]") {
     const std::array<Instruction, 2> code{{
@@ -689,9 +689,9 @@ TEST_CASE("Ampere register bindless textures reject unsupported modifiers and sc
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
 }
 
-// Expected to fail: the cube form rejects bits 80 and 91 and falls through to the generic
-// uniform/bindless TEX lowering, which never checks either bit and lowers the instruction as
-// if they were clear. Their meaning is unknown; decide before relaxing or fixing.
+// The cube form rejects bits 80 and 91 and leaves the instruction to the general TEX.B form,
+// which rejects them too (bit 80 is the high bit of the .F16 field) instead of lowering the
+// instruction as if they were clear.
 TEST_CASE("Ampere register bindless textures reject unvalidated control bits",
           "[video_core][ampere]") {
     const std::array<Instruction, 2> code{{

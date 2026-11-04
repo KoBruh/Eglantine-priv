@@ -2368,7 +2368,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                     (count > 1 && ((dest & 1) || dest + 1 >= limit)) ||
                     (count <= 2 ? second != 255 : second >= limit) ||
                     (count == 4 && ((second & 1) || second + 1 >= limit)))
-                    goto native_texture_operand_list;
+                    goto native_bindless_texture; // same operand order as the general form
                 const auto copy = [&](u32 target, u32 source) {
                     emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
                 };
@@ -2386,16 +2386,18 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             // Captured samples print `TEX.SCR.B[.NODEP] d, u, v, handle`: the descriptor is a
             // register holding the same masked texture handle the uniform form takes from UR,
             // computed under the same predicate as the sample itself.
+            // This operand layout differs from the general form's (u, v | handle), so a scalar 2D
+            // TEX.B this path does not take is rejected rather than read in the other layout.
+            if ((insn.words[1] & 0xffffff00U) != 0x38000000U) goto native_bindless_texture;
             const u32 tex_u = insn.Bits(16, 8), tex_v = insn.Bits(24, 8);
             const u32 descriptor = insn.Bits(32, 8);
             const u32 mask = insn.Bits(72, 4), sample_dest = insn.Bits(64, 8);
             const u32 count = static_cast<u32>(std::popcount(mask));
-            if ((insn.words[1] & 0xffffff00U) != 0x38000000U ||
-                (insn.words[2] & ~0x04000fffU) != 0x001e0000U || count == 0 ||
+            if ((insn.words[2] & ~0x04000fffU) != 0x001e0000U || insn.Bits(96, 9) || count == 0 ||
                 (tex_u != 255 && tex_u >= 216) || (tex_v != 255 && tex_v >= 216) ||
                 descriptor == 255 ||
                 (sample_dest != 255 && sample_dest + count > 216))
-                goto native_texture_operand_list;
+                return fail(index, "native per-lane bindless sample mode");
             const auto copy = [&](u32 target, u32 source) {
                 emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) |
                      (u64{source} << 20));
@@ -2412,6 +2414,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             }
             break;
         }
+        native_bindless_texture: // the other TEX.B forms, through the general form below
         case 0xb60: { // TEX, scalar 2D implicit-LOD sample
             const bool half = insn.Bits(79, 1);
             const bool native_bindless = opcode == 0x361;
@@ -2424,6 +2427,98 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             const bool depth_compare = insn.Bits(78, 1);
             const u32 dimension = insn.Bits(61, 3), lod = insn.Bits(87, 3);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
+            // General form: gather the native operand list (array index first, coordinates,
+            // then LOD/bias and the depth reference) into Maxwell TEX's coordinate and meta
+            // registers, sample into scratch and copy the packed components out. Native packs
+            // up to four values as halves of Ra and Rb (1+1, 2+1, 2+2), five or more as 4+n.
+            const auto general_tex = [&]() -> bool {
+                constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
+                constexpr std::array<u32, 8> maxwell_type{0, 2, 4, 6, 1, 3, 0, 7};
+                const bool offsets = insn.Bits(76, 1) != 0;
+                if (dimension == 6 || insn.Bits(77, 1) || insn.Bits(80, 1) || insn.Bits(91, 1) ||
+                    insn.Bits(81, 3) != 7 || insn.Bits(59, 1) != u32{native_bindless} ||
+                    (native_bindless ? insn.Bits(40, 19) != 0 :
+                     (insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18)) ||
+                    (lod > 3 && lod != 6 && lod != 7) ||
+                    (depth_compare && mask != 1) || mask == 0)
+                    return false;
+                const u32 coordinates = coordinate_count[dimension];
+                const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
+                const u32 count = coordinates + u32{native_bindless} + (has_lod ? 1 : 0) +
+                                  (offsets ? 1 : 0) + (depth_compare ? 1 : 0);
+                const u32 in_a = insn.Bits(60, 1) ? (count <= 4 ? (count + 1) / 2 : 4) : coordinates;
+                const auto value = [&](u32 i) -> u32 {
+                    if (i < in_a) return source_a == 255 ? 255U : source_a + i;
+                    return source_b == 255 ? 255U : source_b + (i - in_a);
+                };
+                const u32 limit = uses_uniform_bank ? 216U : 246U;
+                const u32 components = static_cast<u32>(std::popcount(mask));
+                const u32 low_count = insn.Bits(79, 1) ? (split ? 1U : (components + 1) / 2) :
+                                      split ? std::min(components, 2U) : components;
+                const u32 high_count = insn.Bits(79, 1) ? 1U : components > 2 ? components - 2 : 0;
+                if ((source_a != 255 && source_a + in_a > limit) ||
+                    (count > in_a && source_b != 255 && source_b + (count - in_a) > limit) ||
+                    (dest != 255 && dest + low_count > limit) ||
+                    (split && second_dest + high_count > limit))
+                    return false;
+                const u32 binding = insn.Bits(54, 5);
+                const bool bindless = native_bindless ||
+                    (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding);
+                if (!bindless) result.required_texture_buffer = binding;
+                const auto copy = [&](u32 target, u32 source) {
+                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
+                };
+                // Coordinates to R250.., then LOD/bias, offsets and reference to R246...
+                for (u32 i = 0; i < coordinates; ++i) copy(250 + i, value(i));
+                u32 meta = 246;
+                u32 next = coordinates;
+                if (native_bindless) copy(meta++, value(next++));
+                else if (bindless) {
+                    emit(0x4c98000000000000ULL | predicate | meta++ | (u64{15} << 39) |
+                         (u64{insn.Bits(40, 14)} << 20) | (u64{binding} << 34));
+                }
+                if (has_lod) copy(meta++, value(next++));
+                if (offsets) copy(meta++, value(next++));
+                if (depth_compare) copy(meta++, value(next++));
+                emit((bindless ? 0xde80000000000000ULL : 0xc000000000000000ULL) | predicate | 250 | (u64{250} << 8) |
+                     (u64{meta == 246 ? 255U : 246U} << 20) | (u64{maxwell_type[dimension]} << 28) |
+                     (u64{mask} << 31) | (bindless ? 0ULL : u64{insn.Bits(40, 14)} << 36) |
+                     (u64{insn.Bits(90, 1)} << 49) | (u64{depth_compare} << 50) | (u64{7} << 51) |
+                     (u64{offsets} << (bindless ? 36 : 54)) | (u64{lod} << (bindless ? 37 : 55)));
+                if (insn.Bits(79, 1)) {
+                    // FP16 results: (c0, c1) packed into the first destination, (c2, c3) into
+                    // the second (F2F writes the half in the low 16 bits; ISCADD merges).
+                    const auto pack = [&](u32 target, u32 low, u32 high) {
+                        if (target == 255) return;
+                        emit(0x5ca8000000000000ULL | predicate | 246 | (u64{1} << 8) | (u64{2} << 10) | (u64{low} << 20));
+                        emit(0x5ca8000000000000ULL | predicate | 247 | (u64{1} << 8) | (u64{2} << 10) | (u64{high} << 20));
+                        emit(0x5c18000000000000ULL | predicate | target | (u64{247} << 8) | (u64{246} << 20) | (u64{16} << 39));
+                    };
+                    pack(static_cast<u32>(dest), 250, components > 1 ? 251U : 255U);
+                    if (components > 2) {
+                        pack(split ? second_dest : (dest == 255 ? 255U : static_cast<u32>(dest) + 1),
+                             252, components > 3 ? 253U : 255U);
+                    }
+                    return true;
+                }
+                for (u32 i = 0; i < components; ++i) {
+                    u32 target = 255;
+                    if (!split) target = dest == 255 ? 255U : static_cast<u32>(dest) + i;
+                    else if (i < 2) target = dest == 255 ? 255U : static_cast<u32>(dest) + i;
+                    else target = second_dest + (i - 2);
+                    if (target != 255) copy(target, 250 + i);
+                }
+                return true;
+            };
+            // TEX.B (0x361) forms case 0x361 leaves to the general form. The handle is the value
+            // right after the coordinates: Ra holds the array index and the coordinates, Rb the
+            // handle, LOD/bias, offsets and depth reference (Mesa NAK, nak_nir_lower_tex.c, SM70),
+            // and .SCR packs four or fewer values as halves of both. The forms below read a bound
+            // descriptor from the constant buffer, so none of them applies.
+            if (native_bindless) {
+                if (!general_tex()) return fail(index, "native texture mode or descriptor binding");
+                break;
+            }
             // Register numbers from here on are scratch (uniform registers live from 216 on).
             const u32 reserved_register = uses_uniform_bank ? 216U : 246U;
             // A texture from a second descriptor bank (a native program may sample from several):
@@ -2712,89 +2807,6 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                          250 + component);
                 break;
             }
-            // General form: gather the native operand list (array index first, coordinates,
-            // then LOD/bias and the depth reference) into Maxwell TEX's coordinate and meta
-            // registers, sample into scratch and copy the packed components out. Native packs
-            // up to four values as halves of Ra and Rb (1+1, 2+1, 2+2), five or more as 4+n.
-            const auto general_tex = [&]() -> bool {
-                constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
-                constexpr std::array<u32, 8> maxwell_type{0, 2, 4, 6, 1, 3, 0, 7};
-                const bool offsets = insn.Bits(76, 1) != 0;
-                if (dimension == 6 || insn.Bits(77, 1) || insn.Bits(80, 1) || insn.Bits(91, 1) ||
-                    insn.Bits(81, 3) != 7 || insn.Bits(59, 1) != u32{native_bindless} ||
-                    (native_bindless ? insn.Bits(40, 19) != 0 :
-                     (insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18)) ||
-                    (lod > 3 && lod != 6 && lod != 7) ||
-                    (depth_compare && mask != 1) || mask == 0)
-                    return false;
-                const u32 coordinates = coordinate_count[dimension];
-                const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
-                const u32 count = coordinates + u32{native_bindless} + (has_lod ? 1 : 0) +
-                                  (offsets ? 1 : 0) + (depth_compare ? 1 : 0);
-                const u32 in_a = insn.Bits(60, 1) ? (count <= 4 ? (count + 1) / 2 : 4) : coordinates;
-                const auto value = [&](u32 i) -> u32 {
-                    if (i < in_a) return source_a == 255 ? 255U : source_a + i;
-                    return source_b == 255 ? 255U : source_b + (i - in_a);
-                };
-                const u32 limit = uses_uniform_bank ? 216U : 246U;
-                const u32 components = static_cast<u32>(std::popcount(mask));
-                const u32 low_count = insn.Bits(79, 1) ? (split ? 1U : (components + 1) / 2) :
-                                      split ? std::min(components, 2U) : components;
-                const u32 high_count = insn.Bits(79, 1) ? 1U : components > 2 ? components - 2 : 0;
-                if ((source_a != 255 && source_a + in_a > limit) ||
-                    (count > in_a && source_b != 255 && source_b + (count - in_a) > limit) ||
-                    (dest != 255 && dest + low_count > limit) ||
-                    (split && second_dest + high_count > limit))
-                    return false;
-                const u32 binding = insn.Bits(54, 5);
-                const bool bindless = native_bindless ||
-                    (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding);
-                if (!bindless) result.required_texture_buffer = binding;
-                const auto copy = [&](u32 target, u32 source) {
-                    emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
-                };
-                // Coordinates to R250.., then LOD/bias, offsets and reference to R246...
-                for (u32 i = 0; i < coordinates; ++i) copy(250 + i, value(i));
-                u32 meta = 246;
-                u32 next = coordinates;
-                if (native_bindless) copy(meta++, value(next++));
-                else if (bindless) {
-                    emit(0x4c98000000000000ULL | predicate | meta++ | (u64{15} << 39) |
-                         (u64{insn.Bits(40, 14)} << 20) | (u64{binding} << 34));
-                }
-                if (has_lod) copy(meta++, value(next++));
-                if (offsets) copy(meta++, value(next++));
-                if (depth_compare) copy(meta++, value(next++));
-                emit((bindless ? 0xde80000000000000ULL : 0xc000000000000000ULL) | predicate | 250 | (u64{250} << 8) |
-                     (u64{meta == 246 ? 255U : 246U} << 20) | (u64{maxwell_type[dimension]} << 28) |
-                     (u64{mask} << 31) | (bindless ? 0ULL : u64{insn.Bits(40, 14)} << 36) |
-                     (u64{insn.Bits(90, 1)} << 49) | (u64{depth_compare} << 50) | (u64{7} << 51) |
-                     (u64{offsets} << (bindless ? 36 : 54)) | (u64{lod} << (bindless ? 37 : 55)));
-                if (insn.Bits(79, 1)) {
-                    // FP16 results: (c0, c1) packed into the first destination, (c2, c3) into
-                    // the second (F2F writes the half in the low 16 bits; ISCADD merges).
-                    const auto pack = [&](u32 target, u32 low, u32 high) {
-                        if (target == 255) return;
-                        emit(0x5ca8000000000000ULL | predicate | 246 | (u64{1} << 8) | (u64{2} << 10) | (u64{low} << 20));
-                        emit(0x5ca8000000000000ULL | predicate | 247 | (u64{1} << 8) | (u64{2} << 10) | (u64{high} << 20));
-                        emit(0x5c18000000000000ULL | predicate | target | (u64{247} << 8) | (u64{246} << 20) | (u64{16} << 39));
-                    };
-                    pack(static_cast<u32>(dest), 250, components > 1 ? 251U : 255U);
-                    if (components > 2) {
-                        pack(split ? second_dest : (dest == 255 ? 255U : static_cast<u32>(dest) + 1),
-                             252, components > 3 ? 253U : 255U);
-                    }
-                    return true;
-                }
-                for (u32 i = 0; i < components; ++i) {
-                    u32 target = 255;
-                    if (!split) target = dest == 255 ? 255U : static_cast<u32>(dest) + i;
-                    else if (i < 2) target = dest == 255 ? 255U : static_cast<u32>(dest) + i;
-                    else target = second_dest + (i - 2);
-                    if (target != 255) copy(target, 250 + i);
-                }
-                return true;
-            };
             if (split) {
                 for (u32 i = 0; i < rgba_masks.size(); ++i) if (rgba_masks[i] == mask) swizzle = i;
             } else {
@@ -2843,8 +2855,7 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                  (u64{swizzle} << 50) | (u64{dimension == 5 ? (lod ? 8U : 7U) : depth_compare ? (lod ? 6U : 4U) : (lod == 3 ? 3U : lod ? 2U : 1U)} << 53));
             break;
         }
-        // TEX.B (0x361): the bindless handle is the first value of the operand list (Ra).
-        // TEX (0xf60) with a uniform texture handle in URn. Forms the cases above reject.
+        // TEX (0xf60) with a uniform texture handle in URn: the forms its case above rejects.
         native_texture_operand_list: {
             const u32 mask = insn.Bits(72, 4);
             const u32 second_dest = insn.Bits(64, 8);
@@ -2853,22 +2864,18 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             const u32 dimension = insn.Bits(61, 3), lod = insn.Bits(87, 3);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
             const bool offsets = insn.Bits(76, 1) != 0;
-            const u32 handle_ureg = insn.Bits(40, 6);
-            const bool bindless = opcode == 0x361;
-            const u32 handle_reg = bindless ? source_a : uniform_register(handle_ureg);
+            const u32 handle_reg = uniform_register(insn.Bits(40, 6));
             constexpr std::array<u32, 8> coordinate_count{1, 2, 3, 3, 2, 3, 0, 4};
             constexpr std::array<u32, 8> maxwell_type{0, 2, 4, 6, 1, 3, 0, 7};
             const u32 reg_limit = uses_uniform_bank ? 216U : 246U;
-            if (handle_reg == ~0U || handle_reg == 255 || (bindless && handle_reg >= reg_limit) ||
-                (bindless ? (insn.Bits(40, 19) != 0 || !insn.Bits(59, 1)) : insn.Bits(46, 14) != 0) ||
+            if (handle_reg == ~0U || handle_reg == 255 || insn.Bits(46, 14) != 0 ||
                 dimension == 6 || insn.Bits(77, 1) || insn.Bits(81, 3) != 7 ||
                 (lod > 3 && lod != 6 && lod != 7) || (depth_compare && mask != 1) || mask == 0 ||
                 insn.Bits(79, 1) || !insn.Bits(60, 1))
-                return fail(index, opcode == 0x361 ? "native texture mode or descriptor binding" : "native uniform texture mode");
+                return fail(index, "native uniform texture mode");
             const u32 coordinates = coordinate_count[dimension];
             const bool has_lod = lod == 2 || lod == 3 || lod == 6 || lod == 7;
-            const u32 first = bindless ? 1U : 0U;
-            const u32 count = first + coordinates + (has_lod ? 1 : 0) + (offsets ? 1 : 0) + (depth_compare ? 1 : 0);
+            const u32 count = coordinates + (has_lod ? 1 : 0) + (offsets ? 1 : 0) + (depth_compare ? 1 : 0);
             const u32 in_a = count <= 4 ? (count + 1) / 2 : 4;
             const auto value = [&](u32 i) -> u32 {
                 if (i < in_a) return source_a == 255 ? 255U : source_a + i;
@@ -2882,14 +2889,14 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 (count > in_a && source_b != 255 && source_b + (count - in_a) > reg_limit) ||
                 (dest != 255 && dest + low_count > reg_limit) ||
                 (split && second_dest + high_count > reg_limit))
-                return fail(index, opcode == 0x361 ? "native texture mode or descriptor binding" : "native uniform texture register overflow");
+                return fail(index, "native uniform texture register overflow");
             const auto copy = [&](u32 target, u32 source) {
                 emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) | (u64{source} << 20));
             };
-            for (u32 i = 0; i < coordinates; ++i) copy(250 + i, value(first + i));
+            for (u32 i = 0; i < coordinates; ++i) copy(250 + i, value(i));
             u32 meta = 246;
             copy(meta++, handle_reg);
-            u32 next = first + coordinates;
+            u32 next = coordinates;
             if (has_lod) copy(meta++, value(next++));
             if (offsets) copy(meta++, value(next++));
             if (depth_compare) copy(meta++, value(next++));
