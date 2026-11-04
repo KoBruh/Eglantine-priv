@@ -900,10 +900,14 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 emit(base(0x5c10000000000000ULL) | (u64{insn.Bits(64, 8)} << 8) | (u64{250} << 20));
                 break;
             }
-            if (insn.Bits(24, 8) == 255 && insn.Bits(32, 8) == 255) {
-                // Both factors are RZ, so only the addend survives: a move with IMAD modifiers.
+            if (insn.Bits(24, 8) == 255 && insn.Bits(32, 8) == 255 && !(insn.words[1] & ~0x800000ffU) &&
+                (insn.words[2] & ~0xbffU) == 0x078e0000) {
+                // Both factors are RZ, so only the addend survives: a move. Word 2 may differ from the
+                // plain form only where that cannot change it (72 negates the zero product, 73 makes
+                // it signed) or in c's negation (75); .X, a carry input or a predicate output is not a
+                // move, and is rejected below.
                 emit(0x5c10000000000000ULL | predicate | dest | (u64{255} << 8) |
-                     (u64{insn.Bits(64, 8)} << 20));
+                     (u64{insn.Bits(64, 8)} << 20) | (u64{insn.Bits(75, 1)} << 48));
                 break;
             }
             if ((insn.words[2] & ~0x2ffU) != 0x078e0000 || (insn.words[1] & ~0xffU))

@@ -264,3 +264,29 @@ TEST_CASE("Ampere IADD3 with an immediate and a third source keeps the immediate
                    random);
     }
 }
+
+TEST_CASE("Ampere IMAD with two zero factors is a move only when word 2 adds nothing else",
+          "[video_core][ampere][integer_add]") {
+    std::mt19937 random{0x1ad};
+    // IMAD R4, RZ, RZ, [-]R2 with signed (bit 73) and negated-a (bit 72) variants: a move.
+    const auto imad = [](u32 word2) {
+        return std::array{Instruction{{0x00047224U | (255U << 24), 255, word2, 0}}, Exit};
+    };
+    for (const u32 modifiers : {0x000U, 0x100U, 0x200U, 0x300U, 0x800U, 0xa00U}) {
+        CAPTURE(modifiers);
+        Machine start = Seed(random);
+        const Machine end = Run(start, imad(0x078e0002U | modifiers));
+        const u32 c = start.registers[2];
+        REQUIRE(end.registers[4] == ((modifiers & 0x800) ? 0U - c : c));
+    }
+    // Word 2 also holds the carry modes, which the move would drop: IMAD.X R4, RZ, RZ, R2, !P0
+    // (a negated carry input), IMAD.X R4, RZ, RZ, ~R2, P0 and IMAD R4, P1, RZ, RZ, R2 (a
+    // predicate output). None of them is a move, so they are rejected.
+    for (const u32 word2 : {0x040e0402U, 0x000e0c02U, 0x07820002U}) {
+        CAPTURE(word2);
+        const auto code = imad(word2);
+        const auto lowered = LowerToMaxwell(code);
+        REQUIRE_FALSE(static_cast<bool>(lowered));
+        REQUIRE(lowered.error == "native integer register multiply mode");
+    }
+}
