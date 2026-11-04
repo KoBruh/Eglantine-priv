@@ -76,6 +76,9 @@ public:
     }
 
 private:
+    /// The wait of a client that sent this session a synchronous request (in the .cpp).
+    class RequestWaitQueue;
+
     /// Frees up waiting client sessions when this server session is about to die
     void CleanupRequests(KernelCore& kernel);
 
@@ -89,6 +92,11 @@ private:
 
     /// Signaled once the client closes; guarded by m_lock.
     KEvent* m_client_closed_event{};
+
+    /// True while SendReply ends the wait of an HLE request's client, whose wait queue may then
+    /// hold the reply back for a moment (see RequestWaitQueue). Set and read under the scheduler
+    /// lock.
+    bool m_ending_hle_reply{};
 
     KLightLock m_lock;
 };

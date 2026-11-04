@@ -7,9 +7,8 @@
 #include <tuple>
 #include <utility>
 
-#include <chrono>
+#include <atomic>
 #include <cstdlib>
-#include <thread>
 
 #include "common/assert.h"
 #include "common/common_types.h"
@@ -20,6 +19,7 @@
 #include "core/core_timing.h"
 #include "core/hle/kernel/k_client_port.h"
 #include "core/hle/kernel/k_handle_table.h"
+#include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_scheduler.h"
 #include "core/hle/kernel/k_server_port.h"
@@ -41,8 +41,6 @@ constexpr inline size_t PointerTransferBufferAlignment = 0x10;
 constexpr inline size_t ReceiveListDataSize =
     MessageBuffer::MessageHeader::ReceiveListCountType_CountMax *
     MessageBuffer::ReceiveListEntry::GetDataSize() / sizeof(u32);
-
-using ThreadQueueImplForKServerSessionRequest = KThreadQueue;
 
 class ReceiveList {
 public:
@@ -1237,38 +1235,104 @@ Result KServerSession::ReceiveRequest(KernelCore& kernel, uintptr_t server_messa
 }
 
 namespace {
-// On hardware a synchronous request to a service takes microseconds to answer, and while the
-// client waits its core runs the next ready thread. HLE services answer almost at once, so that
-// thread gets preempted before it executes anything. Mario Tennis Fever relies on the hardware
-// behaviour: its main thread (priority 44, core 0) starts a priority-47 core 0 worker whose
-// arguments live in the caller's stack frame, and the worker has to read them during one of the
-// main thread's next IPC waits, before that frame is reused (otherwise it reads zeros and crashes).
-// When another guest thread got the client's core, give it up to this long before the reply
-// wakes the client. EDEN_NX2_IPC_MIN_US=<n> changes it; 0 turns it off.
-void HoldHleReply(KernelCore& kernel, KThread* client_thread) {
-    static const auto hold = std::chrono::microseconds{[] {
+// EDEN_NX2_IPC_MIN_US=<n>: how long a held HLE reply keeps its client waiting (see
+// KServerSession::RequestWaitQueue), 50 us by default; 0 turns holding off.
+s64 HleReplyHoldNs() {
+    static const s64 hold = [] {
         const char* text = std::getenv("EDEN_NX2_IPC_MIN_US");
-        return text ? std::strtoll(text, nullptr, 10) : 50LL;
-    }()};
-    if (hold.count() <= 0) {
-        return;
-    }
-    const s32 core = client_thread->GetActiveCore();
+        const long long us = text ? std::strtoll(text, nullptr, 10) : 50LL;
+        return us > 0 ? static_cast<s64>(us) * 1000 : s64{0};
+    }();
+    return hold;
+}
+
+// Whether waking `client` now preempts a lower-priority guest thread that took its core while it
+// waited. Needs the scheduler lock.
+bool PreemptsThreadOnClientCore(KernelCore& kernel, const KThread& client) {
+    const s32 core = client.GetActiveCore();
     if (core < 0 || core >= static_cast<s32>(Core::Hardware::NUM_CPU_CORES)) {
-        return;
+        return false;
     }
     const auto& scheduler = kernel.Scheduler(core);
-    const auto deadline = std::chrono::steady_clock::now() + hold;
-    while (std::chrono::steady_clock::now() < deadline) {
-        // Stop as soon as the core has nothing else to run.
-        const KThread* running = scheduler.GetSchedulerCurrentThread();
-        if (running == client_thread || running == scheduler.GetIdleThread()) {
-            return;
-        }
-        std::this_thread::yield();
+    const KThread* running = scheduler.GetSchedulerCurrentThread();
+    return running != nullptr && running != std::addressof(client) &&
+           running != scheduler.GetIdleThread() && running->GetPriority() > client.GetPriority();
+}
+
+// Logs how many replies were held so far, the first one at once and then at most every 10 s.
+void CountHeldReply(s64 now_ns, s64 hold_ns) {
+    static std::atomic<u64> held{};
+    static std::atomic<s64> next_log{};
+    const u64 count = held.fetch_add(1, std::memory_order_relaxed) + 1;
+    s64 next = next_log.load(std::memory_order_relaxed);
+    if (now_ns >= next && next_log.compare_exchange_strong(next, now_ns + 10'000'000'000LL,
+                                                           std::memory_order_relaxed)) {
+        LOG_INFO(Kernel,
+                 "{} HLE replies to Switch 2 threads held {} us so far, so that a lower-priority "
+                 "thread on the client's core runs first (EDEN_NX2_IPC_MIN_US)",
+                 count, hold_ns / 1000);
     }
 }
 } // namespace
+
+// On hardware a synchronous request to a service takes microseconds to answer, and while the
+// client waits its core runs the next ready thread. HLE services answer almost at once, so a
+// lower-priority thread that got the core is preempted before it executes anything. Mario Tennis
+// Fever relies on the hardware behaviour: its main thread (priority 44, core 0) starts a
+// priority-47 core 0 worker whose arguments live in the caller's stack frame, and the worker has
+// to read them during one of the main thread's next IPC waits, before that frame is reused
+// (otherwise it reads zeros and crashes).
+// So when an HLE reply to a Switch 2 thread would preempt such a thread, the client stays waiting
+// on the kernel's hardware timer for EDEN_NX2_IPC_MIN_US, like a timed wait, and gets the reply
+// when it fires. The server thread does not wait for it: it neither spins nor keeps the session
+// locked. Termination still ends the wait at once.
+class KServerSession::RequestWaitQueue final : public KThreadQueue {
+public:
+    RequestWaitQueue(KernelCore& kernel, const KServerSession& session)
+        : KThreadQueue(kernel), m_session{session} {}
+
+    void EndWait(KernelCore& kernel, KThread* waiting_thread, Result wait_result) override {
+        if (m_session.m_ending_hle_reply && this->HoldReply(kernel, *waiting_thread, wait_result)) {
+            return;
+        }
+        KThreadQueue::EndWait(kernel, waiting_thread, wait_result);
+    }
+
+    void CancelWait(KernelCore& kernel, KThread* waiting_thread, Result wait_result,
+                    bool cancel_timer_task) override {
+        if (m_held && wait_result == ResultTimedOut && !cancel_timer_task) {
+            // The hold is over (KThread::OnTimer, with the timer's lock held, so the timer is
+            // not touched here): deliver the reply.
+            KThreadQueue::CancelWait(kernel, waiting_thread, m_held_result, false);
+            return;
+        }
+        KThreadQueue::CancelWait(kernel, waiting_thread, wait_result, cancel_timer_task);
+    }
+
+private:
+    bool HoldReply(KernelCore& kernel, KThread& thread, Result result) {
+        const s64 hold = HleReplyHoldNs();
+        const KProcess* const owner = thread.GetOwnerProcess();
+        // A request has no timeout, so the thread's timer task is unused; checked all the same.
+        if (hold == 0 || m_held || owner == nullptr || !owner->IsSwitch2() ||
+            thread.GetTime() != 0 || !PreemptsThreadOnClientCore(kernel, thread)) {
+            return false;
+        }
+        auto& timer = kernel.HardwareTimer();
+        const s64 now = timer.GetTick();
+        m_held = true;
+        m_held_result = result;
+        // So that ending the wait otherwise (termination) removes the task.
+        this->SetHardwareTimer(std::addressof(timer));
+        timer.RegisterAbsoluteTask(std::addressof(thread), now + hold);
+        CountHeldReply(now, hold);
+        return true;
+    }
+
+    const KServerSession& m_session;
+    Result m_held_result{ResultSuccess};
+    bool m_held{};
+};
 
 Result KServerSession::SendReply(KernelCore& kernel, uintptr_t server_message, uintptr_t server_buffer_size,
                                  KPhysicalAddress server_message_paddr, bool is_hle, bool session_closed) {
@@ -1364,15 +1428,14 @@ Result KServerSession::SendReply(KernelCore& kernel, uintptr_t server_message, u
             // Signal the event.
             event->Signal(kernel);
         } else {
-            if (is_hle) {
-                HoldHleReply(kernel, client_thread);
-            }
-
             // End the client thread's wait.
             KScopedSchedulerLock sl{kernel};
 
             if (!client_thread->IsTerminationRequested()) {
+                // Its wait queue may hold an HLE reply back for a moment (RequestWaitQueue).
+                m_ending_hle_reply = is_hle;
                 client_thread->EndWait(kernel, client_result);
+                m_ending_hle_reply = false;
             }
         }
     }
@@ -1382,7 +1445,7 @@ Result KServerSession::SendReply(KernelCore& kernel, uintptr_t server_message, u
 
 Result KServerSession::OnRequest(KernelCore& kernel, KSessionRequest* request) {
     // Create the wait queue.
-    ThreadQueueImplForKServerSessionRequest wait_queue{kernel};
+    RequestWaitQueue wait_queue{kernel, *this};
 
     {
         // Lock the scheduler.
