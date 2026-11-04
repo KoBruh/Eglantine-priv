@@ -363,6 +363,20 @@ struct Values {
                                                   true,
                                                   true};
 
+    // Switch 2: the emulated display's refresh rate (not the monitor's), right under VSync in the
+    // Graphics tab. With the speed limit on, presents are paced to it (one per vblank, as the
+    // console's compositor shows them) and its vsync events fire at it. 60 is the console's TV rate;
+    // the bundled Pokopia frame-rate mods need it at their own rate (120, 180, 240 or 360).
+    SwitchableSetting<u32, true> nx2_refresh_rate{linkage,
+                                                  60,
+                                                  30,
+                                                  360,
+                                                  "nx2_refresh_rate",
+                                                  Category::Renderer,
+                                                  Specialization::Countable,
+                                                  true,
+                                                  true};
+
     SwitchableSetting<ScalingFilter> scaling_filter{linkage,
                                                     ScalingFilter::NearestNeighbor,
                                                     "scaling_filter",
@@ -428,20 +442,6 @@ struct Values {
 
     SwitchableSetting<bool> frame_gen{linkage, false, "frame_gen", Category::Renderer,
                                       Specialization::Default, true, false};
-
-    // Switch 2: the emulated display's refresh rate. With the speed limit on, presents are paced
-    // to it (one per vblank, as the console's compositor shows them) and its vsync events fire at
-    // it. The console drives 120 Hz panels; 120 lets a title patched to 120 fps run at 120, and
-    // the bundled frame-rate mods go up to 360.
-    SwitchableSetting<u32, true> nx2_refresh_rate{linkage,
-                                                  60,
-                                                  30,
-                                                  360,
-                                                  "nx2_refresh_rate",
-                                                  Category::Renderer,
-                                                  Specialization::Countable,
-                                                  true,
-                                                  true};
 
     SwitchableSetting<FrameGenType> frame_gen_type{linkage,
                                                    FrameGenType::Fsr3,

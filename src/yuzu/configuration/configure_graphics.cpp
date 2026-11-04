@@ -240,6 +240,10 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
                 return builder.BuildWidget(
                     setting, apply_funcs, ConfigurationShared::RequestType::ReverseSlider, true,
                     0.5f, nullptr, tr("%", "FSR/SGSR sharpening percentage (e.g. 50%)"));
+            } else if (setting->Id() == Settings::values.nx2_refresh_rate.Id()) {
+                return builder.BuildWidget(setting, apply_funcs, nullptr,
+                                           ConfigurationShared::RequestType::Default,
+                                           tr(" Hz", "Emulated refresh rate unit (e.g. 120 Hz)"));
             } else {
                 return builder.BuildWidget(setting, apply_funcs);
             }

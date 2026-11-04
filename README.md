@@ -70,15 +70,38 @@ The [User Handbook](./docs/user/README.md) covers setup, with a [Quick Start](./
 
 ## Frame-rate mods
 
-The game runs at 60 FPS by default. The bundled mods for **Pokémon Pokopia 2.0.1** raise that to 120, 180, 240 or 360 FPS. They are in the `Pokopia FPS mods` folder of the Windows zip and the Linux tar.gz, and on their own as `pokopia-fps-mods.zip` on each release.
+**Pokémon Pokopia** runs at 60 FPS on the console. The bundled mods raise that to 120, 180, 240 or 360 FPS. They need **version 2.0.1** of the game (on any other version they do nothing), and they ship in the `Pokopia FPS mods` folder of the Windows zip and the Linux tar.gz, and on their own as `pokopia-fps-mods.zip` on each release.
+
+A mod needs two things: the mod itself, and the game's **Emulated Refresh Rate** set to the same number. The emulated console only shows a new frame when its display refreshes, and that display refreshes at 60 Hz unless you change it. This is the emulated console's display, not your monitor.
+
+### Choosing a mod
+
+Pick the highest mod your monitor can show and your PC can keep up with. With VSync on, you never see more frames than your monitor's refresh rate.
+
+| Your monitor | Mod | Emulated Refresh Rate |
+| --- | --- | --- |
+| 120–165 Hz | `120 FPS` | 120 Hz |
+| 180–200 Hz | `180 FPS` | 180 Hz |
+| 240–300 Hz | `240 FPS` | 240 Hz |
+| 360 Hz and up | `360 FPS` | 360 Hz |
+
+### Installing
 
 1. In Eglantine, right-click Pokémon Pokopia and choose **Open Mod Data Location**.
    - On Windows that is `%APPDATA%\eden\load\0400A3A01EE4C000`; on Linux, `~/.local/share/eden/load/0400A3A01EE4C000`.
-2. Copy **one** folder (for example `240 FPS`) from `Pokopia FPS mods` into it.
-3. Right-click the game, open **Properties → Add-Ons**, and check that only one FPS mod is enabled.
-4. In **Emulation → Configure → Graphics**, set **Switch 2 Display Refresh Rate (Hz)** to the mod's rate (for example 240). Without this step the emulated screen still refreshes at 60 Hz and the game stays at 60 FPS.
+2. Copy **one** folder from `Pokopia FPS mods` into it, for example `240 FPS`.
+3. Right-click the game, open **Properties → Add-Ons**, and check that exactly one FPS mod is enabled.
+4. In the same **Properties** window, open **Graphics** and set **Emulated Refresh Rate (FPS mods)** to the mod's number, for example 240 Hz. It sits just under VSync Mode.
+   - Setting it here applies to Pokopia only. The same setting in **Emulation → Configure → Graphics** applies to every game, and other games should stay at 60 Hz.
+5. Start the game. The FPS counter in the status bar should now go past 60.
 
-Pick the mod closest to your monitor's refresh rate that your PC can keep up with. The mods only apply to version 2.0.1; on other versions they do nothing. They are made with [`tools/nx2/pokopia_fps_mod.py`](./tools/nx2/pokopia_fps_mod.py).
+### If it doesn't work
+
+- **Still 60 FPS:** the Emulated Refresh Rate is still 60 Hz, the mod isn't enabled in Add-Ons, or the game isn't on version 2.0.1.
+- **Lower or uneven frame rate:** your PC can't keep up with that mod. Use the next one down, and set the Emulated Refresh Rate to match.
+- **Two FPS mods enabled:** keep only one.
+
+The mods are made with [`tools/nx2/pokopia_fps_mod.py`](./tools/nx2/pokopia_fps_mod.py).
 
 ## Building
 
