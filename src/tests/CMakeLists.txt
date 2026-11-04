@@ -45,6 +45,7 @@ add_executable(tests
     core/vfs_vector.cpp
     core/program_metadata.cpp
     core/sockets_translate.cpp
+    core/address_space.cpp
     core/nx2_vsync.cpp
     core/internal_network/network.cpp
     shader_recompiler/compilation_memory.cpp

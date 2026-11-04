@@ -1,36 +1,61 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <array>
+
 #include <catch2/catch_test_macros.hpp>
 
-#include "common/literals.h"
+#include "common/settings.h"
+#include "core/hle/kernel/board/nintendo/nx/k_system_control.h"
 #include "core/hle/kernel/k_address_space_info.h"
 #include "core/hle/kernel/k_memory_layout.h"
 
-using namespace Common::Literals;
+namespace {
 
-TEST_CASE("Switch 2 processes reserve a heap beyond the legacy 8 GiB ceiling", "[kernel][heap]") {
-    using Space = Kernel::KAddressSpaceInfo;
-    using Type = Space::Type;
+using SystemControl = Kernel::Board::Nintendo::Nx::KSystemControl;
 
-    REQUIRE(Space::GetAddressSpaceSize(39, Type::Heap, true) == 12_GiB);
-    REQUIRE(Space::GetAddressSpaceSize(39, Type::Heap, true) >= 0x261600000ULL);
-    REQUIRE(Space::GetAddressSpaceSize(39, Type::Heap) == 8_GiB);
-    REQUIRE(Space::GetAddressSpaceSize(39, Type::Heap, false) == 8_GiB);
-    REQUIRE(Space::GetAddressSpaceSize(36, Type::Heap, true) == 8_GiB);
-    REQUIRE(Space::GetAddressSpaceSize(32, Type::Heap, true) == 1_GiB);
+constexpr std::array memory_layouts{
+    Settings::MemoryLayout::Memory_4Gb,  Settings::MemoryLayout::Memory_6Gb,
+    Settings::MemoryLayout::Memory_8Gb,  Settings::MemoryLayout::Memory_10Gb,
+    Settings::MemoryLayout::Memory_12Gb,
+};
 
-    for (const auto type : {Type::Map39Bit, Type::MapSmall, Type::Alias, Type::Stack}) {
-        REQUIRE(Space::GetAddressSpaceSize(39, type, true) ==
-                Space::GetAddressSpaceSize(39, type, false));
+struct MemoryLayoutRestore {
+    Settings::MemoryLayout configured = Settings::values.memory_layout_mode.GetValue();
+    ~MemoryLayoutRestore() {
+        Settings::values.memory_layout_mode.SetValue(configured);
     }
+};
+
+} // Anonymous namespace
+
+TEST_CASE("The 39-bit heap region holds the application pool of every memory layout",
+          "[kernel][heap]") {
+    MemoryLayoutRestore restore;
+    const std::size_t heap_region =
+        Kernel::KAddressSpaceInfo::GetAddressSpaceSize(39, Kernel::KAddressSpaceInfo::Type::Heap);
+
+    // A process may grow its heap to its whole pool (its resource limit), so the region must not
+    // be what stops it: the 12 GiB layout's pool is larger than Switch 1's 8 GiB region.
+    for (const auto layout : memory_layouts) {
+        Settings::values.memory_layout_mode.SetValue(layout);
+        INFO("memory layout " << static_cast<int>(layout));
+        CHECK(SystemControl::Init::GetApplicationPoolSize() <= heap_region);
+    }
+
+    // The heap Pokopia, sized from the 12 GiB layout, asks for at boot.
+    constexpr std::size_t pokopia_heap_size = 0x261600000;
+    Settings::values.memory_layout_mode.SetValue(Settings::MemoryLayout::Memory_12Gb);
+    CHECK(pokopia_heap_size <= SystemControl::Init::GetApplicationPoolSize());
+    CHECK(pokopia_heap_size <= heap_region);
 }
 
-TEST_CASE("Kernel page table heap covers the Switch 2 main memory", "[kernel][heap]") {
-    static_assert(Kernel::KernelPageTableHeapSize ==
-                  Kernel::GetMaximumOverheadSize(Kernel::MainMemorySizeMaxSwitch2));
-    static_assert(Kernel::KernelPageTableHeapSize >
-                  Kernel::GetMaximumOverheadSize(Kernel::MainMemorySizeMax));
-    REQUIRE(Kernel::KernelPageTableHeapSize == (12 + 6144) * Kernel::PageSize);
-    REQUIRE(Kernel::MainMemorySizeMax == 8_GiB);
-    REQUIRE(Kernel::MainMemorySizeMaxSwitch2 == 12_GiB);
+TEST_CASE("The kernel page table heap covers the DRAM of every memory layout", "[kernel][heap]") {
+    MemoryLayoutRestore restore;
+    // The 12 GiB layout has the Switch 2 graphics server's memory on top (14 GiB of DRAM).
+    for (const auto layout : memory_layouts) {
+        Settings::values.memory_layout_mode.SetValue(layout);
+        INFO("memory layout " << static_cast<int>(layout));
+        CHECK(Kernel::GetMaximumOverheadSize(SystemControl::Init::GetIntendedMemorySize()) <=
+              Kernel::KernelPageTableHeapSize);
+    }
 }
