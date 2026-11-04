@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "common/net/net.h"
-#include "common/scm_rev.h"
+#include "common/settings.h"
 #include "core/hle/service/bcat/news/builtin_news.h"
 #include "core/hle/service/bcat/news/msgpack.h"
 #include "core/hle/service/bcat/news/news_storage.h"
@@ -17,181 +17,20 @@
 #include <fmt/format.h>
 #include <nlohmann/json.hpp>
 
-#include "common/httplib.h"
-
-#include <chrono>
-#include <cstring>
 #include <filesystem>
-#include <fstream>
-#include <future>
 #include <mutex>
 #include <optional>
 #include <thread>
 
-#ifdef YUZU_BUNDLED_OPENSSL
-#include <openssl/cert.h>
-#endif
-
 namespace Service::News {
 namespace {
-
-// Cached logo data
-std::vector<u8> default_logo_small;
-std::vector<u8> default_logo_large;
-bool default_logos_loaded = false;
-
-::Common::unordered_map<std::string, std::vector<u8>> news_images_small;
-::Common::unordered_map<std::string, std::vector<u8>> news_images_large;
-std::mutex images_mutex;
-
 
 std::filesystem::path GetCachePath() {
     return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "news" / "github_releases.json";
 }
 
-std::filesystem::path GetDefaultLogoPath(bool large) {
-    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "news" /
-           (large ? "eglantine_logo_large.jpg" : "eglantine_logo_small.jpg");
-}
-
-std::filesystem::path GetNewsImagePath(std::string_view news_id, bool large) {
-    const std::string filename = fmt::format("{}_{}.jpg", news_id, large ? "large" : "small");
-    return Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "news" / "images" / filename;
-}
-
 u32 HashToNewsId(std::string_view key) {
     return static_cast<u32>(std::hash<std::string_view>{}(key) & 0x7FFFFFFF);
-}
-
-std::vector<u8> TryLoadFromDisk(const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) return {};
-
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) return {};
-
-    const auto file_size = static_cast<std::streamsize>(f.tellg());
-    if (file_size <= 0 || file_size > 10 * 1024 * 1024) return {};
-
-    f.seekg(0);
-    std::vector<u8> data(static_cast<size_t>(file_size));
-    if (!f.read(reinterpret_cast<char*>(data.data()), file_size)) return {};
-
-    return data;
-}
-
-// News images are files in dist/news/ of the repository whose releases the feed reads, on main.
-// TODO(crueter): Migrate to use Common::Net
-std::vector<u8> DownloadImage(const std::string& file_name, const std::filesystem::path& cache_path) {
-    const std::string url_path =
-        fmt::format("/{}/main/dist/news/{}", Common::g_build_auto_update_repo, file_name);
-    LOG_DEBUG(Service_BCAT, "Downloading image: https://raw.githubusercontent.com{}", url_path);
-    try {
-        httplib::Client cli("https://raw.githubusercontent.com");
-        cli.set_follow_location(true);
-        cli.set_connection_timeout(std::chrono::seconds(2));
-        cli.set_read_timeout(std::chrono::seconds(2));
-
-#ifdef YUZU_BUNDLED_OPENSSL
-        cli.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
-
-        if (auto res = cli.Get(url_path); res && res->status == 200 && !res->body.empty()) {
-            std::vector<u8> data(res->body.begin(), res->body.end());
-
-            std::error_code ec;
-            std::filesystem::create_directories(cache_path.parent_path(), ec);
-            if (std::ofstream out(cache_path, std::ios::binary); out) {
-                out.write(res->body.data(), static_cast<std::streamsize>(res->body.size()));
-            }
-            return data;
-        }
-    } catch (...) {
-        LOG_WARNING(Service_BCAT, "Failed to download: {}", url_path);
-    }
-    return {};
-}
-
-std::vector<u8> LoadDefaultLogo(bool large) {
-    const auto path = GetDefaultLogoPath(large);
-    const std::string url = large ? "eglantine_logo_large.jpg" : "eglantine_logo_small.jpg";
-
-    auto data = TryLoadFromDisk(path);
-    if (!data.empty()) return data;
-
-    return DownloadImage(url, path);
-}
-
-void LoadDefaultLogos() {
-    if (default_logos_loaded) return;
-    default_logos_loaded = true;
-
-    default_logo_small = LoadDefaultLogo(false);
-    default_logo_large = LoadDefaultLogo(true);
-}
-
-std::vector<u8> GetNewsImage(std::string_view news_id, bool large) {
-    const std::string id_str{news_id};
-
-    {
-        std::lock_guard lock{images_mutex};
-        auto& cache = large ? news_images_large : news_images_small;
-        if (auto it = cache.find(id_str); it != cache.end()) {
-            return it->second;
-        }
-    }
-
-    const auto cache_path = GetNewsImagePath(news_id, large);
-    auto data = TryLoadFromDisk(cache_path);
-
-    if (data.empty()) {
-        const std::string url = fmt::format("{}_{}.jpg", id_str, large ? "large" : "small");
-        data = DownloadImage(url, cache_path);
-    }
-
-    if (data.empty()) {
-        data = large ? default_logo_large : default_logo_small;
-    }
-
-    {
-        std::lock_guard lock{images_mutex};
-        auto& cache = large ? news_images_large : news_images_small;
-        cache[id_str] = data;
-    }
-
-    return data;
-}
-
-void PreloadNewsImages(const std::vector<u32>& news_ids) {
-    std::vector<std::future<void>> futures;
-    futures.reserve(news_ids.size() * 2);
-
-    for (const u32 id : news_ids) {
-        const std::string id_str = fmt::format("{}", id);
-
-        {
-            std::lock_guard lock{images_mutex};
-            if (news_images_small.contains(id_str) && news_images_large.contains(id_str)) {
-                continue;
-            }
-        }
-
-        const auto path_small = GetNewsImagePath(id_str, false);
-        const auto path_large = GetNewsImagePath(id_str, true);
-        if (std::filesystem::exists(path_small) && std::filesystem::exists(path_large)) {
-            continue;
-        }
-
-        futures.push_back(std::async(std::launch::async, [id_str]() {
-            GetNewsImage(id_str, false);
-        }));
-        futures.push_back(std::async(std::launch::async, [id_str]() {
-            GetNewsImage(id_str, true);
-        }));
-    }
-
-    for (auto& f : futures) {
-        f.wait();
-    }
 }
 
 std::optional<std::string> ReadCachedJson() {
@@ -296,14 +135,6 @@ std::string FormatBody(std::string body, const std::string_view &title) {
 }
 
 void ImportReleases(const std::vector<Common::Net::Release> &releases) {
-    std::vector<u32> news_ids;
-    for (const auto& rel : releases) {
-        const u32 news_id = u32(rel.id & 0x7FFFFFFF);
-        news_ids.push_back(news_id);
-    }
-
-    PreloadNewsImages(news_ids);
-
     for (const auto& rel : releases) {
         const std::string title = rel.title;
         const std::string body = rel.body;
@@ -355,10 +186,9 @@ std::vector<u8> BuildMsgpack(std::string_view title, std::string_view body,
     MsgPack::Writer w;
 
     const u32 news_id = override_id.value_or(HashToNewsId(title.empty() ? "eden" : title));
-    const std::string news_id_str = fmt::format("{}", news_id);
 
-    const auto img_small = GetNewsImage(news_id_str, false);
-    const auto img_large = GetNewsImage(news_id_str, true);
+    // Releases have no pictures (the repository publishes none), so both images are empty.
+    const std::vector<u8> no_image;
 
     w.WriteFixMap(23);
 
@@ -417,7 +247,7 @@ std::vector<u8> BuildMsgpack(std::string_view title, std::string_view body,
     w.WriteString("Eden");
 
     w.WriteKey("list_image");
-    w.WriteBinary(img_small);
+    w.WriteBinary(no_image);
 
     // Footer
     w.WriteKey("footer");
@@ -448,7 +278,7 @@ std::vector<u8> BuildMsgpack(std::string_view title, std::string_view body,
     w.WriteKey("movie_url");
     w.WriteString("");
     w.WriteKey("main_image");
-    w.WriteBinary(img_large);
+    w.WriteBinary(no_image);
 
     // no clue
     w.WriteKey("contents_descriptors");
@@ -460,10 +290,20 @@ std::vector<u8> BuildMsgpack(std::string_view title, std::string_view body,
 }
 
 void EnsureBuiltinNewsLoaded() {
+    // The feed is the update repository's GitHub releases. Asking GitHub for them is up to the
+    // user; with the setting off the News applet is empty and nothing is sent.
+    if (!Settings::values.fetch_release_news.GetValue()) {
+        static std::once_flag logged;
+        std::call_once(logged, [] {
+            LOG_INFO(Service_BCAT, "news: the release feed is off (Fetch news from GitHub)");
+        });
+        return;
+    }
+
     static std::once_flag once;
     std::call_once(once, [] {
-        LoadDefaultLogos();
-
+        // This runs on the IPC thread of the first news request, so it only reads the cache;
+        // the request to GitHub runs on its own thread and fills the storage when it returns.
         if (const auto cached = ReadCachedJson()) {
             if (const auto releases = Common::Net::Release::ListFromJson(std::string_view{*cached})) {
                 ImportReleases(*releases);

@@ -333,6 +333,10 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
            tr("Controls the seed of the random number generator.\nMainly used for speedrunning."));
     INSERT(Settings, rng_seed_enabled, QString(), QString());
     INSERT(Settings, device_name, tr("Device Name"), tr("The name of the console."));
+    INSERT(Settings, fetch_release_news, tr("Fetch news from GitHub"),
+           tr("Shows Eglantine's release notes in the News applet. The release list is fetched "
+              "from GitHub the first time a game opens the news; when off, the applet is empty "
+              "and nothing is sent."));
     INSERT(Settings, program_args, tr("Homebrew Args"),
            tr("Command-line arguments passed to homebrew at launch (e.g. -noglsl)."));
     INSERT(Settings, custom_rtc, tr("Custom RTC Date:"),

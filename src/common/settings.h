@@ -801,6 +801,10 @@ struct Values {
                                     true,    true, &rng_seed_enabled};
     Setting<std::string> device_name{
         linkage, "Eden", "device_name", Category::System, Specialization::Default, true, true};
+    // The News applet lists Eglantine's GitHub releases. Getting them is a request to GitHub, so
+    // the feed stays empty until the user turns this on.
+    Setting<bool> fetch_release_news{linkage, false, "fetch_release_news", Category::System,
+                                     Specialization::Default, true, true};
 
     Setting<s32> current_user{linkage, 0, "current_user", Category::System};
 
