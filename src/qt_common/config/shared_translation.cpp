@@ -221,10 +221,11 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, frame_gen_type, tr("Frame Generation Type"), QString());
     INSERT(Settings, frame_gen_multiplier, tr("Frame Generation Multiplier"), QString());
     INSERT(Settings, frame_gen_target_rate, tr("Target Frame Rate"), QString());
-    INSERT(Settings, nx2_refresh_rate, tr("Switch 2 Display Refresh Rate (Hz)"),
-           tr("The refresh rate of the emulated Switch 2 display. With the speed limit on, games\n"
-              "present at most once per refresh. 60 matches the TV. With a frame-rate mod, set it\n"
-              "to the mod's rate (120, 180, 240 or 360) so the game can reach it."));
+    INSERT(Settings, nx2_refresh_rate, tr("FPS Limit (FPS mods):"),
+           tr("The most frames per second a Switch 2 game can show. It has nothing to do with your "
+              "monitor's refresh rate.\nLeave it at 60, the console's own limit, unless the game "
+              "has a frame-rate mod.\nWith a mod, set it to the mod's FPS (120, 180, 240 or 360), "
+              "best in that game's Properties so other games stay at 60."));
     INSERT(Settings, frame_gen_flow_scale_auto, tr("Auto Flow Scale"), QString());
     INSERT(Settings, frame_gen_flow_scale, tr("Flow Scale"), QString());
     INSERT(Settings, frame_gen_queue_target, tr("Queue Target"), QString());

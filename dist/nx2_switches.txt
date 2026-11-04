@@ -17,6 +17,12 @@
 #EDEN_NX2_INLINE_DEFER=0
 #EDEN_NX2_SPLIT_SKIP=1
 #EDEN_NX2_AUTO_STUB=1
+# Upload every small uniform buffer again, instead of rebinding the earlier copy when its data has not changed.
+#EDEN_NX2_UBOREUSE=0
+# Keep ASTC textures uncompressed on GPUs without ASTC (default: re-compressed to BC3, 4x smaller).
+#EDEN_NX2_KEEP_ASTC=1
+# Windows: never release command buffer recording memory back to the driver.
+#EDEN_NX2_COMMAND_POOL_RELEASE=0
 
 # --- limits / tuning ---
 #EDEN_NX2_VRAM_LIMIT_MIB=8192
@@ -24,3 +30,7 @@
 #EDEN_NX2_FRAMES_AHEAD=2
 #EDEN_NX2_TC_EXPECTED_MIB=21322
 #EDEN_NX2_TC_CRITICAL_MIB=22346
+# Hand native draws to the GPU every N draws (32 to 1048576, default 128).
+#EDEN_NX2_FLUSH_DRAWS=128
+# Windows: release a command buffer's recording memory every N uses (1 to 64, default 8).
+#EDEN_NX2_COMMAND_POOL_RELEASE_INTERVAL=8
