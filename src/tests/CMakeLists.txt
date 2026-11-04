@@ -46,6 +46,7 @@ add_executable(tests
     shader_recompiler/compilation_memory.cpp
     video_core/memory_tracker.cpp
     video_core/shader_reuse.cpp
+    video_core/native_storage_pointers.cpp
     video_core/ampere_conversions.cpp
     video_core/ampere_half.cpp
     video_core/cache_entry.cpp

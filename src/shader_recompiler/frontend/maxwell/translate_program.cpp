@@ -90,8 +90,11 @@ void CollectInterpolationInfo(Environment& env, IR::Program& program) {
     }
 }
 
-void AddNVNStorageBuffers(IR::Program& program) {
-    if (!program.info.uses_global_memory) {
+void AddNVNStorageBuffers(IR::Program& program, bool is_native) {
+    // Native programs keep their pointers in argument tables, not NVN descriptors: the NVN slots
+    // below hold unrelated arguments (and no size word). Their accesses left global pick among
+    // the pointers the storage buffer pass found (Info::native_global_bounds).
+    if (!program.info.uses_global_memory || is_native) {
         return;
     }
     const u32 driver_cbuf{0};
@@ -127,6 +130,9 @@ void AddNVNStorageBuffers(IR::Program& program) {
         if (it != descs.end()) {
             it->is_written |= program.info.stores_global_memory;
             continue;
+        }
+        if (descs.size() >= Info::MAX_SSBOS) {
+            throw NotImplementedException("More than {} storage buffers", Info::MAX_SSBOS);
         }
         descs.push_back({
             .cbuf_index = driver_cbuf,
@@ -474,7 +480,7 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     Optimization::VendorWorkaroundPass(program);
 
     CollectInterpolationInfo(env, program);
-    AddNVNStorageBuffers(program);
+    AddNVNStorageBuffers(program, env.IsNativeProgram());
     return program;
 }
 

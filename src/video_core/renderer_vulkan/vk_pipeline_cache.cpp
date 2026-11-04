@@ -861,22 +861,156 @@ void PipelineCache::SaveUsedPipelines() {
     }
 }
 
+namespace {
+/// What GraphicsEnvironment::IsCbufStorageBufferPointer would answer for the slot now.
+bool IsGraphicsNativePointer(const Tegra::Engines::Maxwell3D& maxwell3d,
+                             const Tegra::MemoryManager& gpu_memory, u32 stage, u32 cbuf_index,
+                             u32 cbuf_offset) {
+    const auto& cbufs{maxwell3d.state.shader_stages[stage].const_buffers};
+    if (cbuf_index >= cbufs.size()) {
+        return false;
+    }
+    const auto& cbuf{cbufs[cbuf_index]};
+    return VideoCommon::IsCbufArgumentStorageBufferPointer(gpu_memory, cbuf.address, cbuf.size,
+                                                           cbuf_offset);
+}
+
+/// What ComputeEnvironment::IsCbufStorageBufferPointer would answer for the slot now.
+bool IsComputeNativePointer(const Tegra::Engines::KeplerCompute& kepler_compute,
+                            const Tegra::MemoryManager& gpu_memory, u32 cbuf_index,
+                            u32 cbuf_offset) {
+    const auto& cbufs{kepler_compute.launch_description.const_buffer_config};
+    if (cbuf_index >= cbufs.size()) {
+        return false;
+    }
+    const auto& cbuf{cbufs[cbuf_index]};
+    return VideoCommon::IsCbufArgumentStorageBufferPointer(gpu_memory, cbuf.Address(),
+                                                           cbuf.size.Value(), cbuf_offset);
+}
+
+/// One answer per slot, in slot order (NativeVariant::answers).
+template <typename Slots, typename Answer>
+std::vector<bool> SlotAnswers(const Slots& slots, Answer&& answer) {
+    std::vector<bool> answers;
+    answers.reserve(slots.size());
+    for (const auto& slot : slots) {
+        answers.push_back(answer(slot));
+    }
+    return answers;
+}
+
+void ReportNativeVariant(const char* kind, u64 key_hash, size_t count) {
+    static std::atomic<u32> reported{};
+    if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+        LOG_INFO(Render_Vulkan,
+                 "{} pipeline {:016x}: variant {} for other native storage buffer pointers", kind,
+                 key_hash, count);
+    }
+}
+
+} // Anonymous namespace
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
     if (!RefreshStages(graphics_key.unique_hashes)) {
         current_pipeline = nullptr;
+        current_pipeline_is_variant = false;
         return nullptr;
     }
     graphics_key.state.Refresh(*maxwell3d, dynamic_features);
 
     if (current_pipeline) {
         GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
-        if (next) {
+        // A native pipeline translated for other storage buffer pointers binds the wrong buffers.
+        if (next && NativePointersMatch(*next)) {
+            // A transition always leads to a pipeline in graphics_cache.
+            current_pipeline_is_variant = current_pipeline_is_variant && next == current_pipeline;
             current_pipeline = next;
             current_pipeline->MarkUsed(use_seconds);
             return BuiltPipeline(current_pipeline);
         }
     }
     return CurrentGraphicsPipelineSlowPath();
+}
+
+bool PipelineCache::NativePointersMatch(const GraphicsPipeline& pipeline) const {
+    for (const auto& [stage, slot] : pipeline.NativePointerSlots()) {
+        if (IsGraphicsNativePointer(*maxwell3d, *gpu_memory, stage, slot.cbuf_index,
+                                    slot.cbuf_offset) != slot.is_pointer) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool PipelineCache::NativePointersMatch(const ComputePipeline& pipeline) const {
+    return Shader::NativePointerSlotsMatch(
+        pipeline.NativePointerSlots(), [this](u32 cbuf_index, u32 cbuf_offset) {
+            return IsComputeNativePointer(*kepler_compute, *gpu_memory, cbuf_index, cbuf_offset);
+        });
+}
+
+GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineVariant(const GraphicsPipeline& base) {
+    std::vector<bool> answers{SlotAnswers(base.NativePointerSlots(), [this](const auto& slot) {
+        return IsGraphicsNativePointer(*maxwell3d, *gpu_memory, slot.stage, slot.slot.cbuf_index,
+                                       slot.slot.cbuf_offset);
+    })};
+    auto& variants{graphics_variants[graphics_key]};
+    auto it{std::ranges::find(variants, answers, &NativeVariant<GraphicsPipeline>::answers)};
+    if (it == variants.end()) {
+        // Each pointer that is sometimes null doubles the possible answers: past a few variants
+        // of a key, the one used longest ago makes room (destroyed once the GPU is done with it).
+        constexpr size_t MaxVariantsPerKey = 16;
+        if (variants.size() >= MaxVariantsPerKey) {
+            const auto oldest{std::ranges::min_element(variants, {}, [](const auto& variant) {
+                return variant.pipeline ? variant.pipeline->LastUse() : u64{0};
+            })};
+            GraphicsPipeline* const retired{oldest->pipeline.get()};
+            if (retired == nullptr || (retired != current_pipeline && !retired->HasPendingJobs())) {
+                if (oldest->pipeline) {
+                    evicted_pipelines.emplace_back(scheduler.CurrentTick(),
+                                                   std::move(oldest->pipeline));
+                }
+                variants.erase(oldest);
+            }
+        }
+        // Translated from the current state, so for these answers. Kept when the build fails
+        // too: draws with these answers then skip without translating again each time.
+        ReportNativeVariant("Graphics", graphics_key.Hash(), variants.size() + 1);
+        std::unique_ptr<GraphicsPipeline> pipeline{BuildNewGraphicsPipeline()};
+        variants.push_back({.answers = std::move(answers), .pipeline = std::move(pipeline)});
+        it = std::prev(variants.end());
+    }
+    GraphicsPipeline* const pipeline{it->pipeline.get()};
+    // Its own slots decide; they are the base's unless translation took another path.
+    return pipeline && NativePointersMatch(*pipeline) ? pipeline : nullptr;
+}
+
+ComputePipeline* PipelineCache::CurrentComputePipelineVariant(const ComputePipelineCacheKey& key,
+                                                              const ComputePipeline& base,
+                                                              const ShaderInfo* shader) {
+    std::vector<bool> answers{SlotAnswers(
+        base.NativePointerSlots(), [this](const Shader::NativePointerSlot& slot) {
+            return IsComputeNativePointer(*kepler_compute, *gpu_memory, slot.cbuf_index,
+                                          slot.cbuf_offset);
+        })};
+    auto& variants{compute_variants[key]};
+    auto it{std::ranges::find(variants, answers, &NativeVariant<ComputePipeline>::answers)};
+    if (it == variants.end()) {
+        ReportNativeVariant("Compute", key.Hash(), variants.size() + 1);
+        NativeVariant<ComputePipeline> variant{.answers = std::move(answers)};
+        try {
+            variant.pipeline = CreateComputePipeline(key, shader);
+        } catch (const Shader::TensorRejected&) {
+            variant.rejection = std::current_exception();
+        }
+        variants.push_back(std::move(variant));
+        it = std::prev(variants.end());
+    }
+    if (it->rejection) {
+        std::rethrow_exception(it->rejection);
+    }
+    ComputePipeline* const pipeline{it->pipeline.get()};
+    return pipeline && NativePointersMatch(*pipeline) ? pipeline : nullptr;
 }
 
 ComputePipeline* PipelineCache::CurrentComputePipeline() {
@@ -898,6 +1032,10 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     const auto [pair, is_new]{compute_cache.try_emplace(key)};
     auto& pipeline{pair->second};
     if (!is_new) {
+        // A native shader translated for other storage buffer pointers binds the wrong buffers.
+        if (pipeline && !NativePointersMatch(*pipeline)) {
+            return CurrentComputePipelineVariant(key, *pipeline, shader);
+        }
         return pipeline.get();
     }
     try {
@@ -1173,10 +1311,25 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipelineSlowPath() {
         std::chrono::steady_clock::now() - used_pipelines_saved > std::chrono::minutes{2}) {
         SaveUsedPipelines();
     }
-    if (current_pipeline) {
+    if (!NativePointersMatch(*pipeline)) {
+        // Translated for other storage buffer pointers. The pipeline in the cache still stands
+        // for the key (the used list, eviction); the variant gets no transitions, which only
+        // link pipelines in graphics_cache.
+        pipeline->MarkUsed(use_seconds);
+        GraphicsPipeline* const variant{CurrentGraphicsPipelineVariant(*pipeline)};
+        if (!variant) {
+            return nullptr;
+        }
+        current_pipeline = variant;
+        current_pipeline_is_variant = true;
+        current_pipeline->MarkUsed(use_seconds);
+        return BuiltPipeline(current_pipeline);
+    }
+    if (current_pipeline && !current_pipeline_is_variant) {
         current_pipeline->AddTransition(pipeline.get());
     }
     current_pipeline = pipeline.get();
+    current_pipeline_is_variant = false;
     current_pipeline->MarkUsed(use_seconds);
     return BuiltPipeline(current_pipeline);
 }
@@ -1231,8 +1384,29 @@ void PipelineCache::EvictUnusedPipelines() {
             ++it;
             continue;
         }
+        // The key's variants (built for other native storage buffer pointers) go with it. Using
+        // one marks the pipeline in the cache used as well, so none was used since the cutoff.
+        const auto variants{graphics_variants.find(it->first)};
+        if (variants != graphics_variants.end() &&
+            std::ranges::any_of(variants->second, [this](const auto& variant) {
+                const GraphicsPipeline* const other{variant.pipeline.get()};
+                return other != nullptr && (other == current_pipeline || other->HasPendingJobs());
+            })) {
+            ++busy;
+            ++it;
+            continue;
+        }
         if (used_this_session.erase(pipeline) != 0) {
             used_and_evicted.insert(it->first.Hash());
+        }
+        if (variants != graphics_variants.end()) {
+            for (auto& variant : variants->second) {
+                if (variant.pipeline) {
+                    evicted_pipelines.emplace_back(tick, std::move(variant.pipeline));
+                    ++evicted;
+                }
+            }
+            graphics_variants.erase(variants);
         }
         evicted_pipelines.emplace_back(tick, std::move(it->second));
         it = graphics_cache.erase(it);

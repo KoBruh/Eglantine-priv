@@ -28,8 +28,75 @@ void StorageOp(EmitContext& ctx, const IR::Value& binding, ScalarU32 offset,
     }
 }
 
+/// Native programs: the storage buffer whose base is the closest one at or below the address
+/// (like the SPIR-V backend), and in bindless mode whose bound length (c[index].z) still holds
+/// the address. Native pointers have no NVN size word: the word after one is another argument.
+/// GLASM storage buffer blocks cannot report their length, so that mode keeps only the base test.
+void NativeGlobalStorageOp(EmitContext& ctx, Register address, bool pointer_based,
+                           std::string_view expr, std::string_view else_expr) {
+    const size_t num_buffers{ctx.info.storage_buffers_descriptors.size()};
+    const u64 ssbo_align_mask{~(ctx.profile.min_ssbo_alignment - 1U)};
+    // A null pointer is as far as the address itself: it is never picked.
+    ctx.Add("MOV.U64 DC.w,{}.x;" // best_distance = input_addr
+            "MOV.S RC.w,-1;",    // best = none
+            address);
+    for (size_t index = 0; index < num_buffers; ++index) {
+        const auto& ssbo{ctx.info.storage_buffers_descriptors[index]};
+        ctx.Add("LDC.U64 DC.x,c{}[{}];"   // unaligned_ssbo_addr
+                "AND.U64 DC.x,DC.x,{};"   // ssbo_addr = unaligned_ssbo_addr & ssbo_align_mask
+                "SUB.U64 DC.y,{}.x,DC.x;" // distance = input_addr - ssbo_addr
+                "SGE.U64 RC.x,{}.x,DC.x;" // a = input_addr >= ssbo_addr
+                "SLT.U64 RC.y,DC.y,DC.w;" // b = distance < best_distance
+                "AND.U RC.x,RC.x,RC.y;",
+                ssbo.cbuf_index, ssbo.cbuf_offset, ssbo_align_mask, address, address);
+        if (pointer_based) {
+            ctx.Add("CVT.U64.U32 DC.z,c[{}].z;" // length
+                    "SLT.U64 RC.y,DC.y,DC.z;"   // distance < length
+                    "AND.U RC.x,RC.x,RC.y;",
+                    index);
+        }
+        ctx.Add("MOV.U.CC RC.x,RC.x;"
+                "IF NE.x;"
+                "MOV.U64 DC.w,DC.y;" // best_distance = distance
+                "MOV.S RC.w,{};"     // best = index
+                "ENDIF;",
+                index);
+    }
+    for (size_t index = 0; index < num_buffers; ++index) {
+        const auto& ssbo{ctx.info.storage_buffers_descriptors[index]};
+        ctx.Add("SEQ.S.CC RC.x,RC.w,{};"
+                "IF NE.x;"
+                "LDC.U64 DC.x,c{}[{}];"
+                "AND.U64 DC.x,DC.x,{};"
+                "SUB.U64 DC.x,{}.x,DC.x;", // offset = input_addr - ssbo_addr
+                index, ssbo.cbuf_index, ssbo.cbuf_offset, ssbo_align_mask, address);
+        if (pointer_based) {
+            ctx.Add("PK64.U DC.y,c[{}];"      // host_ssbo = cbuf
+                    "ADD.U64 DC.x,DC.x,DC.y;" // host_addr = host_ssbo + offset
+                    "{}"
+                    "ELSE;",
+                    index, expr);
+        } else {
+            ctx.Add("CVT.U32.U64 RC.x,DC.x;"
+                    "{},ssbo{}[RC.x];"
+                    "ELSE;",
+                    expr, index);
+        }
+    }
+    if (!else_expr.empty()) {
+        ctx.Add("{}", else_expr);
+    }
+    for (size_t index = 0; index < num_buffers; ++index) {
+        ctx.Add("ENDIF;");
+    }
+}
+
 void GlobalStorageOp(EmitContext& ctx, Register address, bool pointer_based, std::string_view expr,
                      std::string_view else_expr = {}) {
+    if (ctx.info.native_global_bounds) {
+        NativeGlobalStorageOp(ctx, address, pointer_based, expr, else_expr);
+        return;
+    }
     const size_t num_buffers{ctx.info.storage_buffers_descriptors.size()};
     for (size_t index = 0; index < num_buffers; ++index) {
         if (!ctx.info.nvn_buffer_used[index]) {

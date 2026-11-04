@@ -298,6 +298,9 @@ GraphicsPipeline::GraphicsPipeline(
         num_image_elements += Shader::NumDescriptors(info->texture_descriptors);
         num_image_elements += Shader::NumDescriptors(info->image_descriptors);
         num_descriptor_entries += NumDescriptorEntries(*info);
+        for (const Shader::NativePointerSlot& slot : info->native_pointer_slots) {
+            native_pointer_slots.push_back({.stage = static_cast<u32>(stage), .slot = slot});
+        }
     }
     fragment_has_color0_output = stage_infos[NUM_STAGES - 1].stores_frag_color[0];
 

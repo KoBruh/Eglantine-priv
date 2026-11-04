@@ -598,7 +598,69 @@ void EmitContext::DefineHelperFunctions() {
     }
 }
 
+namespace {
+/// Native programs: the global memory functions pick the storage buffer whose base is the closest
+/// one at or below the address and whose bound length holds the whole access, like the SPIR-V
+/// backend. Native pointers have no NVN size word, and the word after a pointer is an unrelated
+/// argument.
+std::string NativeGlobalMemoryFunctions(const EmitContext& ctx) {
+    const size_t num_buffers{ctx.info.storage_buffers_descriptors.size()};
+    const u32 align_mask{~(static_cast<u32>(ctx.profile.min_ssbo_alignment) - 1U)};
+    const auto define{[&](std::string_view signature, u32 access_size,
+                          std::string_view statement, std::string_view fallback) {
+        std::string func{fmt::format("{}{{uint best=~0u;uint64_t best_distance="
+                                     "packUint2x32(uvec2(~0u));",
+                                     signature)};
+        for (size_t index = 0; index < num_buffers; ++index) {
+            const auto& ssbo{ctx.info.storage_buffers_descriptors[index]};
+            const auto cbuf{fmt::format("{}_cbuf{}", ctx.stage_name, ssbo.cbuf_index)};
+            const u32 low{ssbo.cbuf_offset};
+            const u32 high{ssbo.cbuf_offset + 4};
+            func += fmt::format("uint64_t ssbo_addr{}=packUint2x32(uvec2(ftou({}[{}].{})&{}u,"
+                                "ftou({}[{}].{})));",
+                                index, cbuf, low / 16, Swizzle(low), align_mask, cbuf, high / 16,
+                                Swizzle(high));
+            func += fmt::format("if(addr>=ssbo_addr{0}&&addr-ssbo_addr{0}<best_distance&&"
+                                "addr-ssbo_addr{0}+uint64_t({2})<=uint64_t({1}_ssbo{0}.length())*"
+                                "uint64_t(4)){{best={0}u;best_distance=addr-ssbo_addr{0};}}",
+                                index, ctx.stage_name, access_size);
+        }
+        for (size_t index = 0; index < num_buffers; ++index) {
+            const auto ssbo_name{fmt::format("{}_ssbo{}", ctx.stage_name, index)};
+            func += fmt::format("if(best=={}u){{", index);
+            func += fmt::format(fmt::runtime(statement), ssbo_name,
+                                fmt::format("ssbo_addr{}", index));
+        }
+        func += fallback;
+        func += '}';
+        return func;
+    }};
+    std::string result;
+    result += define("void WriteGlobal32(uint64_t addr,uint data)", 4,
+                     "{0}[uint(addr-{1})>>2]=data;return;}}", "");
+    result += define("void WriteGlobal64(uint64_t addr,uvec2 data)", 8,
+                     "{0}[uint(addr-{1})>>2]=data.x;{0}[uint(addr-{1}+4)>>2]=data.y;return;}}", "");
+    result += define("void WriteGlobal128(uint64_t addr,uvec4 data)", 16,
+                     "{0}[uint(addr-{1})>>2]=data.x;{0}[uint(addr-{1}+4)>>2]=data.y;{0}[uint("
+                     "addr-{1}+8)>>2]=data.z;{0}[uint(addr-{1}+12)>>2]=data.w;return;}}",
+                     "");
+    result += define("uint LoadGlobal32(uint64_t addr)", 4, "return {0}[uint(addr-{1})>>2];}}",
+                     "return 0u;");
+    result += define("uvec2 LoadGlobal64(uint64_t addr)", 8,
+                     "return uvec2({0}[uint(addr-{1})>>2],{0}[uint(addr-{1}+4)>>2]);}}",
+                     "return uvec2(0);");
+    result += define("uvec4 LoadGlobal128(uint64_t addr)", 16,
+                     "return uvec4({0}[uint(addr-{1})>>2],{0}[uint(addr-{1}+4)>>2],{0}["
+                     "uint(addr-{1}+8)>>2],{0}[uint(addr-{1}+12)>>2]);}}",
+                     "return uvec4(0);");
+    return result;
+}
+} // Anonymous namespace
+
 std::string EmitContext::DefineGlobalMemoryFunctions() {
+    if (info.native_global_bounds) {
+        return NativeGlobalMemoryFunctions(*this);
+    }
     const auto define_body{[&](std::string& func, size_t index, std::string_view return_statement) {
         const auto& ssbo{info.storage_buffers_descriptors[index]};
         const u32 size_cbuf_offset{ssbo.cbuf_offset + 8};

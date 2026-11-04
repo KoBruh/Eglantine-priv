@@ -9,6 +9,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <span>
 
 #include "common/common_types.h"
 #include "common/thread_worker.h"
@@ -54,6 +55,12 @@ public:
 
     bool IsBound() const noexcept {
         return static_cast<bool>(pipeline);
+    }
+
+    /// Native programs: the constant buffer slots whose storage buffer pointer classification
+    /// the shader was translated with. The pipeline only fits dispatches where each still has it.
+    [[nodiscard]] std::span<const Shader::NativePointerSlot> NativePointerSlots() const noexcept {
+        return info.native_pointer_slots;
     }
 
 private:

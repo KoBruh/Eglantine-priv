@@ -52,6 +52,20 @@ static u64 MakeCbufKey(u32 index, u32 offset) {
     return (static_cast<u64>(index) << 32) | offset;
 }
 
+bool IsStorageBufferPointer(const Tegra::MemoryManager& gpu_memory, u64 value) {
+    return value != 0 && gpu_memory.IsWithinGPUAddressRange(value) &&
+           gpu_memory.IsFullyMappedRange(value, 1);
+}
+
+bool IsCbufArgumentStorageBufferPointer(const Tegra::MemoryManager& gpu_memory,
+                                        GPUVAddr cbuf_address, u32 cbuf_size, u32 offset) {
+    // GraphicsEnvironment::ReadCbufValue and ComputeEnvironment::ReadCbufValue, word by word.
+    const auto word = [&](u32 word_offset) -> u64 {
+        return word_offset < cbuf_size ? gpu_memory.Read<u32>(cbuf_address + word_offset) : 0;
+    };
+    return IsStorageBufferPointer(gpu_memory, word(offset) | (word(offset + 4) << 32));
+}
+
 static Shader::TextureType ConvertTextureType(const Tegra::Texture::TICEntry& entry) {
     switch (entry.texture_type) {
     case Tegra::Texture::TextureType::Texture1D:
@@ -210,8 +224,7 @@ bool GenericEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
     }
     const u64 address = u64{ReadCbufValue(index, offset)} |
                         (u64{ReadCbufValue(index, offset + 4)} << 32);
-    const bool mapped = address != 0 && gpu_memory->IsWithinGPUAddressRange(address) &&
-                        gpu_memory->IsFullyMappedRange(address, 1);
+    const bool mapped = IsStorageBufferPointer(*gpu_memory, address);
     storage_pointer_types.emplace(key, static_cast<u8>(mapped));
     return mapped;
 }

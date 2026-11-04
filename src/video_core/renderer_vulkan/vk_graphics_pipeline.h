@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <type_traits>
 #include <vector>
 
@@ -112,6 +113,19 @@ public:
     [[nodiscard]] bool IsMeshPipeline() const noexcept {
         return stage_infos[0].is_task || stage_infos[0].is_mesh;
     }
+
+    /// A constant buffer slot of one stage (Shader::Info::native_pointer_slots).
+    struct NativePointerSlot {
+        u32 stage;
+        Shader::NativePointerSlot slot;
+    };
+
+    /// Native programs: the slots, of every stage, whose storage buffer pointer classification
+    /// the shaders were translated with. The pipeline only fits draws where each still has it.
+    [[nodiscard]] std::span<const NativePointerSlot> NativePointerSlots() const noexcept {
+        return native_pointer_slots;
+    }
+
     GraphicsPipeline& operator=(GraphicsPipeline&&) noexcept = delete;
     GraphicsPipeline(GraphicsPipeline&&) noexcept = delete;
 
@@ -224,6 +238,7 @@ private:
     std::shared_ptr<const GraphicsShaderModules> spv_modules;
 
     std::array<Shader::Info, NUM_STAGES> stage_infos;
+    std::vector<NativePointerSlot> native_pointer_slots;
     std::array<u32, 5> enabled_uniform_buffer_masks{};
     VideoCommon::UniformBufferSizes uniform_buffer_sizes{};
     u32 num_descriptor_entries{};

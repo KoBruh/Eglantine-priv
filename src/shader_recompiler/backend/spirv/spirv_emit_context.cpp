@@ -1058,15 +1058,22 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         }};
         if (info.native_global_bounds) {
             // Native pointers carry no NVN size word. The address belongs to the candidate buffer
-            // whose base is the closest one at or below it (bounds come from the binding).
+            // whose base is the closest one at or below it and whose bound length still holds
+            // the accessed element; an address in no binding is not accessed. Robust buffer
+            // access does not keep a write inside the binding the shader picked.
             std::vector<Id> bases(num_buffers);
             Id best_index{Const(~0U)};
             Id best_distance{Constant(U64, ~u64{0})};
             for (size_t index = 0; index < num_buffers; ++index) {
                 bases[index] = base_address(index);
                 const Id distance{OpISub(U64, addr, bases[index])};
-                const Id better{OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, bases[index]),
-                                             OpULessThan(U1, distance, best_distance))};
+                const Id element{OpShiftRightLogical(U64, distance, Const(shift))};
+                const Id length{OpUConvert(U64, OpArrayLength(U32[1], ssbos[index].*ssbo_member,
+                                                              0U))};
+                const Id in_bounds{OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, bases[index]),
+                                                OpULessThan(U1, element, length))};
+                const Id better{
+                    OpLogicalAnd(U1, in_bounds, OpULessThan(U1, distance, best_distance))};
                 best_distance = OpSelect(U64, better, distance, best_distance);
                 best_index = OpSelect(U32[1], better, Const(static_cast<u32>(index)), best_index);
             }

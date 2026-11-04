@@ -322,6 +322,17 @@ private:
     u32 viewport_transform_state = 1;
 };
 
+/// Native programs: whether an 8-byte constant buffer argument is a storage buffer pointer, a
+/// mapped GPU address (Environment::IsCbufStorageBufferPointer's answer).
+[[nodiscard]] bool IsStorageBufferPointer(const Tegra::MemoryManager& gpu_memory, u64 value);
+
+/// IsStorageBufferPointer of the argument at `offset` of a constant buffer, read the way
+/// translation reads it (words past the buffer's size are zero). The pipeline caches ask it for
+/// each draw of a native pipeline, which only fits the answers it was translated with.
+[[nodiscard]] bool IsCbufArgumentStorageBufferPointer(const Tegra::MemoryManager& gpu_memory,
+                                                      GPUVAddr cbuf_address, u32 cbuf_size,
+                                                      u32 offset);
+
 void SerializePipeline(std::span<const char> key, std::span<const GenericEnvironment* const> envs,
                        const std::filesystem::path& filename, u32 cache_version);
 

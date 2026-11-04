@@ -213,6 +213,32 @@ struct StorageBufferDescriptor {
     auto operator<=>(const StorageBufferDescriptor&) const = default;
 };
 
+/// Native programs: a constant buffer slot translation asked about
+/// (Environment::IsCbufStorageBufferPointer), and the answer it got. The storage buffers a
+/// program binds, and which accesses stay global, follow from these answers, which are live
+/// state (what memory is mapped) and in no pipeline key.
+struct NativePointerSlot {
+    u32 cbuf_index;
+    u32 cbuf_offset;
+    bool is_pointer;
+
+    auto operator<=>(const NativePointerSlot&) const = default;
+};
+
+/// Whether a program translated with these answers fits the current state, where
+/// is_pointer(cbuf_index, cbuf_offset) classifies a slot now. A program that does not fit binds
+/// the wrong buffers: another variant has to be translated for the current answers.
+template <typename IsPointer>
+[[nodiscard]] bool NativePointerSlotsMatch(std::span<const NativePointerSlot> slots,
+                                           IsPointer&& is_pointer) {
+    for (const NativePointerSlot& slot : slots) {
+        if (static_cast<bool>(is_pointer(slot.cbuf_index, slot.cbuf_offset)) != slot.is_pointer) {
+            return false;
+        }
+    }
+    return true;
+}
+
 struct TextureBufferDescriptor {
     bool has_secondary;
     /// The buffer's format holds integers (signed when is_signed): the shader reads it as such,
@@ -406,6 +432,10 @@ struct Info {
     boost::container::static_vector<ConstantBufferDescriptor, MAX_CBUFS>
         constant_buffer_descriptors;
     boost::container::static_vector<StorageBufferDescriptor, MAX_SSBOS> storage_buffers_descriptors;
+    /// Native programs: every slot whose storage buffer pointer classification translation
+    /// depended on, sorted. The program is only valid while each still has its answer
+    /// (NativePointerSlotsMatch); the pipeline caches pick or build another variant otherwise.
+    std::vector<NativePointerSlot> native_pointer_slots;
     TextureBufferDescriptors texture_buffer_descriptors;
     ImageBufferDescriptors image_buffer_descriptors;
     TextureDescriptors texture_descriptors;

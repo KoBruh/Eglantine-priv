@@ -282,7 +282,8 @@
         "patches": [
             "0001-include-cstdlib.patch",
             "0001-cooperative-matrix.patch",
-            "0002-compile-options.patch"
+            "0002-compile-options.patch",
+            "0003-array-length.patch"
         ],
         "repo": "eden-emulator/sirit",
         "version": "v1.0.5"

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <map>
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
@@ -14,6 +15,7 @@
 
 #include "common/alignment.h"
 #include "shader_recompiler/environment.h"
+#include "shader_recompiler/exception.h"
 #include "shader_recompiler/frontend/ir/basic_block.h"
 #include "shader_recompiler/frontend/ir/breadth_first_search.h"
 #include "shader_recompiler/frontend/ir/ir_emitter.h"
@@ -69,9 +71,22 @@ struct StorageInfo {
     std::unordered_set<const IR::Inst*> biased_exhausted;
     std::unordered_set<const IR::Inst*> unbiased_exhausted;
     std::unordered_map<const IR::Inst*, small_vector<StorageBufferAddr, 4>> native_candidates;
-    /// A native access with several candidate pointers was left global.
-    bool native_runtime_bounds{};
+    /// Native programs: each slot asked about and its answer (Info::native_pointer_slots).
+    std::map<StorageBufferAddr, bool> native_classifications;
+    /// Some access (some store) stays global memory.
+    bool left_global{};
+    bool writes_left_global{};
 };
+
+/// Native programs: whether the slot holds a storage buffer pointer, asking the environment once
+/// and keeping the answer the program now depends on.
+bool IsNativePointer(const StorageBufferAddr& slot, StorageInfo& info, Environment& env) {
+    const auto [it, is_new]{info.native_classifications.try_emplace(slot, false)};
+    if (is_new) {
+        it->second = env.IsCbufStorageBufferPointer(slot.index, slot.offset);
+    }
+    return it->second;
+}
 
 /// Returns true when the instruction is a global memory instruction
 bool IsGlobalMemory(const IR::Inst& inst) {
@@ -391,7 +406,7 @@ std::optional<StorageBufferAddr> Track(const IR::Value& value, const Bias* bias,
 /// additions, selects and phis. A predicated address assignment becomes a phi whose other input
 /// can point into a different buffer, so the search does not stop at the first pointer.
 small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_addr,
-                                                           Environment& env) {
+                                                           StorageInfo& info, Environment& env) {
     small_vector<StorageBufferAddr, 4> candidates;
     small_vector<const IR::Inst*, 16> pending{low_addr.InstRecursive()};
     std::unordered_set<const IR::Inst*> visited{pending.front()};
@@ -413,7 +428,7 @@ small_vector<StorageBufferAddr, 4> NativePointerCandidates(const IR::U32& low_ad
             const StorageBufferAddr pointer{.index = index.U32(), .offset = offset.U32()};
             if (Common::IsAligned(pointer.offset, 8) &&
                 std::ranges::find(candidates, pointer) == candidates.end() &&
-                env.IsCbufStorageBufferPointer(pointer.index, pointer.offset)) {
+                IsNativePointer(pointer, info, env)) {
                 candidates.push_back(pointer);
             }
             break;
@@ -462,7 +477,8 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         const IR::Inst* const start{low_addr.InstRecursive()};
         auto it{info.native_candidates.find(start)};
         if (it == info.native_candidates.end()) {
-            it = info.native_candidates.emplace(start, NativePointerCandidates(low_addr, env)).first;
+            it = info.native_candidates.emplace(start, NativePointerCandidates(low_addr, info, env))
+                     .first;
         }
         const auto& candidates{it->second};
         if (candidates.size() > 1) {
@@ -470,11 +486,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
             // run time. Rebasing on one of them drops the other path's accesses.
             for (const StorageBufferAddr& candidate : candidates) {
                 info.set.insert(candidate);
-                if (IsGlobalMemoryWrite(inst)) {
-                    info.writes.insert(candidate);
-                }
             }
-            info.native_runtime_bounds = true;
             return;
         }
         if (candidates.size() == 1) {
@@ -650,10 +662,29 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
             if (!IsGlobalMemory(inst)) {
                 continue;
             }
+            const size_t num_replaced{info.to_replace.size()};
             CollectStorageBuffers(*block, inst, info, env);
+            if (info.to_replace.size() == num_replaced) {
+                info.left_global = true;
+                info.writes_left_global |= IsGlobalMemoryWrite(inst);
+            }
         }
     }
-    program.info.native_global_bounds |= info.native_runtime_bounds;
+    for (const auto& [slot, is_pointer] : info.native_classifications) {
+        program.info.native_pointer_slots.push_back({
+            .cbuf_index = slot.index,
+            .cbuf_offset = slot.offset,
+            .is_pointer = is_pointer,
+        });
+    }
+    // Candidate pointers are not limited per access, so a native program can ask for more
+    // bindings than a stage has. Failing here fails the pipeline, like other untranslatable
+    // shaders; the descriptor list itself would throw an allocation error nothing catches.
+    const size_t num_descriptors{program.info.storage_buffers_descriptors.size() + info.set.size()};
+    if (num_descriptors > Info::MAX_SSBOS) {
+        throw NotImplementedException("Binding {} storage buffers (a stage has {})",
+                                      num_descriptors, Info::MAX_SSBOS);
+    }
     for (const StorageBufferAddr& storage_buffer : info.set) {
         program.info.storage_buffers_descriptors.push_back({
             .cbuf_index = storage_buffer.index,
@@ -661,6 +692,18 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
             .count = 1,
             .is_written = info.writes.contains(storage_buffer),
         });
+    }
+    if (env.IsNativeProgram() && info.left_global) {
+        // A native access left global picks its buffer at run time among all of the program's
+        // storage buffers, bounded by each binding's length: native pointers have no NVN size
+        // word, and the NVN slots hold unrelated arguments. A store can then land in any of
+        // them, so each is bound as written, or the buffer cache never sees the change.
+        program.info.native_global_bounds = true;
+        if (info.writes_left_global) {
+            for (StorageBufferDescriptor& desc : program.info.storage_buffers_descriptors) {
+                desc.is_written = true;
+            }
+        }
     }
     for (const StorageInst& storage_inst : info.to_replace) {
         const StorageBufferAddr storage_buffer{storage_inst.storage_buffer};
@@ -676,6 +719,13 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
 
 void JoinStorageInfo(Info& base, Info& source) {
     base.native_global_bounds |= source.native_global_bounds;
+    // Both programs read the same constant buffers (one stage): the merged program depends on
+    // the answers either was translated with.
+    auto& slots = base.native_pointer_slots;
+    slots.insert(slots.end(), source.native_pointer_slots.begin(),
+                 source.native_pointer_slots.end());
+    std::ranges::sort(slots);
+    slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
     auto& descriptors = base.storage_buffers_descriptors;
     for (auto& desc : source.storage_buffers_descriptors) {
         auto it{std::ranges::find_if(descriptors, [&desc](const auto& existing) {
@@ -686,7 +736,17 @@ void JoinStorageInfo(Info& base, Info& source) {
             it->is_written |= desc.is_written;
             continue;
         }
+        if (descriptors.size() >= Info::MAX_SSBOS) {
+            throw NotImplementedException("More than {} storage buffers in dual vertex programs",
+                                          Info::MAX_SSBOS);
+        }
         descriptors.push_back(desc);
+    }
+    // Native global stores of either program now select among both programs' buffers.
+    if (base.native_global_bounds && (base.stores_global_memory || source.stores_global_memory)) {
+        for (StorageBufferDescriptor& desc : descriptors) {
+            desc.is_written = true;
+        }
     }
 }
 

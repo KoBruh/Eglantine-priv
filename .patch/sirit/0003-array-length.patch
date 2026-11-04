@@ -1,0 +1,29 @@
+diff -ruN a/include/sirit/sirit.h b/include/sirit/sirit.h
+--- a/include/sirit/sirit.h	2026-11-03 23:44:51.822275500 -0300
++++ b/include/sirit/sirit.h	2026-11-03 23:44:51.958105800 -0300
+@@ -384,6 +384,9 @@
+         return OpAccessChain(result_type, base, std::span<const Id>({indexes...}));
+     }
+ 
++    /// Length of the run-time array that is the last member of a storage buffer structure.
++    Id OpArrayLength(Id result_type, Id structure, std::uint32_t array_member);
++
+     /// Extract a single, dynamically selected, component of a vector.
+     Id OpVectorExtractDynamic(Id result_type, Id vector, Id index);
+ 
+diff -ruN a/src/instructions/memory.cpp b/src/instructions/memory.cpp
+--- a/src/instructions/memory.cpp	2026-11-03 23:44:51.840215400 -0300
++++ b/src/instructions/memory.cpp	2026-11-03 23:44:51.958105800 -0300
+@@ -34,6 +34,12 @@
+     return *code << OpId{spv::Op::OpAccessChain, result_type} << base << indexes << EndOp{};
+ }
+ 
++Id Module::OpArrayLength(Id result_type, Id structure, std::uint32_t array_member) {
++    code->Reserve(5);
++    return *code << OpId{spv::Op::OpArrayLength, result_type} << structure << array_member
++                 << EndOp{};
++}
++
+ Id Module::OpVectorExtractDynamic(Id result_type, Id vector, Id index) {
+     code->Reserve(5);
+     return *code << OpId{spv::Op::OpVectorExtractDynamic, result_type} << vector << index

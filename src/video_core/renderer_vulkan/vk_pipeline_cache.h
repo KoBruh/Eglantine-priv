@@ -134,6 +134,23 @@ public:
 private:
     [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineSlowPath();
 
+    // Native programs bind the storage buffers that constant buffer slots pointed to when they
+    // were translated (Shader::Info::native_pointer_slots), which is live state in no key. A
+    // pipeline is only used while its slots keep those answers; other answers get a variant of
+    // it, kept beside graphics_cache and compute_cache.
+
+    /// Whether the current draw's constant buffers give the pipeline's slots their answers.
+    [[nodiscard]] bool NativePointersMatch(const GraphicsPipeline& pipeline) const;
+    [[nodiscard]] bool NativePointersMatch(const ComputePipeline& pipeline) const;
+
+    /// The variant of graphics_key's pipeline for the current answers of `base`'s slots, built
+    /// when there is none. Null when it failed to build.
+    [[nodiscard]] GraphicsPipeline* CurrentGraphicsPipelineVariant(const GraphicsPipeline& base);
+
+    [[nodiscard]] ComputePipeline* CurrentComputePipelineVariant(const ComputePipelineCacheKey& key,
+                                                                 const ComputePipeline& base,
+                                                                 const ShaderInfo* shader);
+
     [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) const noexcept;
 
     /// Whether the current draw may be skipped while its pipeline is being built.
@@ -253,6 +270,23 @@ private:
     ::Common::unordered_map<ComputePipelineCacheKey, std::unique_ptr<ComputePipeline>> compute_cache;
     ::Common::unordered_map<ComputePipelineCacheKey, std::exception_ptr> rejected_tensor_pipelines;
     ::Common::unordered_map<GraphicsPipelineCacheKey, std::unique_ptr<GraphicsPipeline>> graphics_cache;
+
+    /// A pipeline built for other storage buffer pointer answers than the one in the cache.
+    template <typename Pipeline>
+    struct NativeVariant {
+        /// The answers of the cached pipeline's slots (in NativePointerSlots order) it was built
+        /// for.
+        std::vector<bool> answers;
+        std::unique_ptr<Pipeline> pipeline; ///< Null when the build failed.
+        std::exception_ptr rejection;       ///< A tensor shader the device rejected (compute).
+    };
+    /// Never in transitions, which eviction clears for graphics_cache only. Graphics variants go
+    /// with their key's pipeline when it is evicted, and past 16 per key the least recently used.
+    ::Common::unordered_map<GraphicsPipelineCacheKey, std::vector<NativeVariant<GraphicsPipeline>>>
+        graphics_variants;
+    ::Common::unordered_map<ComputePipelineCacheKey, std::vector<NativeVariant<ComputePipeline>>>
+        compute_variants;
+    bool current_pipeline_is_variant{};
 
     ShaderPools main_pools;
 
