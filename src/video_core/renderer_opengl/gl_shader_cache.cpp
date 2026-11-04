@@ -287,7 +287,8 @@ void ShaderCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
     }
     const auto shader_dir{Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir)};
     const auto base_dir{shader_dir / fmt::format("{:016x}", title_id)};
-    if (!Common::FS::CreateDir(shader_dir) || !Common::FS::CreateDir(base_dir)) {
+    // CreateDirs: Eglantine's shader directory is inside the shared one, which may not exist yet.
+    if (!Common::FS::CreateDirs(shader_dir) || !Common::FS::CreateDir(base_dir)) {
         LOG_ERROR(Common_Filesystem, "Failed to create shader cache directories");
         return;
     }
@@ -336,7 +337,10 @@ void ShaderCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading,
         GraphicsPipelineKey key;
         file.read(reinterpret_cast<char*>(&key), sizeof(key));
         queue_work([this, key, envs_ = std::move(envs), &state, &callback](Context* ctx) mutable {
-            boost::container::static_vector<Shader::Environment*, 5> env_ptrs;
+            // As many programs as the writer stores: a pipeline can have all six.
+            boost::container::static_vector<Shader::Environment*,
+                                             Tegra::Engines::Maxwell3D::Regs::MaxShaderProgram>
+                env_ptrs;
             for (auto& env : envs_) {
                 env_ptrs.push_back(&env);
             }

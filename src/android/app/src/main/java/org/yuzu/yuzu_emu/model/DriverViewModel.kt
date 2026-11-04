@@ -151,7 +151,7 @@ class DriverViewModel : ViewModel() {
                     ?: return@withContext
                 val shaderDir = File(
                     userDirectory +
-                    "/cache/shader/" + game.settingsName.lowercase()
+                    "/cache/shader/eglantine/" + game.settingsName.lowercase()
                 )
                 if (shaderDir.exists()) {
                     shaderDir.deleteRecursively()

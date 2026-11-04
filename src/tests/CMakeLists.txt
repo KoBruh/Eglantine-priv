@@ -45,6 +45,7 @@ add_executable(tests
     core/internal_network/network.cpp
     shader_recompiler/compilation_memory.cpp
     video_core/memory_tracker.cpp
+    video_core/pipeline_cache_file.cpp
     video_core/shader_reuse.cpp
     video_core/native_storage_pointers.cpp
     video_core/ampere_conversions.cpp

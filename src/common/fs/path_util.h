@@ -31,7 +31,7 @@ enum class EdenPath {
     SaveDir,        // Where save data is stored.
     ScreenshotsDir, // Where yuzu screenshots are stored.
     SDMCDir,        // Where the emulated SDMC is stored.
-    ShaderDir,      // Where shaders are stored.
+    ShaderDir,      // Where shader caches are stored (Eglantine's own, apart from Eden's).
     TASDir,         // Where TAS scripts are stored.
     IconsDir,       // Where Icons for Windows shortcuts are stored.
     StreamlineDir,  // Where the user-supplied NVIDIA Streamline loader is stored.

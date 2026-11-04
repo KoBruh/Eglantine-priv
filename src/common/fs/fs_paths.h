@@ -28,6 +28,9 @@
 #define SCREENSHOTS_DIR "screenshots"
 #define SDMC_DIR "sdmc"
 #define SHADER_DIR "shader"
+// Eden shares the user directory and names its shader caches the same, in another format:
+// Eglantine keeps its own in this sub-directory of SHADER_DIR, so neither deletes the other's.
+#define EGLANTINE_SHADER_DIR "eglantine"
 #define STREAMLINE_DIR "streamline"
 #define TAS_DIR "tas"
 #define ICONS_DIR "icons"

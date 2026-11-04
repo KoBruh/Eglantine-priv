@@ -409,7 +409,7 @@ constexpr u32 STATIC_CACHE_VERSION = 1;
 
 std::filesystem::path StaticPipelineCacheFilename() {
     const auto shader_dir = Common::FS::GetEdenPath(Common::FS::EdenPath::ShaderDir);
-    if (!Common::FS::CreateDir(shader_dir)) {
+    if (!Common::FS::CreateDirs(shader_dir)) {
         return {};
     }
     return shader_dir / "vulkan_static_pipelines.bin";

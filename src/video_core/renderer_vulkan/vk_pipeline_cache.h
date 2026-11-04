@@ -151,6 +151,13 @@ private:
                                                                  const ComputePipeline& base,
                                                                  const ShaderInfo* shader);
 
+    /// Adds a pipeline the disk cache replay built to graphics_cache, or as a variant when the
+    /// key has a pipeline for other answers already. Called with the replay's lock held.
+    void AddCachedGraphicsPipeline(const GraphicsPipelineCacheKey& key,
+                                   std::unique_ptr<GraphicsPipeline> pipeline);
+    void AddCachedComputePipeline(const ComputePipelineCacheKey& key,
+                                  std::unique_ptr<ComputePipeline> pipeline);
+
     [[nodiscard]] GraphicsPipeline* BuiltPipeline(GraphicsPipeline* pipeline) const noexcept;
 
     /// Whether the current draw may be skipped while its pipeline is being built.
@@ -298,9 +305,10 @@ private:
 
     std::filesystem::path pipeline_cache_filename;
 
-    /// Key hashes of the graphics pipelines in the disk cache. Only those a recent session used
-    /// (used_pipelines) are built at boot; the rest are built when first needed, and not stored
-    /// again. Each built pipeline holds driver memory (title 1: 6.5k cached, a quarter used).
+    /// Key hashes of the graphics pipelines in the disk cache, less those whose build at boot
+    /// failed. Only those a recent session used (used_pipelines) are built at boot; the rest are
+    /// built when first needed, and not stored again. Each built pipeline holds driver memory
+    /// (title 1: 6.5k cached, a quarter used).
     std::unordered_set<u64> disk_pipelines;
     std::unordered_map<u64, u8> used_pipelines; ///< Key hash -> sessions since it was last used
     std::unordered_set<const GraphicsPipeline*> used_this_session;

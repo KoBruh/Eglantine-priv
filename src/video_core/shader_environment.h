@@ -71,6 +71,10 @@ public:
 
     [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
 
+    /// A hash of the IsCbufStorageBufferPointer answers given so far, 0 when none was asked. The
+    /// disk cache tells apart pipelines of one key built for other answers by it.
+    [[nodiscard]] u64 StoragePointerTypesHash() const;
+
     [[nodiscard]] std::optional<u64> Analyze();
 
     void SetCachedSize(size_t size_bytes);
@@ -272,6 +276,9 @@ public:
 
     [[nodiscard]] bool IsCbufStorageBufferPointer(u32 index, u32 offset) override;
 
+    /// GenericEnvironment::StoragePointerTypesHash of the environment this one was saved from.
+    [[nodiscard]] u64 StoragePointerTypesHash() const;
+
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 
     [[nodiscard]] Shader::TextureType ReadTextureType(u32 handle) override;
@@ -346,5 +353,19 @@ void SerializePipeline(const Key& key, const Envs& envs, const std::filesystem::
 void LoadPipelines(std::stop_token stop_loading, const std::filesystem::path& filename, u32 expected_cache_version,
     Common::UniqueFunction<void, std::ifstream&, FileEnvironment> load_compute,
     Common::UniqueFunction<void, std::ifstream&, std::vector<FileEnvironment>> load_graphics);
+
+/// A pipeline of a cache file that LoadPipelines read: where it ends (the file position after
+/// its load callback read the key), and whether CompactPipelineCache keeps it.
+struct PipelineCacheEntry {
+    u64 end;
+    bool keep;
+};
+
+/// Rewrites the pipeline cache without the pipelines not marked `keep`. `entries` are the
+/// pipelines LoadPipelines read, in file order; what was appended after them stays. Written to a
+/// temporary file renamed over the cache, so the old file stays whole if this fails or stops.
+/// Returns whether the file was replaced.
+bool CompactPipelineCache(const std::filesystem::path& filename,
+                          std::span<const PipelineCacheEntry> entries);
 
 } // namespace VideoCommon
