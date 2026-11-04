@@ -3,6 +3,7 @@
 
 #include <QApplication>
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -29,6 +30,8 @@
 #include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <sys/sysctl.h>
+#include <sys/types.h>
 #endif
 
 #include "common/logging.h"
@@ -175,6 +178,43 @@ static Qt::HighDpiScaleFactorRoundingPolicy GetHighDpiRoundingPolicy() {
 #endif
 }
 
+#if !defined(_WIN32) && (defined(__unix__) || defined(__APPLE__))
+// Raises the open file soft limit as far as the system allows, as _setmaxstdio does on Windows:
+// loose RomFS dumps keep thousands of files open through the VFS cache. Returns the soft limit in
+// effect afterwards, or 0 when it can't be read.
+static rlim_t RaiseOpenFileLimit() {
+    struct rlimit limit;
+    if (getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+        return 0;
+    }
+    // macOS reports an unlimited hard limit but refuses (EINVAL) a soft limit above
+    // kern.maxfilesperproc, OPEN_MAX on older releases, which would leave launchd's 256 in place.
+    // So try the largest first, then what the kernel takes; 8192 is what eden-cli asks for.
+    std::vector<rlim_t> candidates{1048576};
+#ifdef __APPLE__
+    int per_process = 0;
+    size_t size = sizeof(per_process);
+    if (sysctlbyname("kern.maxfilesperproc", &per_process, &size, nullptr, 0) == 0 &&
+        per_process > 0) {
+        candidates.push_back(static_cast<rlim_t>(per_process));
+    }
+#ifdef OPEN_MAX
+    candidates.push_back(OPEN_MAX);
+#endif
+#endif
+    candidates.push_back(8192);
+    for (const rlim_t candidate : candidates) {
+        struct rlimit raised = limit;
+        raised.rlim_cur = std::min(candidate, limit.rlim_max);
+        if (raised.rlim_cur > limit.rlim_cur && setrlimit(RLIMIT_NOFILE, &raised) == 0) {
+            limit = raised;
+            break;
+        }
+    }
+    return limit.rlim_cur;
+}
+#endif
+
 static void ParseSwitchFile(const std::filesystem::path& path,
                             std::map<std::string, std::string>& switches) {
     std::ifstream file{path};
@@ -281,13 +321,8 @@ int main(int argc, char* argv[]) {
     _setmaxstdio(8192);
 #endif // __MSVCRT__
 #elif defined(__unix__) || defined(__APPLE__)
-    // Raise the open file limit to at least 8192, or the hard limit.
-    // Most sane systems should not hit the hard limit here.
-    struct rlimit rl;
-    if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
-        rl.rlim_cur = std::min<rlim_t>(1048576, rl.rlim_max);
-        setrlimit(RLIMIT_NOFILE, &rl);
-    }
+    // Logged once the log is up (MainWindow starts it).
+    const rlim_t open_file_limit = RaiseOpenFileLimit();
 #endif // _WIN32
 
 #if defined(__APPLE__)
@@ -360,6 +395,15 @@ int main(int argc, char* argv[]) {
     setlocale(LC_ALL, "C");
 
     MainWindow main_window{has_broken_vulkan};
+#if !defined(_WIN32) && (defined(__unix__) || defined(__APPLE__))
+    if (open_file_limit == 0) {
+        LOG_WARNING(Frontend, "Could not read the open file limit");
+    } else if (open_file_limit == RLIM_INFINITY) {
+        LOG_INFO(Frontend, "Open file limit: unlimited");
+    } else {
+        LOG_INFO(Frontend, "Open file limit: {}", open_file_limit);
+    }
+#endif
     // After settings have been loaded by GMainWindow, apply the filter
     main_window.show();
 
