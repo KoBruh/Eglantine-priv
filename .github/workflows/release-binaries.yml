@@ -272,8 +272,7 @@ jobs:
           test -x build/release/bin/eden-cli
           strip build/release/bin/eglantine build/release/bin/eden-cli
           tar -czf "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz" \
-            -C build/release/bin eglantine eden-cli \
-            -C "$GITHUB_WORKSPACE/dist/mods" "Pokopia FPS mods"
+            -C build/release/bin eglantine eden-cli
           ls -la "eglantine-${GITHUB_SHA}-${{ matrix.platform }}.tar.gz"
 
       # A self-contained AppImage: linuxdeploy bundles every library the two programs need except
@@ -326,8 +325,6 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="/ucrt64/bin:$PATH"
-          # The frame-rate mods ship next to the emulator (README: Frame-rate mods).
-          cp -r "dist/mods/Pokopia FPS mods" build/release/bin/
           cd build/release/bin
           test -f eglantine.exe
           test -f eden-cli.exe
@@ -389,14 +386,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Only the frame-rate mods are needed from the source tree (their zip is a release asset). The
-      # checkout comes first: it empties the workspace before checking out, which would delete
-      # binaries downloaded before it.
-      - name: Check out the mods
-        uses: actions/checkout@v5
-        with:
-          sparse-checkout: dist/mods
-
       - name: Download binaries
         uses: actions/download-artifact@v7
         with:
@@ -429,8 +418,6 @@ jobs:
               (cd "$artifact" && zip -qr "${GITHUB_WORKSPACE}/release/$(strip_sha "$name").zip" .)
             fi
           done
-          # The frame-rate mods on their own, for the AppImage (the zips and tar.gz already hold them).
-          (cd dist/mods && zip -qr "${GITHUB_WORKSPACE}/release/pokopia-fps-mods.zip" "Pokopia FPS mods")
           ls -la release
 
       - name: Create release
@@ -462,9 +449,7 @@ jobs:
           | x86_64 | [eglantine-linux-x86_64.AppImage](${base}/eglantine-linux-x86_64.AppImage) | [eglantine-linux-x86_64.tar.gz](${base}/eglantine-linux-x86_64.tar.gz) |
           | ARM (aarch64) | [eglantine-linux-aarch64.AppImage](${base}/eglantine-linux-aarch64.AppImage) | [eglantine-linux-aarch64.tar.gz](${base}/eglantine-linux-aarch64.tar.gz) |
 
-          ## Frame-rate mods (Pokémon Pokopia)
-
-          120, 180, 240 and 360 FPS mods for Pokémon Pokopia 2.0.1 are in the Windows zip and the tar.gz (\`Pokopia FPS mods\` folder), and on their own in [pokopia-fps-mods.zip](${base}/pokopia-fps-mods.zip). See [Frame-rate mods](https://github.com/${GITHUB_REPOSITORY}#frame-rate-mods) in the README to install one.
+          Ready-made mods for some games, such as frame-rate mods, are in the repository's [mods](https://github.com/${GITHUB_REPOSITORY}/tree/main/mods) folder.
           EOF
 
           gh release create "${tag}" release/* \

@@ -366,7 +366,7 @@ struct Values {
     // Switch 2: the emulated display's refresh rate (not the monitor's), right under VSync in the
     // Graphics tab. With the speed limit on, presents are paced to it (one per vblank, as the
     // console's compositor shows them) and its vsync events fire at it. 60 is the console's TV rate;
-    // the bundled Pokopia frame-rate mods need it at their own rate (120, 180, 240 or 360).
+    // frame-rate mods (some are in the repository's mods folder) need it at the rate they target.
     SwitchableSetting<u32, true> nx2_refresh_rate{linkage,
                                                   60,
                                                   30,

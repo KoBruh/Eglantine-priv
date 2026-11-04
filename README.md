@@ -27,7 +27,7 @@
   <a href="#compatibility">Compatibility</a> |
   <a href="#download">Download</a> |
   <a href="#getting-started">Getting started</a> |
-  <a href="#frame-rate-mods">Frame-rate mods</a> |
+  <a href="#mods">Mods</a> |
   <a href="#building">Building</a> |
   <a href="#contributing">Contributing</a> |
   <a href="#license">License</a>
@@ -40,7 +40,7 @@
 
 | Game | Status |
 | --- | --- |
-| Pokémon Pokopia | Playable. [Frame-rate mods](#frame-rate-mods) take it to 120, 180, 240 or 360 FPS. |
+| Pokémon Pokopia | Playable. |
 | Mario Kart World | Runs at decent to full speed, depending on your hardware and settings. |
 | Splatoon Raiders | Runs, with variable performance. |
 
@@ -68,40 +68,9 @@ You need:
 
 The [User Handbook](./docs/user/README.md) covers setup, with a [Quick Start](./docs/user/QuickStart.md), controllers, mods, saves and troubleshooting.
 
-## Frame-rate mods
+## Mods
 
-**Pokémon Pokopia** runs at 60 FPS on the console. The bundled mods raise that to 120, 180, 240 or 360 FPS. They need **version 2.0.1** of the game (on any other version they do nothing), and they ship in the `Pokopia FPS mods` folder of the Windows zip and the Linux tar.gz, and on their own as `pokopia-fps-mods.zip` on each release.
-
-A mod needs two things: the mod itself, and the game's **FPS Limit** setting raised to the same number. The FPS Limit is 60 unless you change it, and the game can't go past it even with a mod. It has nothing to do with your monitor's refresh rate.
-
-### Choosing a mod
-
-Pick the highest mod your monitor can show and your PC can keep up with. With VSync on, you never see more frames than your monitor's refresh rate.
-
-| Your monitor | Mod | FPS Limit |
-| --- | --- | --- |
-| 120–165 Hz | `120 FPS` | 120 |
-| 180–200 Hz | `180 FPS` | 180 |
-| 240–300 Hz | `240 FPS` | 240 |
-| 360 Hz and up | `360 FPS` | 360 |
-
-### Installing
-
-1. In Eglantine, right-click Pokémon Pokopia and choose **Open Mod Data Location**.
-   - On Windows that is `%APPDATA%\eden\load\0400A3A01EE4C000`; on Linux, `~/.local/share/eden/load/0400A3A01EE4C000`.
-2. Copy **one** folder from `Pokopia FPS mods` into it, for example `240 FPS`.
-3. Right-click the game, open **Properties → Add-Ons**, and check that exactly one FPS mod is enabled.
-4. In the same **Properties** window, open **Graphics** and set **FPS Limit (FPS mods)** to the mod's number, for example 240. It sits just under VSync Mode.
-   - Setting it here applies to Pokopia only. The same setting in **Emulation → Configure → Graphics** applies to every game, and other games should stay at 60.
-5. Start the game. The FPS counter in the status bar should now go past 60.
-
-### If it doesn't work
-
-- **Still 60 FPS:** the FPS Limit is still 60, the mod isn't enabled in Add-Ons, or the game isn't on version 2.0.1.
-- **Lower or uneven frame rate:** your PC can't keep up with that mod. Use the next one down, and set the FPS Limit to match.
-- **Two FPS mods enabled:** keep only one.
-
-The mods are made with [`tools/nx2/pokopia_fps_mod.py`](./tools/nx2/pokopia_fps_mod.py).
+The [`mods`](./mods) folder has ready-made mods for some games, such as frame-rate mods. Its README lists them, the game version each one needs, and how to install one. A frame-rate mod also needs the game's **FPS Limit (FPS mods)** setting, under **Properties → Graphics**, raised to the mod's frame rate.
 
 ## Building
 
