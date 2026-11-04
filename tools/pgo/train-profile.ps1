@@ -80,6 +80,19 @@ if (-not $SkipPackages -and -not $SkipBuild) {
         "automake-wrapper patch jq pactoys ninja " + ($mingw -join ' '))
 }
 
+# Every CI compiler has to read the profile, and a clang refuses one written by a newer LLVM major.
+# MSYS2's llvm-profdata writes it, so it must not be newer than the Linux jobs' clang.
+if (-not (Test-Path $profdata)) {
+    throw "No llvm-profdata at $profdata (MSYS2 package mingw-w64-ucrt-x86_64-llvm)"
+}
+$llvm = [int]((& $profdata --version | Out-String) -replace '(?s).*LLVM version (\d+).*', '$1')
+$workflow = Get-Content '.github\workflows\release-binaries.yml' -Raw
+if ($workflow -match 'PGO_LLVM_VERSION:\s*"(\d+)"' -and $llvm -gt [int]$Matches[1]) {
+    throw ("MSYS2's LLVM $llvm is newer than PGO_LLVM_VERSION $($Matches[1]), the Linux jobs' " +
+        "clang, which could not read the profile. Raise PGO_LLVM_VERSION to $llvm (and rebuild the " +
+        "boat snapshot with tools/ci/boat-snapshot.sh) first.")
+}
+
 $buildUnix = $BuildDir -replace '\\', '/'
 if (-not $SkipBuild) {
     # Keep these in step with "Configure MinGW PGO" in .github/workflows/release-binaries.yml:

@@ -45,7 +45,8 @@ our own code playing Pokémon Pokopia, and `train-profile.ps1` rebuilds it from 
   format changes between majors). The profile is written by the `llvm-profdata` of the older of
   the two CI compilers: MSYS2's UCRT64 clang (Windows PGO job) and apt.llvm.org's
   `clang-$PGO_LLVM_VERSION` (Linux PGO jobs). Both are LLVM 23 today (MSYS2 23.1.4,
-  apt.llvm.org 23.1.5), and the script uses MSYS2's `llvm-profdata`, which is the older one.
+  apt.llvm.org 23.1.5), and the script uses MSYS2's `llvm-profdata`, which is the older one. The
+  script stops before building if MSYS2's LLVM major is newer than `PGO_LLVM_VERSION`.
 
 ## Training a new profile
 
