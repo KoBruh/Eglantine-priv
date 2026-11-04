@@ -345,6 +345,20 @@ void CountRequest(const std::string& service, u32 command, u32 type, u32 result,
 }
 std::mutex in_flight_mutex;
 std::map<u64, std::string> in_flight;
+
+// The requests in flight are only logged by guest thread dumps (DumpGuestThreads), so they are
+// only tracked when a dump can happen: tracking costs two strings and three locks of one mutex
+// every service thread shares, on every request.
+bool InFlightTrackingEnabled() {
+    static const bool enabled = std::getenv("EDEN_NX2_THREAD_DUMP") != nullptr ||
+                                std::getenv("EDEN_NX2_THREAD_DUMP_AFTER") != nullptr;
+    return enabled;
+}
+
+void SetInFlight(u64 requester, std::string what) {
+    std::scoped_lock lk{in_flight_mutex};
+    in_flight[requester] = std::move(what);
+}
 } // Anonymous namespace
 
 void LogInFlightRequests() {
@@ -393,23 +407,27 @@ void DumpGuestThreads(Core::System& system, std::string_view reason) {
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
     const u64 requester = ctx.GetThread().GetThreadId();
-    {
-        std::scoped_lock lk{in_flight_mutex};
-        in_flight[requester] = fmt::format("{} cmd {} (waiting for service lock)", service_name,
-                                           ctx.GetCommand());
+    const bool track_in_flight = InFlightTrackingEnabled();
+    if (track_in_flight) {
+        SetInFlight(requester, fmt::format("{} cmd {} (waiting for service lock)", service_name,
+                                           ctx.GetCommand()));
     }
     SCOPE_EXIT {
-        std::scoped_lock lk{in_flight_mutex};
-        in_flight.erase(requester);
+        if (track_in_flight) {
+            std::scoped_lock lk{in_flight_mutex};
+            in_flight.erase(requester);
+        }
     };
     const auto guard = LockService();
     const auto handle_start =
         IpcSummaryEnabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    {
-        std::scoped_lock lk{in_flight_mutex};
-        in_flight[requester] = fmt::format("{} cmd {}", service_name, ctx.GetCommand());
+    if (track_in_flight) {
+        SetInFlight(requester, fmt::format("{} cmd {}", service_name, ctx.GetCommand()));
     }
     SCOPE_EXIT {
+        if (!IpcSummaryEnabled()) {
+            return;
+        }
         const auto* cmd_buf = ctx.CommandBuffer();
         u32 result_word = 0;
         const u32 type = static_cast<u32>(ctx.GetCommandType());
@@ -424,11 +442,9 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
             }
         }
         CountRequest(service_name, ctx.GetCommand(), type, result_word,
-                     IpcSummaryEnabled()
-                         ? static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                std::chrono::steady_clock::now() - handle_start)
-                                                .count())
-                         : 0);
+                     static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now() - handle_start)
+                                          .count()));
     };
 
     Result result = ResultSuccess;
