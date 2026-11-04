@@ -35,6 +35,7 @@
 #endif
 
 #include "common/logging.h"
+#include "common/x64/cpu_requirements.h"
 #include "main_window.h"
 #include "qt_common/render/emu_thread.h"
 
@@ -272,6 +273,7 @@ static void LoadNx2Switches(const char* argv0) {
 }
 
 int main(int argc, char* argv[]) {
+    Common::X64::CheckCpuRequirements();
 #ifdef _WIN32
     InstallCrashReport();
 #endif

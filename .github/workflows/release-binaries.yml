@@ -69,13 +69,19 @@ jobs:
         # started from the eglantine-ci snapshot, which has every package, clang, CMake and Qt
         # installed (tools/ci/boat-snapshot.sh). boat has no Windows or Arm machines, so those
         # jobs stay on GitHub's runners.
+        # The x86_64 builds target x86-64-v3 (YUZU_BUILD_PRESET v3: AVX2, BMI2, FMA; Intel Haswell
+        # and AMD Ryzen or newer). On an older CPU the programs show a message and quit instead of
+        # crashing (src/common/x64/cpu_requirements.cpp). The aarch64 build keeps the default.
         include:
           - platform: linux-x86_64
             runner: boat-large/from=eglantine-ci
+            preset: v3
           - platform: windows-x86_64
             runner: windows-2022
+            preset: v3
           - platform: linux-aarch64
             runner: ubuntu-24.04-arm
+            preset: custom
 
     steps:
       - name: Check out source
@@ -192,6 +198,7 @@ jobs:
             "-DEGLANTINE_BUILD_PLATFORM=${{ matrix.platform }}"
             -DUSE_DISCORD_PRESENCE=OFF
             -DUSE_CCACHE=ON
+            "-DYUZU_BUILD_PRESET=${{ matrix.preset }}"
             "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
             "-DCMAKE_CXX_COMPILER=clang++-$PGO_LLVM_VERSION"
             "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld"
@@ -234,6 +241,7 @@ jobs:
             "-DEGLANTINE_BUILD_PLATFORM=${{ matrix.platform }}" \
             -DUSE_DISCORD_PRESENCE=OFF \
             -DUSE_CCACHE=ON \
+            "-DYUZU_BUILD_PRESET=${{ matrix.preset }}" \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
@@ -436,7 +444,7 @@ jobs:
           cat > notes.md <<EOF
           Automatic build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}.
 
-          Every package is built with clang and profile-guided optimization (PGO).
+          Every package is built with clang and profile-guided optimization (PGO). The x86_64 packages need a CPU with AVX2 (Intel Haswell or AMD Ryzen and newer).
 
           ## Windows
 

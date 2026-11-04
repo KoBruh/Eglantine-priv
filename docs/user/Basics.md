@@ -12,7 +12,7 @@ The emulator is very demanding on hardware and requires a decent mid-range compu
 
 See [the requirements page](https://archive.is/sv83h) for recommended and minimum specs.
 
-The CPU must support FMA for an optimal gameplay experience. The GPU needs to support OpenGL 4.6 ([compatibility list](https://opengl.gpuinfo.org/)), or Vulkan 1.1 ([compatibility list](https://vulkan.gpuinfo.org/)).
+The x86_64 release packages need a CPU with AVX2 (the x86-64-v3 level: AVX2, BMI2 and FMA), which Intel Core processors have since the 4th generation (Haswell, 2013) and AMD processors since Ryzen (and Excavator); some recent Intel Pentium, Celeron and Atom models lack it. On a CPU without it the emulator shows a message and quits. To run on an older CPU, build it yourself with the default `YUZU_BUILD_PRESET` ([Build options](../Options.md)). The arm64 packages have no such requirement. The GPU needs to support OpenGL 4.6 ([compatibility list](https://opengl.gpuinfo.org/)), or Vulkan 1.1 ([compatibility list](https://vulkan.gpuinfo.org/)).
 
 If your GPU doesn't support or is just behind by a minor version, see Mesa environment variables below (*nix only).
 

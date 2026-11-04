@@ -186,10 +186,19 @@ if(ARCHITECTURE_x86_64)
     target_sources(
         common
         PRIVATE
+        x64/cpu_requirements.cpp
+        x64/cpu_requirements.h
         x64/rdtsc.cpp
         x64/rdtsc.h
         x64/xbyak.h)
     target_link_libraries(common PRIVATE xbyak::xbyak)
+    if (YUZU_REQUIRE_X86_64_V3)
+        # The check has to run on the CPUs it turns away, so it is built for the x86-64 baseline:
+        # this -march comes after the preset's on the command line, and the last one wins.
+        set_source_files_properties(x64/cpu_requirements.cpp PROPERTIES
+            COMPILE_DEFINITIONS YUZU_REQUIRE_X86_64_V3
+            COMPILE_OPTIONS "-march=x86-64;-mtune=generic")
+    endif()
 endif()
 
 if(MSVC)

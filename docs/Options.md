@@ -52,6 +52,7 @@ These options control dependencies.
 - `ENABLE_WERROR` (ON) Enables warnings as errors (-Werror).
 - `YUZU_CRASH_DUMPS` (OFF, Windows and Linux only) Compile crash dump (Minidump) support
 - `YUZU_BUILD_PRESET` (string, `custom`; GCC and clang) CPU tuning preset: `custom`, `generic`, `v3`, `zen2`, `zen4` or `native` on x86-64; `custom`, `generic`, `optimized`, `armv9` or `native` on arm64
+  - The x86-64 release builds use `v3` (AVX2, BMI2, FMA). With `v3`, `zen2` or `zen4` the programs check the CPU before anything else runs and quit with a message on one without AVX2 (`src/common/x64/cpu_requirements.cpp`); `custom` sets no `-march`, so a build runs on older CPUs too (MinGW builds still need SSE4.1).
 
 ### Flavors
 

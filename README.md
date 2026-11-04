@@ -48,7 +48,7 @@ Other games are being brought up; their notes are in [docs/dev/bringup](./docs/d
 
 ## Download
 
-Every change to `main` is built and published on the [Releases](https://github.com/notsapinho/Eglantine/releases) page. Day-to-day work happens on `dev`, which has no automatic builds. Every package is built with clang and profile-guided optimization (PGO).
+Every change to `main` is built and published on the [Releases](https://github.com/notsapinho/Eglantine/releases) page. Day-to-day work happens on `dev`, which has no automatic builds. Every package is built with clang and profile-guided optimization (PGO). The x86_64 packages need a CPU with AVX2 (x86-64-v3: Intel Haswell from 2013, AMD Ryzen, or newer); on an older one the emulator says so and quits.
 
 | System | File | Notes |
 | --- | --- | --- |

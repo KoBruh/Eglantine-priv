@@ -37,6 +37,7 @@
 #include "common/scm_rev.h"
 #include "common/settings.h"
 #include "common/string_util.h"
+#include "common/x64/cpu_requirements.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
@@ -642,6 +643,7 @@ static bool EditNup(const Core::LaunchParams& lp) {
 }
 
 extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
+    Common::X64::CheckCpuRequirements();
 #ifdef _WIN32
     SetUnhandledExceptionFilter(WriteCrashDump);
     if (std::getenv("EDEN_NX2_CRASH_DUMP") != nullptr) {

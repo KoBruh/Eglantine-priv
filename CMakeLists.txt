@@ -385,6 +385,12 @@ if (CXX_GCC OR CXX_CLANG)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=${march} -mtune=${mtune}")
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=${march} -mtune=${mtune}")
     endif()
+
+    # These presets use AVX2: the program refuses an older CPU with a message at startup instead
+    # of crashing on the first such instruction (src/common/x64/cpu_requirements.cpp).
+    if (ARCHITECTURE_x86_64 AND NOT MSVC AND "${march}" MATCHES "^(x86-64-v3|znver2|znver4)$")
+        set(YUZU_REQUIRE_X86_64_V3 ON)
+    endif()
 endif()
 
 # Configure C++ standard
