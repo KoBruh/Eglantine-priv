@@ -236,3 +236,15 @@ TEST_CASE("Ampere IADD3 keeps the negation of b in its carry forms",
         REQUIRE(((u64{end.registers[5]} << 32) | end.registers[4]) == left - right);
     }
 }
+
+TEST_CASE("Ampere IADD3.X inverts a modified source instead of negating it",
+          "[video_core][ampere][integer_add]") {
+    std::mt19937 random{0x1add3e};
+    // IADD3.X R4, R0, R2, ~R3, P0 and IADD3.X R4, R0, ~R2, R3, !P1.
+    CheckIadd3({.dest = 4, .a = 0, .b = 2, .c = 3, .negate_c = true, .extended = true,
+                .first_input = 0},
+               random);
+    CheckIadd3({.dest = 4, .a = 0, .b = 2, .c = 3, .negate_b = true, .extended = true,
+                .first_input = 9},
+               random);
+}
