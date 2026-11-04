@@ -101,3 +101,35 @@ TEST_CASE("Native QMD scheduler never recycles a launch still waiting", "[native
     REQUIRE(scheduler.Signal(waiting, 7, read, release).empty());
     REQUIRE(releases == launches + 1);
 }
+
+TEST_CASE("Native QMD scheduler starts a new session without the last one's QMDs", "[native-qmd]") {
+    Scheduler::Reset();
+    Scheduler scheduler;
+    std::map<std::uint64_t, Descriptor> memory;
+    std::size_t releases = 0;
+    const auto read = [&](std::uint64_t address, Descriptor& out) {
+        const auto it = memory.find(address);
+        if (it == memory.end()) {
+            return false;
+        }
+        out = it->second;
+        return true;
+    };
+    const auto release = [&](std::uint64_t, std::uint32_t) {
+        ++releases;
+        return true;
+    };
+
+    // The session stops with this QMD loaded and two dependencies short.
+    constexpr std::uint64_t address = 0x5000'0000;
+    memory[address] = MakeDescriptor(0x3000'0000, 7);
+    memory[address][4] = 2U << 14;
+    REQUIRE(scheduler.Signal(address, 3, read, release).empty());
+    REQUIRE(releases == 0);
+
+    // The next session schedules its own QMD, with no dependencies, at the same address.
+    Scheduler::Reset();
+    memory[address] = MakeDescriptor(0x3000'0000, 8);
+    REQUIRE(scheduler.Signal(address, 2, read, release).empty());
+    REQUIRE(releases == 1);
+}

@@ -22,9 +22,6 @@ namespace Tegra {
 // Ampere classes and the Turing+ macro ISA, which Eden's Maxwell engines don't implement.
 inline std::atomic<bool> g_nx2_ampere{false};
 
-// The running title, for the few places that must behave differently per game.
-inline std::atomic<u64> g_nx2_program_id{0};
-
 // Whether syncpoint and semaphore releases wait until the host GPU has finished the work before
 // them ("delayed" fences). Accurate GPU mode delays them by default; Switch 2 titles release at
 // once by default, as fast GPU mode does: they synchronize their channels through semaphores

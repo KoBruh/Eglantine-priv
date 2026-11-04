@@ -124,6 +124,14 @@ public:
     // Finished entries recycled since start; only used by diagnostics and tests.
     static inline std::size_t recycled{};
 
+    // A new emulation session starts: QMD addresses repeat between sessions, and a QMD the last
+    // one left loaded, waiting or deferred would apply its counts to the new one's QMD there.
+    static void Reset() {
+        states.clear();
+        order.clear();
+        recycled = 0;
+    }
+
 private:
     // Release slots (address low, flags | address high, payload). NVN2 patches a third one at
     // word 52 for queue syncs (e.g. a compute queue releasing a semaphore another queue waits on).

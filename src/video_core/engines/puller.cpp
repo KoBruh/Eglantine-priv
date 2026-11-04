@@ -119,6 +119,13 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
     return false;
 }
 
+Puller::~Puller() {
+    // Otherwise the waiter outlives the channel: every later semaphore write and query takes the
+    // waiters' lock (its count stays above zero), and a Puller allocated at the same address
+    // would find its latch.
+    Nx2SemaphoreWaiters::Get().Remove(this);
+}
+
 bool Puller::ResumeAcquire(DmaPusher& dma_pusher) {
     if (!CanResumeAcquire(dma_pusher)) {
         return false;

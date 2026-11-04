@@ -30,7 +30,9 @@
 #include "core/hle/service/nvnflinger/nvnflinger.h"
 #include "core/hle/service/server_manager.h"
 #include "frontend_common/firmware_manager.h"
+#include "video_core/game_dlss_status.h"
 #include "video_core/gpu.h"
+#include "video_core/native_qmd.h"
 #include "video_core/nx2.h"
 
 namespace Service::Nvidia {
@@ -134,7 +136,10 @@ Module::Module(Core::System& system)
     Tegra::Nx2ClearSemaphoreRegions();
     Tegra::Nx2ClearGpuWrittenPages();
     Tegra::Nx2ClearSparseRegions();
-    Tegra::Nx2ClearGpuWrittenPages();
+    // No lock: the last session's GPU threads are gone, and this one's compute engines only exist
+    // once a channel is opened through this module.
+    Tegra::NativeQmdScheduler::Reset();
+    VideoCore::SetGameDlssStatus({});
     Devices::g_nx2_driver = false;
     Tegra::g_nx2_ampere = false;
     Core::g_nx2_present_count = 0;

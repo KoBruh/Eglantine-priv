@@ -540,9 +540,11 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
         // Wait until the GPU has run this submission. The Yoshi demo rewrites command memory it
         // submitted once it believes the GPU is past it; with the GPU thread behind, the pushbuffer
         // was read half-rewritten and the command stream derailed. EDEN_NX2_SYNC_SUBMIT enables
-        // this for any title.
-        static const bool sync_submit = std::getenv("EDEN_NX2_SYNC_SUBMIT") != nullptr ||
-                                        system.GetApplicationProcessProgramID() == 0x04007C6028AA8000ULL;
+        // this for any title. The title check is per call: the GUI runs several games in one
+        // process.
+        static const bool sync_submit_any = std::getenv("EDEN_NX2_SYNC_SUBMIT") != nullptr;
+        const bool sync_submit = sync_submit_any || system.GetApplicationProcessProgramID() ==
+                                                        0x04007C6028AA8000ULL;
         if (sync_submit && increment > 0) {
             lock.unlock();
             auto& syncpoints = system.Host1x().GetSyncpointManager();

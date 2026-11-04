@@ -85,12 +85,17 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
                         if (!gmmu) {
                             return false;
                         }
-                        bool modified{};
-                        static_cast<void>(system.GPU().RunOnGpuThread([&] {
-                            modified = gmmu->ModifyKind(address, size, static_cast<Tegra::PTEKind>(kind));
-                        }));
-                        system.GPU().WaitForIdle();
-                        return modified;
+                        // In GPU-thread order, like the other listeners, and without waiting for
+                        // it: the registry calls this under its lock, which the GPU thread takes
+                        // to back sparse blocks (BackSparse), so waiting here could deadlock.
+                        system.GPU().RunInOrder([gmmu = gmmu.get(), address, size, kind] {
+                            if (!gmmu->ModifyKind(address, size, static_cast<Tegra::PTEKind>(kind))) {
+                                LOG_WARNING(Service_NVDRV,
+                                            "Switch 2 kind change {:#x}+{:#x} to {} failed",
+                                            address, size, kind);
+                            }
+                        });
+                        return true;
                     },
                     [this](u64 gpu_address, u64 cpu_address, u64 size) {
                         Nx2SparseTile(gpu_address, cpu_address, size);
