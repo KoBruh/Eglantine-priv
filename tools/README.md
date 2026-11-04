@@ -13,7 +13,6 @@ Tools for Eglantine and its subprojects. When adding new scripts please use `#!/
   - `volume_check.py`: Checks how a dumped 3D texture (`EDEN_NX2_DUMP_3D`) should be un-tiled.
   - `nso_syms.py`, `nso_dis.py`, `npdm_info.py`, `a64_coverage.py`: Symbol lookup, disassembly, `main.npdm` dump, and the AArch64 encodings dynarmic doesn't decode, for a title's NSOs.
   - `gdbrsp.py`: Minimal GDB remote-serial-protocol client for the gdbstub.
-- [`integration`](./integration): Standalone regression programs for a few video_core, dynarmic and Ampere-lowering headers. CMake doesn't build them.
 
 ## Windows
 

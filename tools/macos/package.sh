@@ -62,8 +62,10 @@ done
 for executable in eglantine eden-cli; do
     codesign --display --entitlements :- "$app/Contents/MacOS/$executable" \
         > "$stage/$executable-entitlements.plist"
-    test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.cs.allow-jit' \
-        "$stage/$executable-entitlements.plist")" = true
+    for entitlement in com.apple.security.hypervisor com.apple.security.cs.allow-jit; do
+        test "$(/usr/libexec/PlistBuddy -c "Print :$entitlement" \
+            "$stage/$executable-entitlements.plist")" = true
+    done
 done
 
 python3 - "$app" "$stage" <<'PY'

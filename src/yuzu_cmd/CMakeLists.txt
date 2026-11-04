@@ -60,13 +60,13 @@ if(UNIX AND NOT APPLE)
     install(TARGETS yuzu-cmd)
 endif()
 
-# Hypervisor.framework (native execution, the default CPU backend) needs this entitlement; an ad-hoc
-# signature carries it for local builds.
+# Hypervisor.framework (native execution, the default CPU backend) and the JIT backend need the
+# entitlements in dist/macos/eglantine.entitlements; an ad-hoc signature carries them for local builds.
 if(APPLE AND NOT CMAKE_GENERATOR MATCHES "Xcode")
     add_custom_command(TARGET yuzu-cmd POST_BUILD
         COMMAND codesign --force --sign - --entitlements
-                ${CMAKE_SOURCE_DIR}/src/yuzu/hypervisor.entitlements $<TARGET_FILE:yuzu-cmd>
-        COMMENT "Signing eden-cli with the hypervisor entitlement")
+                ${CMAKE_SOURCE_DIR}/dist/macos/eglantine.entitlements $<TARGET_FILE:yuzu-cmd>
+        COMMENT "Signing eden-cli with its entitlements (hypervisor, JIT)")
 endif()
 
 if(WIN32)
