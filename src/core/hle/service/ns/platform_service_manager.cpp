@@ -129,7 +129,8 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
     const auto* nand = fsc.GetSystemNANDContents();
     std::size_t offset = 0;
     // Rebuild shared fonts from data ncas or synthesize
-    for (auto& font : SHARED_FONTS) {
+    for (size_t font_index = 0; font_index < SHARED_FONTS.size(); ++font_index) {
+        const auto& font = SHARED_FONTS[font_index];
         FileSys::VirtualFile romfs;
         const auto nca =
             nand->GetEntry(static_cast<u64>(font.first), FileSys::ContentRecordType::Data);
@@ -168,6 +169,11 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
         const std::size_t plain_offset = Common::AlignUp(impl->builtin_font.size(), 0x1000);
         impl->builtin_font.resize(plain_offset + plain.size());
         std::memcpy(impl->builtin_font.data() + plain_offset, plain.data(), plain.size());
+        // GetBuiltInFontData indexes these by font type: a font that failed to load before this one
+        // keeps its place with an empty region.
+        while (impl->builtin_font_regions.size() < font_index) {
+            impl->builtin_font_regions.push_back(EMPTY_REGION);
+        }
         impl->builtin_font_regions.push_back({u32(plain_offset), u32(plain.size())});
         DecryptSharedFont(font_data_u32, impl->shared_font, offset);
         impl->shared_font_regions.push_back(region);
@@ -219,7 +225,7 @@ void IPlatformServiceManager::GetBuiltInFontData(HLERequestContext& ctx) {
     const u8 type = rp.Pop<u8>();
     const bool flag = rp.Pop<u8>() != 0;
     const auto& regions = impl->builtin_font_regions;
-    const bool found = type < regions.size();
+    const bool found = type < regions.size() && regions[type].size != 0;
     const FontRegion region = found ? regions[type] : EMPTY_REGION;
     LOG_WARNING(Service_NS, "(STUBBED) Switch 2 GetBuiltInFontData type={} flag={} -> offset={:#x} size={:#x}",
                 type, flag, region.offset, region.size);

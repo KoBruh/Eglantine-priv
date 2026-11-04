@@ -1876,6 +1876,14 @@ std::shared_ptr<ReusableShaders> PipelineCache::BuildGraphicsShaders(
         Shader::Environment& env{*envs[env_index]};
         ++env_index;
 
+        // Without VK_EXT_mesh_shader the driver cannot build a task/mesh pipeline; the draw is
+        // skipped (see the pipeline check in the rasterizer).
+        if ((env.ShaderStage() == Shader::Stage::Task ||
+             env.ShaderStage() == Shader::Stage::Mesh) &&
+            !device.IsExtMeshShaderSupported()) {
+            return nullptr;
+        }
+
         // Control flow analysis, translation and the dual vertex merge are charged together.
         std::optional<PipelineStats::ScopedTimer> translate_timer;
         translate_timer.emplace(PipelineStats::Kind::Graphics, PipelineStats::Stage::Translate);

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <bit>
+#include <utility>
 #include <catch2/catch_test_macros.hpp>
 
 #include "shader_recompiler/frontend/ampere/lower_to_maxwell.h"
@@ -79,7 +81,7 @@ TEST_CASE("Ampere byte F2I rejects other widths, rounding, modifiers and registe
         {{0x0000794d, 0, 0x03800000, 0}},
     }};
     for (const u32 mode : {0x0021c100U, 0x0021a100U, 0x00216100U, 0x0021e300U,
-                           0x0021e900U, 0x0061e100U, 0x0821e100U}) {
+                           0x0061e100U, 0x0821e100U}) {
         auto invalid = code;
         invalid[0].words[2] = mode;
         REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
@@ -813,5 +815,117 @@ TEST_CASE("Ampere half explicit texel fetches keep unsupported formats and regis
     invalid = code;
     invalid[0].words[1] = 0x33c044f6;
     REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(invalid)));
+}
+
+TEST_CASE("Ampere F2I round up preserves conversion mode", "[video_core][ampere]") {
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    for (const bool is_signed : {false, true}) {
+        const Instruction convert{{0x00067305, 0x00000009,
+                                   is_signed ? 0x0021b100U : 0x0020b000U, 0}};
+        const auto lowered = LowerToMaxwell(std::array{convert, exit});
+        REQUIRE(static_cast<bool>(lowered));
+        const auto instruction = std::ranges::find_if(lowered.instructions, [](u64 word) {
+            return (word & 0xfff0000000000000ULL) == 0x5cb0000000000000ULL;
+        });
+        REQUIRE(instruction != lowered.instructions.end());
+        REQUIRE((*instruction & 0xff) == 6);
+        REQUIRE(((*instruction >> 8) & 3) == 2);
+        REQUIRE(((*instruction >> 10) & 3) == 2);
+        REQUIRE(((*instruction >> 12) & 1) == static_cast<u64>(is_signed));
+        REQUIRE(((*instruction >> 39) & 3) == 2);
+        REQUIRE(((*instruction >> 44) & 1) == static_cast<u64>(is_signed));
+    }
+    const Instruction unsupported{{0x00067305, 0x00000009, 0x0020b001, 0}};
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{unsupported, exit})));
+}
+
+TEST_CASE("Ampere F2I supports 16-bit truncation", "[video_core][ampere]") {
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    for (const bool is_signed : {false, true}) {
+        const Instruction convert{{0x00067305, 9, 0x0021e800U | (is_signed ? 0x100U : 0), 0}};
+        const auto result = LowerToMaxwell(std::array{convert, exit});
+        REQUIRE(static_cast<bool>(result));
+        const auto word = std::ranges::find_if(result.instructions, [](u64 value) {
+            return (value & 0xfff0000000000000ULL) == 0x5cb0000000000000ULL;
+        });
+        REQUIRE(word != result.instructions.end());
+        REQUIRE(((*word >> 8) & 3) == 1);
+        REQUIRE(((*word >> 12) & 1) == static_cast<u64>(is_signed));
+        REQUIRE(((*word >> 39) & 3) == 3);
+        REQUIRE(((*word >> 44) & 1) == 1);
+    }
+    const Instruction unsupported{{0x00067305, 9, 0x0021e801, 0}};
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{unsupported, exit})));
+}
+
+/// The lowered instruction with these top 12 opcode bits that writes `target`.
+const u64* FindWrite(const Shader::Ampere::LoweredProgram& lowered, u64 opcode, u32 target) {
+    for (const u64& word : lowered.instructions) {
+        if ((word >> 52) == opcode && (word & 0xff) == target) return &word;
+    }
+    return nullptr;
+}
+
+TEST_CASE("Ampere uniform moves write and read every mapped uniform register",
+          "[video_core][ampere]") {
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    const auto mapped = [](u32 reg) { return reg < 22 ? reg + 216 : reg + 218; };
+    for (const u32 reg : {0U, 15U, 16U, 21U, 22U, 27U}) {
+        // UMOV URn, 0x1234
+        const Instruction immediate{{0x00007882U | (reg << 16), 0x1234, 0, 0}};
+        auto lowered = LowerToMaxwell(std::array{immediate, exit});
+        REQUIRE(static_cast<bool>(lowered));
+        const u64* move = FindWrite(lowered, 0x010, mapped(reg));
+        REQUIRE(move != nullptr);
+        REQUIRE(((*move >> 20) & 0xffffffffULL) == 0x1234);
+        // UMOV URn, UR3 and UMOV UR3, URn
+        const Instruction to{{0x00007c82U | (reg << 16), 3, 0x08000000, 0}};
+        lowered = LowerToMaxwell(std::array{to, exit});
+        REQUIRE(static_cast<bool>(lowered));
+        move = FindWrite(lowered, 0x5c9, mapped(reg));
+        REQUIRE(move != nullptr);
+        REQUIRE(((*move >> 20) & 0xff) == mapped(3));
+        const Instruction from{{0x00037c82U, reg, 0x08000000, 0}};
+        lowered = LowerToMaxwell(std::array{from, exit});
+        REQUIRE(static_cast<bool>(lowered));
+        move = FindWrite(lowered, 0x5c9, mapped(3));
+        REQUIRE(move != nullptr);
+        REQUIRE(((*move >> 20) & 0xff) == mapped(reg));
+        // MOV R5, URn
+        const Instruction to_register{{0x00057c02U, reg, 0x08000f00, 0}};
+        lowered = LowerToMaxwell(std::array{to_register, exit});
+        REQUIRE(static_cast<bool>(lowered));
+        move = FindWrite(lowered, 0x5c9, 5);
+        REQUIRE(move != nullptr);
+        REQUIRE(((*move >> 20) & 0xff) == mapped(reg));
+    }
+    // URZ as a destination is dropped; UR28 and up are not mapped.
+    const auto urz = LowerToMaxwell(std::array{Instruction{{0x003f7882U, 0x1234, 0, 0}}, exit});
+    REQUIRE(static_cast<bool>(urz));
+    REQUIRE(urz.instructions.size() == 1);
+    REQUIRE_FALSE(static_cast<bool>(
+        LowerToMaxwell(std::array{Instruction{{0x001c7882U, 0x1234, 0, 0}}, exit})));
+    REQUIRE_FALSE(static_cast<bool>(
+        LowerToMaxwell(std::array{Instruction{{0x001c7c82U, 3, 0x08000000, 0}}, exit})));
+    REQUIRE_FALSE(static_cast<bool>(
+        LowerToMaxwell(std::array{Instruction{{0x00057c02U, 28, 0x08000f00, 0}}, exit})));
+}
+
+TEST_CASE("Ampere texel fetches of R+B or G+B take alpha into scratch", "[video_core][ampere]") {
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    // TLD.SCR.LZ R8, R10, 2D, with only two of the four channels.
+    for (const auto& [mask, swizzle] : {std::pair{5U, 2U}, std::pair{6U, 3U}}) {
+        const Instruction fetch{{0x08087b66, 0x1101800a, 0x009e0000U | (mask << 8) | 0xffU,
+                                 0x004f4a00}};
+        const auto lowered = LowerToMaxwell(std::array{fetch, exit});
+        REQUIRE(static_cast<bool>(lowered));
+        const auto tlds = std::ranges::find_if(lowered.instructions, [](u64 word) {
+            return (word >> 56) == 0xda;
+        });
+        REQUIRE(tlds != lowered.instructions.end());
+        REQUIRE((*tlds & 0xff) == 8);
+        REQUIRE(((*tlds >> 28) & 0xff) == 246);
+        REQUIRE(((*tlds >> 50) & 7) == swizzle);
+    }
 }
 } // namespace

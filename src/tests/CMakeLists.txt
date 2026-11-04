@@ -107,6 +107,11 @@ add_executable(tests
     video_core/ampere_compute_lowering.cpp
     video_core/native_macro_fifo.cpp
     video_core/uniform_stream_reuse.cpp
+    video_core/global_address_tracking.cpp
+    video_core/nvn_storage_descriptor.cpp
+    video_core/ampere_ldc.cpp
+    video_core/ampere_vote.cpp
+    video_core/shader_attributes.cpp
     input_common/calibration_configuration_job.cpp
 )
 

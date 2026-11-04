@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 
@@ -120,9 +121,17 @@ TEST_CASE("Ampere geometry index conversion retains U16 truncation and FTZ",
     REQUIRE(((word >> 12) & 1) == 0);
     REQUIRE(((word >> 39) & 3) == 3);
     REQUIRE(((word >> 44) & 1) == 1);
-    for (const u32 bit : {0U, 8U, 13U, 18U, 22U, 27U}) {
+    for (const u32 bit : {0U, 13U, 18U, 22U, 27U}) {
         auto invalid = convert;
         invalid.words[2] ^= 1U << bit;
         REQUIRE_FALSE(LowerToMaxwell(std::array{invalid, Exit}, true));
     }
+    // Bit 8 (72) signs it: F2I.S16.TRUNC lowers too.
+    auto signed_convert = convert;
+    signed_convert.words[2] |= 1U << 8;
+    const auto signed_lowered = LowerToMaxwell(std::array{signed_convert, Exit}, true);
+    REQUIRE(signed_lowered);
+    REQUIRE(std::ranges::any_of(signed_lowered.instructions, [](u64 value) {
+        return (value >> 52) == 0x5cb && ((value >> 8) & 3) == 1 && ((value >> 12) & 1) == 1;
+    }));
 }

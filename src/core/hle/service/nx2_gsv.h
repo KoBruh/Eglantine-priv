@@ -1760,9 +1760,16 @@ private:
         // ahead once stalled the GPU thread for 4 s or more at the boot-to-title switch (present
         // ~187), so it starts after the first 1200 presents and backs off to one ahead for 300
         // presents whenever its wait takes over 100 ms (loading, shader compiles).
+        // Donkey Kong Bananza's channels wait on each other every frame; a frame ahead it rewrote
+        // memory the GPU thread hadn't read yet (misread commands, then a freeze or crash in its
+        // first mine; rubberbanding while moving). It waits for each of its frames.
+        constexpr u64 DonkeyKongBananzaProgramId = 0x040074A01BF12000ULL;
         size_t frames_ahead = 1;
         if (frames_ahead_env >= 0) {
             frames_ahead = static_cast<size_t>(frames_ahead_env);
+        } else if (frames_ahead_env == -1 &&
+                   system.GetApplicationProcessProgramID() == DonkeyKongBananzaProgramId) {
+            frames_ahead = 0;
         } else if (frames_ahead_env == -1 && Settings::values.mkw_smooth.GetValue() &&
                    m_present_interval > 1 && m_presents > 1200 && m_smooth_cooldown == 0) {
             frames_ahead = 2;
@@ -1804,6 +1811,11 @@ private:
             m_stats.composite_us += to_us(composited - waited);
             m_stats.pace_us += to_us(paced - composited);
             m_stats.max_fence_us = (std::max<long long>)(m_stats.max_fence_us, static_cast<long long>(to_us(waited - entered)));
+            // Counted at the reply: the game gets its buffers back with this frame unfinished.
+            if (const u32 fence_id = ~w[22]; fence_id < 192 &&
+                !system.Host1x().GetSyncpointManager().IsReadyGuest(fence_id, w[24])) {
+                ++m_stats.ran_ahead;
+            }
             if (m_stats.last_present != std::chrono::steady_clock::time_point{}) {
                 const long long frame = to_us(entered - m_stats.last_present);
                 m_stats.frame_us += frame;
@@ -1857,10 +1869,11 @@ private:
                 LOG_INFO(Service,
                          "nx2:vi2 last 600 presents: frame {} us (max {}, {} over 100 ms), "
                          "blocked on the GPU fence {} us (max {}), composite {} us, vblank "
-                         "pacing {} us; {} of them 2+ vblanks, game speed {:.0f}%{}{}",
+                         "pacing {} us; {} of them 2+ vblanks, {} ran a frame ahead, game speed "
+                         "{:.0f}%{}{}",
                          m_stats.frame_us / 599, m_stats.max_frame_us, m_stats.hitches,
                          m_stats.fence_us / 600, m_stats.max_fence_us, m_stats.composite_us / 600,
-                         m_stats.pace_us / 600, m_stats.double_frames,
+                         m_stats.pace_us / 600, m_stats.double_frames, m_stats.ran_ahead,
                          seconds > 0 ? 100.0 * m_stats.vblanks /
                                            (seconds * std::max(Settings::values.nx2_refresh_rate.GetValue(), 1U))
                                      : 0.0,
@@ -1891,6 +1904,7 @@ private:
         u32 presents{};
         u32 vblanks{};
         u32 double_frames{};
+        u32 ran_ahead{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
     std::chrono::steady_clock::duration m_last_fence_wait{};

@@ -462,4 +462,23 @@ TEST_CASE("Ampere terminal minmax proof rejects extended instruction modes",
     invalid_register_form[4].words[1] |= 1U << 8;
     REQUIRE_FALSE(static_cast<bool>(Shader::Ampere::LowerToMaxwell(invalid_register_form)));
 }
+
+TEST_CASE("Ampere geometry stage map and exit setup are stage specific", "[video_core][ampere]") {
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    const Instruction map_read{{0x05127923, 0, 0, 0}}; // ISBERD R18, [R5]
+    const Instruction exit_setup{{0x03007357, 0, 0, 0}};
+    const std::array code{map_read, exit_setup, exit};
+    REQUIRE_FALSE(static_cast<bool>(Shader::Ampere::LowerToMaxwell(code)));
+    const auto result = Shader::Ampere::LowerToMaxwell(
+        code, Shader::Ampere::LoweringOptions{.geometry_stage = true});
+    REQUIRE(static_cast<bool>(result));
+    REQUIRE(result.instructions.size() == 2);
+    REQUIRE((result.instructions[0] & 0xff) == 18);
+    REQUIRE(((result.instructions[0] >> 20) & 0xff) == 5);
+
+    Instruction unsupported = exit_setup;
+    unsupported.words[1] = 1;
+    REQUIRE_FALSE(static_cast<bool>(Shader::Ampere::LowerToMaxwell(
+        std::array{unsupported, exit}, Shader::Ampere::LoweringOptions{.geometry_stage = true})));
+}
 } // namespace

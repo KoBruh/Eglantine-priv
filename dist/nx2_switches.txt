@@ -16,6 +16,9 @@
 #EDEN_NX2_RESETFIX=0
 # Release passed fences one at a time instead of together (for comparisons).
 #EDEN_NX2_FENCE_BATCH=0
+# With the split, a fence or a command list copy goes to the GPU with the next submission when the
+# last one is under N us old (default 500). 0 submits each one at once.
+#EDEN_NX2_FENCE_FLUSH_US=0
 #EDEN_NX2_SKIP_SAME=0
 #EDEN_NX2_INLINE_DEFER=0
 # With the split, also send state writes that keep a register's value.
