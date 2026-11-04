@@ -7,7 +7,7 @@ Tools for Eglantine and its subprojects. When adding new scripts please use `#!/
 - [`nx2`](./nx2): Python tools for the Switch 2 work (standard library only):
   - `run_scenario.py`: Runs `eden-cli` through a scripted scenario (see [`nx2/scenarios`](./nx2/scenarios)) and reports what the emulator did wrong.
   - `thread_cpu.py`: Per-thread CPU time of a running emulator, by thread name (Windows).
-  - `pokopia_fps_mod.py`: Writes the frame-rate mods (exefs IPS patches) for Pokémon Pokopia in [`dist/mods`](../dist/mods).
+  - `pokopia_fps_mod.py`: Writes a frame-rate mod (exefs IPS patch) for Pokémon Pokopia, like the ones in [`mods`](../mods).
   - `frames.py`: Turns `EDEN_NX2_FRAME_CAPTURE` output into PNGs and a contact sheet.
   - `image_decode.py`: Decodes a texture dumped by `EDEN_NX2_TRACE_DUMP` to a PNG.
   - `volume_check.py`: Checks how a dumped 3D texture (`EDEN_NX2_DUMP_3D`) should be un-tiled.

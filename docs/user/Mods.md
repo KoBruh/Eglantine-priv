@@ -8,6 +8,8 @@ This is especially important if a mod uses a framework such as **ARCropolis**, *
 
 For example, **Super Smash Bros. Ultimate** uses such a framework. See the related section below for details.
 
+Ready-made mods for some games are in the repository's [`mods`](../../mods) folder. Each one's README says what it needs.
+
 ---
 
 # Installing Mods for Most Games
