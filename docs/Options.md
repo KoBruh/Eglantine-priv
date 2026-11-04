@@ -38,6 +38,8 @@ These options control dependencies.
 - `ENABLE_CUBEB` (ON) Enables the cubeb audio backend
   - This option is subject for removal.
 - `YUZU_TESTS` (ON) Compile tests - requires Catch2
+- `DYNARMIC_TESTS` (OFF) Compile dynarmic's tests (`dynarmic_tests`)
+  - `YUZU_TESTS` and `BUILD_TESTING` do not turn it on: pass it as well
 - `ENABLE_LTO` (OFF) Enable link-time optimization
   - Not recommended on Windows
   - UNIX may be better off appending `-flto=thin` to compiler args
@@ -48,6 +50,8 @@ These options control dependencies.
   - Only available on Linux
 - `ENABLE_DEBUG_TOOLS` (OFF) Enables debugging and development tools, see [tools](../tools/README.md).
 - `ENABLE_WERROR` (ON) Enables warnings as errors (-Werror).
+- `YUZU_CRASH_DUMPS` (OFF, Windows and Linux only) Compile crash dump (Minidump) support
+- `YUZU_BUILD_PRESET` (string, `custom`; GCC and clang) CPU tuning preset: `custom`, `generic`, `v3`, `zen2`, `zen4` or `native` on x86-64; `custom`, `generic`, `optimized`, `armv9` or `native` on arm64
 
 ### Flavors
 
@@ -59,17 +63,18 @@ These options control executables and build flavors.
   - Not supported on Linux
   - Automatically set if `YUZU_USE_BUNDLED_QT` is on for non-Linux
 - `ENABLE_UPDATE_CHECKER` (OFF) Enable update checking functionality
-  - `EGLANTINE_UPDATE_REPO` (notsapinho/Eglantine) GitHub repository whose releases the update checker and the news applet read
-  - `EGLANTINE_BUILD_TAG` (empty) Release tag CI publishes this build under, `<channel>-build-<number>`. The update checker offers newer releases of the same channel; builds without a tag never report updates
-  - `EGLANTINE_BUILD_PLATFORM` (empty) Platform suffix of this build's release file, such as `linux-x86_64`, so the updater downloads the same variant
+  - `EGLANTINE_UPDATE_REPO` (notsapinho/Eglantine) GitHub repository whose releases the update checker and the news applet read (the news applet only when the user turns on System > Fetch news from GitHub)
+  - `EGLANTINE_BUILD_TAG` (empty) Release tag CI publishes this build under: `build-<number>` (the release workflow's run number), or `<channel>-build-<number>`. The update checker offers newer releases of the same channel; builds without a tag never report updates
+  - `EGLANTINE_BUILD_PLATFORM` (empty) Platform suffix of this build's release files, such as `linux-x86_64` for `eglantine-linux-x86_64.AppImage`, so the updater downloads the same variant: the `.zip` on Windows, on Linux the `.AppImage` when running from one and the `.tar.gz` otherwise
+  - The release workflow builds with the update checker on and both set; a downloaded file is checked against the SHA-256 GitHub lists for it
 - `YUZU_DISABLE_LLVM` (OFF) Do not attempt to link to the LLVM demangler
   - Really only useful for CI or distribution builds
 
 **Desktop only**:
 
 - `YUZU_CMD` (ON) Compile the SDL-based frontend (eden-cli)
-- `YUZU_ROOM` (OFF) Compile dedicated room functionality into the main executable
-- `YUZU_ROOM_STANDALONE` (OFF) Compile a separate executable for room functionality
+- `YUZU_ROOM` (ON) Compile dedicated room functionality into the main executable
+- `YUZU_ROOM_STANDALONE` (ON, needs `YUZU_ROOM`) Compile a separate executable for room functionality
 - `YUZU_STATIC_ROOM` (OFF) Compile the room executable *only* as a static, portable executable
   - This is only usable on Alpine Linux.
 
@@ -79,8 +84,15 @@ The following options are desktop only.
 
 - `ENABLE_LIBUSB` (ON) Enable the use of the libusb input backend (HIGHLY RECOMMENDED)
 - `ENABLE_OPENGL` (ON) Enable the OpenGL graphics backend
-  - Unavailable on Windows/ARM64 and on Android
+  - Unavailable on Windows/ARM64, macOS and Android
   - You probably shouldn't turn this off.
+
+### Graphics
+
+- `ENABLE_LSFG` (ON) Enable frame generation (Lossless Scaling's LSFG and the built-in FSR 3 style frame generation)
+- `ENABLE_RESHADE` (ON) Enable ReShade FX post-processing effects
+- `ENABLE_NVIDIA_DLSS` (ON for Windows on x86-64, MSVC or MinGW) Enable NVIDIA DLSS through NVIDIA Streamline, whose libraries are loaded at run time from the user's PC
+  - `EGLANTINE_STREAMLINE_SDK` (path, empty) Streamline SDK directory for its headers; empty downloads them
 
 ### Qt
 

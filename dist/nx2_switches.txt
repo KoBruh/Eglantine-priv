@@ -8,15 +8,28 @@
 
 # --- workarounds / behaviour ---
 #EDEN_NX2_BUFFER_DOWNLOADS=1
-#EDEN_NX2_SPLIT=1
+# GPU thread split (default 2: engine methods run on a second thread, macros stay on the GPU
+# thread, x86-64 only). 1 runs the macros on the second thread too, 0 runs everything on one.
+#EDEN_NX2_SPLIT=0
 #EDEN_NX2_MME_JIT=0
 #EDEN_NX2_PBFLUSH=0
 #EDEN_NX2_RESETFIX=0
-#EDEN_NX2_FENCE_BATCH=1
+# Release passed fences one at a time instead of together (for comparisons).
+#EDEN_NX2_FENCE_BATCH=0
 #EDEN_NX2_SKIP_SAME=0
 #EDEN_NX2_INLINE_DEFER=0
-#EDEN_NX2_SPLIT_SKIP=1
+# With the split, also send state writes that keep a register's value.
+#EDEN_NX2_SPLIT_SKIP=0
+# Switch 1 programs: give unimplemented service commands a placeholder reply, as Switch 2
+# programs always get (any value turns it on).
 #EDEN_NX2_AUTO_STUB=1
+# How long (us) an HLE reply keeps a Switch 2 caller waiting while a lower-priority thread runs on
+# its core, so that thread runs first as during a console IPC (Mario Tennis Fever needs it).
+# Default 50, 0 turns it off.
+#EDEN_NX2_IPC_MIN_US=0
+# Keep the emulation thread from stopping when a game stops (tests the restart offer, about 11 s
+# after Stop).
+#EDEN_NX2_HANG_ON_STOP=1
 # Upload every small uniform buffer again, instead of rebinding the earlier copy when its data has not changed.
 #EDEN_NX2_UBOREUSE=0
 # Keep ASTC textures uncompressed on GPUs without ASTC (default: re-compressed to BC3, 4x smaller).
@@ -26,7 +39,8 @@
 
 # --- limits / tuning ---
 #EDEN_NX2_VRAM_LIMIT_MIB=8192
-#EDEN_NX2_GPU_PROFILE=0
+# Log GPU thread timings every 10 s (any value turns it on, 0 too).
+#EDEN_NX2_GPU_PROFILE=1
 #EDEN_NX2_FRAMES_AHEAD=2
 #EDEN_NX2_TC_EXPECTED_MIB=21322
 #EDEN_NX2_TC_CRITICAL_MIB=22346
