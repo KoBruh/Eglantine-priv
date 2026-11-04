@@ -93,9 +93,17 @@ std::vector<std::filesystem::path> SearchDirs() {
     return dirs;
 }
 
+/// GetProcAddress's result as the function pointer type it really is. Going through void (*)(),
+/// the generic function pointer type of GCC's and clang's -Wcast-function-type, keeps MinGW
+/// builds quiet.
+template <typename T>
+T ProcAs(FARPROC proc) {
+    return reinterpret_cast<T>(reinterpret_cast<void (*)()>(proc));
+}
+
 template <typename T>
 bool Resolve(HMODULE module, const char* name, T*& function) {
-    function = reinterpret_cast<T*>(GetProcAddress(module, name));
+    function = ProcAs<T*>(GetProcAddress(module, name));
     if (!function) {
         LOG_ERROR(Render_Vulkan, "sl.interposer.dll has no {}", name);
     }
@@ -265,20 +273,40 @@ bool IsSignedByNvidia(const std::filesystem::path& path) {
     return valid;
 }
 
-DlssFiles FindDlssFiles() {
+DlssFiles LocateDlssFiles(const std::vector<std::filesystem::path>& dirs,
+                          const std::filesystem::path& download_dir,
+                          const std::function<bool(const std::filesystem::path&)>& is_file) {
     DlssFiles files;
-    files.folder = UserFolder();
-    std::error_code ec;
-    for (const std::filesystem::path& dir : SearchDirs()) {
-        if (std::filesystem::is_regular_file(dir / INTERPOSER, ec)) {
+    files.folder = download_dir;
+    for (const std::filesystem::path& dir : dirs) {
+        if (is_file(dir / INTERPOSER)) {
             files.folder = dir;
             files.interposer = dir / INTERPOSER;
             break;
         }
     }
-    if (std::filesystem::is_regular_file(files.folder / MODEL, ec)) {
+    // A model next to the loader belongs with it. Otherwise take one from any search folder: with
+    // the loader in EDEN_STREAMLINE_DIR or next to the executable, the settings download a
+    // missing model into the user folder.
+    if (is_file(files.folder / MODEL)) {
         files.model = files.folder / MODEL;
+        return files;
     }
+    for (const std::filesystem::path& dir : dirs) {
+        if (is_file(dir / MODEL)) {
+            files.model = dir / MODEL;
+            break;
+        }
+    }
+    return files;
+}
+
+DlssFiles FindDlssFiles() {
+    DlssFiles files =
+        LocateDlssFiles(SearchDirs(), UserFolder(), [](const std::filesystem::path& path) {
+            std::error_code ec;
+            return std::filesystem::is_regular_file(path, ec);
+        });
     files.app_model = FindAppModel();
     files.interposer_version = VersionText(files.interposer);
     files.model_version = VersionText(files.model);
@@ -308,7 +336,11 @@ bool Start() {
         }
         state.plugin_dir = files.folder.wstring();
         state.model_dir.clear();
-        if (files.model.empty() && !files.app_model.empty()) {
+        if (!files.model.empty() && files.model.parent_path() != files.folder) {
+            state.model_dir = files.model.parent_path().wstring();
+            LOG_INFO(Render_Vulkan, "Using DLSS {} from {}", files.model_version,
+                     Common::FS::PathToUTF8String(files.model.parent_path()));
+        } else if (files.model.empty() && !files.app_model.empty()) {
             if (const std::filesystem::path dir = UseAppModel(files); !dir.empty()) {
                 state.model_dir = dir.wstring();
                 LOG_INFO(Render_Vulkan, "Using the NVIDIA app's DLSS {}", files.app_model_version);
@@ -320,7 +352,8 @@ bool Start() {
     }
 
     // Streamline's plugins come from the loader's folder or the NVIDIA app's downloads (OTA); the
-    // DLSS model from the loader's folder, else the NVIDIA app's copy.
+    // DLSS model from the loader's folder, else the search folder that has one, else the NVIDIA
+    // app's copy.
     const wchar_t* plugin_paths[] = {state.plugin_dir.c_str(), state.model_dir.c_str()};
     const sl::Feature features[] = {sl::kFeatureDLSS};
     sl::Preferences preferences{};
@@ -427,7 +460,7 @@ bool AttachDevice(VkInstance instance, VkPhysicalDevice physical, VkDevice devic
     // Manual hooking: Streamline does its per-frame work in these.
     const auto hook = [&](auto& function, const char* name) {
         if (const FARPROC proxy = GetProcAddress(state.module, name)) {
-            function = reinterpret_cast<std::remove_reference_t<decltype(function)>>(proxy);
+            function = ProcAs<std::remove_reference_t<decltype(function)>>(proxy);
         } else {
             LOG_WARNING(Render_Vulkan, "sl.interposer.dll has no {}", name);
         }

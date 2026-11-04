@@ -8,6 +8,8 @@
 
 #ifdef EGLANTINE_STREAMLINE
 
+#include <functional>
+
 #include <QWidget>
 
 class QLabel;
@@ -16,6 +18,7 @@ class QPushButton;
 class NvidiaDlssPanel : public QWidget {
 public:
     explicit NvidiaDlssPanel(QWidget* parent);
+    ~NvidiaDlssPanel() override;
 
     void Refresh();
 
@@ -29,6 +32,8 @@ private:
     QLabel* status_label;
     QPushButton* download_button;
     QPushButton* folder_button;
+    /// Stops the download running on a worker thread; empty when none is.
+    std::function<void()> cancel_download;
 };
 
 #endif

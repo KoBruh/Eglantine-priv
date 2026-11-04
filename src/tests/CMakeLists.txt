@@ -53,6 +53,7 @@ add_executable(tests
     video_core/shader_reuse.cpp
     video_core/gpu_split.cpp
     video_core/native_storage_pointers.cpp
+    video_core/streamline_files.cpp
     video_core/ampere_conversions.cpp
     video_core/ampere_half.cpp
     video_core/cache_entry.cpp

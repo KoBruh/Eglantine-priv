@@ -6,35 +6,42 @@
 #include "common/httplib.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <QApplication>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProgressDialog>
+#include <QPromise>
 #include <QPushButton>
 #include <QStringList>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QtConcurrentRun>
 #include <fmt/format.h>
 #include <zlib.h>
 
 #include "common/common_types.h"
 #include "common/fs/fs_util.h"
 #include "common/logging.h"
+#include "common/scope_exit.h"
 #include "video_core/vulkan_common/streamline.h"
 #include "yuzu/configuration/nvidia_dlss_panel.h"
 
@@ -80,18 +87,62 @@ struct ZipEntry {
     u64 offset{};
 };
 
+/// Lets the UI thread stop a download running on a worker thread, including the request in
+/// flight: httplib's Client::stop() may be called from another thread.
+class Cancellation {
+public:
+    void Cancel() {
+        std::scoped_lock lock{mutex};
+        canceled = true;
+        if (active) {
+            active->stop();
+        }
+    }
+
+    [[nodiscard]] bool IsCanceled() const {
+        return canceled;
+    }
+
+    /// Sends request() on client unless the download was canceled, letting Cancel() stop it.
+    template <typename Request>
+    httplib::Result Send(httplib::Client& client, Request&& request) {
+        {
+            std::scoped_lock lock{mutex};
+            if (canceled) {
+                return httplib::Result{nullptr, httplib::Error::Canceled};
+            }
+            active = &client;
+        }
+        SCOPE_EXIT {
+            std::scoped_lock lock{mutex};
+            active = nullptr;
+        };
+        return request();
+    }
+
+private:
+    std::mutex mutex;
+    httplib::Client* active{};
+    std::atomic_bool canceled{};
+};
+
 /// Reads single files out of a zip on a web server with range requests, so only the files
 /// needed are downloaded (about 32 MB of the 276 MB release).
 class RemoteZip {
 public:
+    explicit RemoteZip(Cancellation& cancellation_) : cancellation{cancellation_} {}
+
     /// Follows GitHub's redirect to the file's (short-lived) download address.
     bool Resolve() {
         host = ZIP_HOST;
         path = ZIP_PATH;
         for (int redirect = 0; redirect < 5; ++redirect) {
-            const auto result = MakeClient()->Get(path, httplib::Headers{{"Range", "bytes=0-0"}});
+            const auto client = MakeClient();
+            const httplib::Result result = cancellation.Send(*client, [&] {
+                return client->Get(path, httplib::Headers{{"Range", "bytes=0-0"}});
+            });
             if (!result) {
-                error = httplib::to_string(result.error());
+                error = cancellation.IsCanceled() ? "canceled" : httplib::to_string(result.error());
                 return false;
             }
             if (result->status == 206) {
@@ -253,7 +304,6 @@ public:
         return out;
     }
 
-    bool canceled{};
     std::string error;
 
 private:
@@ -272,32 +322,203 @@ private:
                                      const std::function<bool(u64)>& progress = {}) {
         std::string body;
         int status = 0;
-        const auto result = MakeClient()->Get(
-            path, httplib::Headers{{"Range", range}},
-            [&status](const httplib::Response& response) {
-                status = response.status;
-                return response.status == 206;
-            },
-            [&](const char* data, size_t length) {
-                body.append(data, length);
-                if (progress && !progress(body.size())) {
-                    canceled = true;
-                    return false;
-                }
-                return true;
-            });
-        if (!result || status != 206) {
-            error = result ? fmt::format("HTTP {}", status) : httplib::to_string(result.error());
+        const auto client = MakeClient();
+        const httplib::Result result = cancellation.Send(*client, [&] {
+            return client->Get(
+                path, httplib::Headers{{"Range", range}},
+                [&status](const httplib::Response& response) {
+                    status = response.status;
+                    return response.status == 206;
+                },
+                [&](const char* data, size_t length) {
+                    body.append(data, length);
+                    return !cancellation.IsCanceled() && (!progress || progress(body.size()));
+                });
+        });
+        // Refusing any other answer in the response handler makes httplib report "Canceled":
+        // say what the server answered instead.
+        if (status != 0 && status != 206) {
+            error = fmt::format("HTTP {}", status);
+            return std::nullopt;
+        }
+        if (!result) {
+            error = cancellation.IsCanceled() ? "canceled" : httplib::to_string(result.error());
             return std::nullopt;
         }
         return body;
     }
 
+    Cancellation& cancellation;
     std::string host;
     std::string path;
     u64 zip_size{};
     std::map<std::string, ZipEntry> entries;
 };
+
+/// One download, shared by the panel on the UI thread and the worker thread doing the network
+/// and file work. The panel reads the results only after the worker's future has finished;
+/// cancellation is the only part both use at once.
+struct DownloadJob {
+    DownloadJob(std::vector<std::string> wanted_, std::filesystem::path folder_,
+                std::vector<std::pair<std::string, const char*>> licence_titles_)
+        : wanted{std::move(wanted_)}, folder{std::move(folder_)},
+          licence_titles{std::move(licence_titles_)} {}
+
+    /// Worker thread: reads the release's zip directory and the licences of the files wanted.
+    void Prepare() {
+        if (!zip.Open()) {
+            error = zip.error;
+            return;
+        }
+        for (const auto& [title, entry_name] : licence_titles) {
+            const ZipEntry* const entry = zip.Find(entry_name);
+            const std::optional<std::string> text = entry ? zip.Read(*entry) : std::nullopt;
+            if (cancellation.IsCanceled()) {
+                return;
+            }
+            licences += fmt::format("==== {} ====\n\n{}\n\n", title,
+                                    text ? *text : std::string{"(see the release on GitHub)"});
+        }
+    }
+
+    /// Worker thread: downloads the wanted files into folder, keeping them only when NVIDIA
+    /// signed them.
+    void Download(QPromise<void>& promise) {
+        u64 total = 0;
+        std::vector<const ZipEntry*> found;
+        for (const std::string& name : wanted) {
+            const ZipEntry* const entry = zip.Find(name);
+            if (!entry) {
+                error = name + " is not in the release";
+                return;
+            }
+            found.push_back(entry);
+            total += entry->compressed;
+        }
+        promise.setProgressRange(0, 1000);
+        // The download address from the first step only lasts a few minutes.
+        if (!zip.Resolve()) {
+            error = zip.error;
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::create_directories(folder, ec);
+        u64 done = 0;
+        for (size_t i = 0; i < wanted.size(); ++i) {
+            const std::optional<std::string> contents = zip.Read(*found[i], [&](u64 received) {
+                promise.setProgressValue(
+                    static_cast<int>((done + received) * 1000 / std::max<u64>(total, 1)));
+                return true;
+            });
+            if (!contents) {
+                error = zip.error;
+                return;
+            }
+            done += found[i]->compressed;
+            const std::filesystem::path target =
+                folder / std::filesystem::path{wanted[i]}.filename();
+            std::filesystem::path partial = target;
+            partial += L".download";
+            {
+                std::ofstream file(partial, std::ios::binary | std::ios::trunc);
+                file.write(contents->data(), static_cast<std::streamsize>(contents->size()));
+                if (!file) {
+                    error = "could not write " + Common::FS::PathToUTF8String(partial);
+                    return;
+                }
+            }
+            const bool signed_ok = wanted[i] == INTERPOSER_ENTRY
+                                       ? Streamline::IsStreamlineModule(partial)
+                                       : Streamline::IsSignedByNvidia(partial);
+            if (!signed_ok || cancellation.IsCanceled()) {
+                std::filesystem::remove(partial, ec);
+                if (!signed_ok) {
+                    error = Common::FS::PathToUTF8String(target.filename()) +
+                            " is not signed by NVIDIA";
+                }
+                return;
+            }
+            std::filesystem::rename(partial, target, ec);
+            if (ec) {
+                std::filesystem::remove(partial, ec);
+                error = "could not save " + Common::FS::PathToUTF8String(target);
+                return;
+            }
+            LOG_INFO(Frontend, "Downloaded {} from NVIDIA's Streamline {} release",
+                     Common::FS::PathToUTF8String(target), RELEASE_VERSION);
+        }
+        promise.setProgressValue(1000);
+    }
+
+    const std::vector<std::string> wanted;
+    const std::filesystem::path folder;
+    const std::vector<std::pair<std::string, const char*>> licence_titles;
+    Cancellation cancellation;
+    RemoteZip zip{cancellation};
+    std::string licences;
+    std::string error; ///< Empty when the step worked or was canceled
+};
+
+/// Runs work(job, promise) on a worker thread behind a window-modal progress dialog whose Cancel
+/// cancels job, then calls finished() on the UI thread. Nothing waits on the network here. When
+/// the panel goes away first, the dialog and the watcher go with it and finished() never runs.
+template <typename Work, typename Finished>
+void RunInBackground(QWidget* parent, const QString& label, bool shows_progress,
+                     const std::shared_ptr<DownloadJob>& job, Work work, Finished finished) {
+    auto* const dialog =
+        new QProgressDialog(label, Tr("Cancel"), 0, shows_progress ? 1000 : 0, parent);
+    dialog->setWindowTitle(Tr("NVIDIA DLSS"));
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->setMinimumDuration(0);
+    dialog->setAutoReset(false);
+    dialog->setAutoClose(false);
+    dialog->setValue(0);
+    auto* const watcher = new QFutureWatcher<void>(dialog);
+    QObject::connect(dialog, &QProgressDialog::canceled, dialog,
+                     [job] { job->cancellation.Cancel(); });
+    QObject::connect(watcher, &QFutureWatcher<void>::progressValueChanged, dialog,
+                     &QProgressDialog::setValue);
+    QObject::connect(watcher, &QFutureWatcher<void>::finished, dialog, [dialog, finished] {
+        dialog->hide();
+        dialog->deleteLater();
+        finished();
+    });
+    watcher->setFuture(
+        QtConcurrent::run([job, work](QPromise<void>& promise) { work(*job, promise); }));
+    dialog->show();
+}
+
+/// Shows NVIDIA's licences for the files job downloads; true when the user accepts them.
+bool AcceptLicences(QWidget* parent, const DownloadJob& job) {
+    QStringList names;
+    for (const std::string& entry : job.wanted) {
+        names << QString::fromStdString(
+            Common::FS::PathToUTF8String(std::filesystem::path{entry}.filename()));
+    }
+    QDialog dialog(parent);
+    dialog.setWindowTitle(Tr("Download NVIDIA DLSS"));
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    QLabel* intro = new QLabel(
+        Tr("Eglantine will download %1 from NVIDIA's Streamline %2 release on GitHub into %3.<br>"
+           "These files are NVIDIA's, under NVIDIA's licence terms below.")
+            .arg(names.join(QStringLiteral(" and ")), QString::fromLatin1(RELEASE_VERSION),
+                 QString::fromStdWString(job.folder.wstring())),
+        &dialog);
+    intro->setWordWrap(true);
+    QPlainTextEdit* licence_text =
+        new QPlainTextEdit(QString::fromStdString(job.licences), &dialog);
+    licence_text->setReadOnly(true);
+    licence_text->setMinimumSize(640, 380);
+    QDialogButtonBox* buttons = new QDialogButtonBox(&dialog);
+    buttons->addButton(Tr("Accept and Download"), QDialogButtonBox::AcceptRole);
+    buttons->addButton(QDialogButtonBox::Cancel);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(intro);
+    layout->addWidget(licence_text, 1);
+    layout->addWidget(buttons);
+    return dialog.exec() == QDialog::Accepted;
+}
 
 QString Named(const QString& name, const std::string& version) {
     return version.empty() ? name : QStringLiteral("%1 %2").arg(name, QString::fromStdString(version));
@@ -355,6 +576,14 @@ NvidiaDlssPanel::NvidiaDlssPanel(QWidget* parent) : QWidget(parent) {
     Refresh();
 }
 
+NvidiaDlssPanel::~NvidiaDlssPanel() {
+    // The settings closed mid-download: the progress dialog is gone with this panel, so stop
+    // the worker too instead of leaving it to finish a download nobody waits for.
+    if (cancel_download) {
+        cancel_download();
+    }
+}
+
 void NvidiaDlssPanel::showEvent(QShowEvent* event) {
     Refresh();
     QWidget::showEvent(event);
@@ -398,159 +627,76 @@ void NvidiaDlssPanel::Refresh() {
 }
 
 void NvidiaDlssPanel::Download() {
+    if (cancel_download) {
+        return;
+    }
     const Streamline::DlssFiles files = Streamline::FindDlssFiles();
     std::vector<std::string> wanted;
     if (files.interposer.empty()) {
         wanted.emplace_back(INTERPOSER_ENTRY);
     }
-    if (files.model.empty() && files.app_model.empty()) {
+    const bool wants_model = files.model.empty() && files.app_model.empty();
+    if (wants_model) {
         wanted.emplace_back(MODEL_ENTRY);
     }
     if (wanted.empty()) {
         return;
     }
-    const std::filesystem::path folder = Streamline::UserFolder();
-    const auto fail = [this](const std::string& error) {
+    // Translated here: the worker thread only formats them.
+    std::vector<std::pair<std::string, const char*>> licence_titles{
+        {Tr("NVIDIA Streamline").toStdString(), STREAMLINE_LICENSE_ENTRY}};
+    if (wants_model) {
+        licence_titles.emplace_back(Tr("NVIDIA DLSS").toStdString(), DLSS_LICENSE_ENTRY);
+    }
+    // Into the user folder: FindDlssFiles looks there for a model wherever the loader is.
+    const auto job = std::make_shared<DownloadJob>(std::move(wanted), Streamline::UserFolder(),
+                                                   std::move(licence_titles));
+    cancel_download = [job] { job->cancellation.Cancel(); };
+    download_button->setEnabled(false);
+
+    const auto finish = [this] {
+        cancel_download = nullptr;
+        download_button->setEnabled(true);
+        Refresh();
+    };
+    const auto fail = [this, finish](const std::string& error) {
         LOG_ERROR(Frontend, "NVIDIA DLSS download failed: {}", error);
         QMessageBox::warning(this, Tr("NVIDIA DLSS"),
                              Tr("Could not download NVIDIA's files: %1")
                                  .arg(QString::fromStdString(error)));
-        Refresh();
+        finish();
     };
-
-    RemoteZip zip;
-    std::string licences;
-    {
-        QProgressDialog busy(Tr("Contacting NVIDIA's download..."), QString{}, 0, 0, this);
-        busy.setWindowTitle(Tr("NVIDIA DLSS"));
-        busy.setWindowModality(Qt::WindowModal);
-        busy.setMinimumDuration(0);
-        busy.show();
-        QApplication::processEvents();
-        if (!zip.Open()) {
-            busy.close();
-            fail(zip.error);
-            return;
-        }
-        std::vector<std::pair<QString, const char*>> texts{
-            {Tr("NVIDIA Streamline"), STREAMLINE_LICENSE_ENTRY}};
-        if (std::ranges::find(wanted, MODEL_ENTRY) != wanted.end()) {
-            texts.emplace_back(Tr("NVIDIA DLSS"), DLSS_LICENSE_ENTRY);
-        }
-        for (const auto& [title, entry_name] : texts) {
-            const ZipEntry* const entry = zip.Find(entry_name);
-            const std::optional<std::string> text = entry ? zip.Read(*entry) : std::nullopt;
-            licences += fmt::format("==== {} ====\n\n{}\n\n", title.toStdString(),
-                                    text ? *text : std::string{"(see the release on GitHub)"});
-        }
-    }
-
-    QStringList names;
-    for (const std::string& entry : wanted) {
-        names << QString::fromStdString(
-            Common::FS::PathToUTF8String(std::filesystem::path{entry}.filename()));
-    }
-    QDialog dialog(this);
-    dialog.setWindowTitle(Tr("Download NVIDIA DLSS"));
-    QVBoxLayout* layout = new QVBoxLayout(&dialog);
-    QLabel* intro = new QLabel(
-        Tr("Eglantine will download %1 from NVIDIA's Streamline %2 release on GitHub into %3.<br>"
-           "These files are NVIDIA's, under NVIDIA's licence terms below.")
-            .arg(names.join(QStringLiteral(" and ")), QString::fromLatin1(RELEASE_VERSION),
-                 PathText(folder)),
-        &dialog);
-    intro->setWordWrap(true);
-    QPlainTextEdit* licence_text = new QPlainTextEdit(QString::fromStdString(licences), &dialog);
-    licence_text->setReadOnly(true);
-    licence_text->setMinimumSize(640, 380);
-    QDialogButtonBox* buttons = new QDialogButtonBox(&dialog);
-    buttons->addButton(Tr("Accept and Download"), QDialogButtonBox::AcceptRole);
-    buttons->addButton(QDialogButtonBox::Cancel);
-    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(intro);
-    layout->addWidget(licence_text, 1);
-    layout->addWidget(buttons);
-    if (dialog.exec() != QDialog::Accepted) {
-        return;
-    }
-
-    u64 total = 0;
-    std::vector<const ZipEntry*> entries;
-    for (const std::string& name : wanted) {
-        const ZipEntry* const entry = zip.Find(name);
-        if (!entry) {
-            fail(name + " is not in the release");
-            return;
-        }
-        entries.push_back(entry);
-        total += entry->compressed;
-    }
-    QProgressDialog progress(Tr("Downloading NVIDIA's DLSS files..."), Tr("Cancel"), 0, 1000,
-                             this);
-    progress.setWindowTitle(Tr("NVIDIA DLSS"));
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.setValue(0);
-    QApplication::processEvents();
-    // The download address from the first step only lasts a few minutes.
-    if (!zip.Resolve()) {
-        progress.close();
-        fail(zip.error);
-        return;
-    }
-    std::error_code ec;
-    std::filesystem::create_directories(folder, ec);
-    u64 done = 0;
-    for (size_t i = 0; i < wanted.size(); ++i) {
-        const std::optional<std::string> contents = zip.Read(*entries[i], [&](u64 received) {
-            progress.setValue(static_cast<int>((done + received) * 1000 / std::max<u64>(total, 1)));
-            QApplication::processEvents();
-            return !progress.wasCanceled();
+    const auto download = [this, job, finish, fail] {
+        RunInBackground(
+            this, Tr("Downloading NVIDIA's DLSS files..."), true, job,
+            [](DownloadJob& running, QPromise<void>& promise) { running.Download(promise); },
+            [this, job, finish, fail] {
+                if (job->cancellation.IsCanceled()) {
+                    finish();
+                } else if (!job->error.empty()) {
+                    fail(job->error);
+                } else {
+                    finish();
+                    QMessageBox::information(
+                        this, Tr("NVIDIA DLSS"),
+                        Tr("NVIDIA DLSS is ready. It is used the next time a game starts."));
+                }
+            });
+    };
+    RunInBackground(
+        this, Tr("Contacting NVIDIA's download..."), false, job,
+        [](DownloadJob& running, QPromise<void>&) { running.Prepare(); },
+        [this, job, finish, fail, download] {
+            if (job->cancellation.IsCanceled()) {
+                finish();
+            } else if (!job->error.empty()) {
+                fail(job->error);
+            } else if (!AcceptLicences(this, *job)) {
+                finish();
+            } else {
+                download();
+            }
         });
-        if (!contents) {
-            progress.close();
-            if (!zip.canceled) {
-                fail(zip.error);
-            }
-            return;
-        }
-        done += entries[i]->compressed;
-        const std::filesystem::path target = folder / std::filesystem::path{wanted[i]}.filename();
-        std::filesystem::path partial = target;
-        partial += L".download";
-        {
-            std::ofstream file(partial, std::ios::binary | std::ios::trunc);
-            file.write(contents->data(), static_cast<std::streamsize>(contents->size()));
-            if (!file) {
-                progress.close();
-                fail("could not write " + Common::FS::PathToUTF8String(partial));
-                return;
-            }
-        }
-        const bool signed_ok = wanted[i] == INTERPOSER_ENTRY ? Streamline::IsStreamlineModule(partial)
-                                                             : Streamline::IsSignedByNvidia(partial);
-        if (!signed_ok) {
-            std::filesystem::remove(partial, ec);
-            progress.close();
-            fail(Common::FS::PathToUTF8String(target.filename()) + " is not signed by NVIDIA");
-            return;
-        }
-        std::filesystem::rename(partial, target, ec);
-        if (ec) {
-            std::filesystem::remove(partial, ec);
-            progress.close();
-            fail("could not save " + Common::FS::PathToUTF8String(target));
-            return;
-        }
-        LOG_INFO(Frontend, "Downloaded {} from NVIDIA's Streamline {} release",
-                 Common::FS::PathToUTF8String(target), RELEASE_VERSION);
-    }
-    progress.setValue(1000);
-    progress.close();
-    Refresh();
-    QMessageBox::information(this, Tr("NVIDIA DLSS"),
-                             Tr("NVIDIA DLSS is ready. It is used the next time a game starts."));
 }
 
 #endif

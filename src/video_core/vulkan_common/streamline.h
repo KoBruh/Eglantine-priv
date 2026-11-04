@@ -8,6 +8,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -20,7 +21,7 @@ namespace Vulkan::Streamline {
 struct DlssFiles {
     std::filesystem::path folder;     ///< Where the loader is, or where it should go
     std::filesystem::path interposer; ///< sl.interposer.dll (Streamline's loader)
-    std::filesystem::path model;      ///< nvngx_dlss.dll next to the loader
+    std::filesystem::path model;      ///< nvngx_dlss.dll, preferably next to the loader
     std::filesystem::path app_model;  ///< Newest DLSS the NVIDIA app downloaded
     std::string interposer_version;
     std::string model_version;
@@ -28,6 +29,14 @@ struct DlssFiles {
 };
 
 [[nodiscard]] DlssFiles FindDlssFiles();
+
+/// FindDlssFiles' search, given the folders to search in order and which files exist. The loader
+/// is the first sl.interposer.dll; the model the nvngx_dlss.dll next to it, else the first one
+/// in any folder (the settings download a missing model into download_dir, wherever the loader
+/// is). folder is the loader's folder, else download_dir. Fills folder, interposer and model.
+[[nodiscard]] DlssFiles LocateDlssFiles(
+    const std::vector<std::filesystem::path>& dirs, const std::filesystem::path& download_dir,
+    const std::function<bool(const std::filesystem::path&)>& is_file);
 
 /// The user folder's "streamline" folder.
 [[nodiscard]] std::filesystem::path UserFolder();
