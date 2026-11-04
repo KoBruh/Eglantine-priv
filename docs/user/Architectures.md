@@ -71,7 +71,7 @@ Wayland is not recommended. Testing has shown significantly worse performance on
 
 Windows 10 and 11 are supported. Anything below is unsupported.
 
-To run Eglantine, you'll need to install [Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170).
+The release zip is a MinGW clang build that carries its own C++ runtime and libraries next to `eglantine.exe`, so it needs no Visual C++ Redistributable. A build you compile yourself with MSVC (`tools/windows/build.ps1`) does need the [Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170) on any PC without Visual Studio.
 
 Neither AMD/NVIDIA drivers work nearly as well as Linux's RADV drivers. Compatibility is still largely the same, but performance and some hard-to-run games may suffer compared to Linux.
 

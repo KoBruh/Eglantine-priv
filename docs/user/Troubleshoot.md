@@ -48,14 +48,15 @@ Faulting package-relative application ID:
 
 <aside>
 
-#### Issue 1: Missing C++ Redistributable
+#### Issue 1: Missing libraries next to eglantine.exe
 
-*Eglantine requires the latest C++ redistributable from Microsoft in order to run.  Like many other programs, it relies on aspects and libraries included in this runtime, without it - the program cannot run.*
+*The release zip carries every library Eglantine needs (Qt, the C++ runtime and the rest) as DLLs next to `eglantine.exe`. If only the exe was copied out of the folder, or the zip was only partly extracted, Windows cannot find them and the program cannot start.*
 
-1. Download the [Latest C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#visual-studio-2015-2017-2019-and-2022) from Microsoft for your machine.
-2. Double Click the downloaded executable file and wait for the software to install.
-3. Restart the computer.
-4. Launch Eglantine again, if the main window appears, you are good to go.  If not, proceed to the next issue.
+1. Extract the whole release zip into a folder of its own.
+2. Run `eglantine.exe` from that folder. Make a shortcut to it if you want it elsewhere, instead of moving the exe.
+3. Launch Eglantine again; if the main window appears, you are good to go. If not, proceed to the next issue.
+
+A build you compiled yourself with MSVC also needs Microsoft's [Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170) on a PC without Visual Studio.
 </aside>
 
 <aside>

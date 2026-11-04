@@ -8,8 +8,7 @@ Use this guide to get started using Eglantine.
 
 ### Pre-Requisites
 
-- The [*latest C++ Redistributable*](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170#latest-supported-redistributable-version) from Microsoft.
-    - Eglantine will not even launch without it see [*Eglantine Fails to Launch*](./Troubleshoot.md) for more information.
+- Windows 10 or 11. The release zip brings every library it needs, so nothing else has to be installed.
 - Firmware dumped from your console
 - Keys extracted from your console
 - Games dumped from your console
