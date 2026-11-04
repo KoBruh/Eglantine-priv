@@ -835,7 +835,8 @@ extern "C" SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 
     // QLaunch launched applications (should) now reload shader cache.
     static std::mutex shader_cache_reload_mutex;
-    state->system.RegisterApplicationChangedCallback([&state](u64 changed_program_id) {
+    // By value: state is a local of SDL_AppInit, the callback runs long after it returns.
+    state->system.RegisterApplicationChangedCallback([state](u64 changed_program_id) {
         if (!Settings::values.use_disk_shader_cache.GetValue()) {
             return;
         }

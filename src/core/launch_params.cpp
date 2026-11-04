@@ -133,8 +133,13 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                 break;
             }
             case 'p':
-                p.program_args = argv[optind];
-                ++optind;
+                // -p ARGS and --program=ARGS come in optarg; --program ARGS is the next word.
+                if (optarg != nullptr) {
+                    p.program_args = optarg;
+                } else if (optind < argc) {
+                    p.program_args = argv[optind];
+                    ++optind;
+                }
                 break;
             case 'u': {
                 // Launch game with a specific user
@@ -167,8 +172,11 @@ LaunchParams ParseLaunchParams(Core::System& system, int argc, char *argv[], wch
                 p.force_single_core = true;
                 break;
             case 'x':
-                p.log_filter = argv[optind];
-                ++optind;
+                // The filter is the next word; a trailing -x has none.
+                if (optind < argc) {
+                    p.log_filter = argv[optind];
+                    ++optind;
+                }
                 break;
             }
         } else {
