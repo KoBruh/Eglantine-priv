@@ -195,8 +195,9 @@ std::vector<std::string> PatchManager::GetDisabledAddons() const {
     return disabled;
 }
 
-VirtualDir PatchManager::PatchExeFS(VirtualDir exefs) const {
-    LOG_INFO(Loader, "Patching ExeFS for title_id={:016X}", title_id);
+VirtualDir PatchManager::PatchExeFS(VirtualDir exefs, bool apply_update) const {
+    LOG_INFO(Loader, "Patching ExeFS for title_id={:016X}{}", title_id,
+             apply_update ? "" : " (mods only)");
 
     if (exefs == nullptr)
         return exefs;
@@ -211,7 +212,9 @@ VirtualDir PatchManager::PatchExeFS(VirtualDir exefs) const {
     const auto* content_union = static_cast<const ContentProviderUnion*>(&content_provider);
     const auto update_tid = GetUpdateTitleID(title_id);
 
-    if (content_union) {
+    // Without apply_update nothing below finds an update: update_disabled stays true and
+    // enabled_version empty, so only the LayeredExeFS step changes the ExeFS.
+    if (apply_update && content_union) {
         // First, check ExternalContentProvider
         const auto* external_provider = content_union->GetExternalProvider();
         if (external_provider) {
@@ -252,7 +255,9 @@ VirtualDir PatchManager::PatchExeFS(VirtualDir exefs) const {
 
     // check for original NAND style
     // Check NAND if: no external updates exist, OR all external updates are disabled
-    if (!checked_external && !checked_manual) {
+    if (!apply_update) {
+        // Mods only.
+    } else if (!checked_external && !checked_manual) {
         // Only enable NAND update if it exists AND is not disabled
         // We need to check if an update actually exists in the content provider
         const bool has_nand_update = content_provider.HasEntry(update_tid, ContentRecordType::Program);

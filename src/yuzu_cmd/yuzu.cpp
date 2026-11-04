@@ -573,7 +573,9 @@ static bool UnpackNup(const std::string& source, const std::string& output) {
     fmt::print(stderr, "\n");
     switch (result) {
     case FileSys::Nup::ExtractResult::Success:
-        fmt::print(stderr, "Extracted to {} in {:.1f} s\n", out_dir.string(), seconds);
+        // ExtractNup checks every file against its stored SHA-256 as it writes it.
+        fmt::print(stderr, "Extracted to {} in {:.1f} s, every file verified\n", out_dir.string(),
+                   seconds);
         return true;
     case FileSys::Nup::ExtractResult::Cancelled:
         fmt::print(stderr, "Cancelled\n");

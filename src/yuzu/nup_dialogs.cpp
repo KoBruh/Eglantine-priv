@@ -437,6 +437,8 @@ NupProgressDialog::NupProgressDialog(const QString& operation, const QString& ti
         header->addWidget(icon_label);
     }
     auto* title_label = new QLabel(title.isEmpty() ? operation : title);
+    // The title can come from a NUP: as rich text, markup in it would load resources.
+    title_label->setTextFormat(Qt::PlainText);
     QFont font = title_label->font();
     font.setBold(true);
     font.setPointSizeF(font.pointSizeF() * 1.2);

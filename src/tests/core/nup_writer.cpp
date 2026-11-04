@@ -3,13 +3,17 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -193,6 +197,49 @@ Loader::ResultStatus StatusAfterPatch(std::string nup, Patch&& patch) {
     return NupContainer{std::make_shared<FileSys::VectorVfsFile>(data, "bad.nup")}.GetStatus();
 }
 
+// Offsets of an archive's TOC records: the first file record and the children array.
+u64 FileRecords(const std::string& buf, u64 toc) {
+    return toc + 0x30 + Le(buf, toc + 0x04, 4) * 0x40 + Le(buf, toc + 0x08, 8) * 0x18;
+}
+
+u64 ChildSlots(const std::string& buf, u64 toc) {
+    return FileRecords(buf, toc) + Le(buf, toc + 0x10, 8) * 0x50;
+}
+
+// The file record of the member named `name`, which must be unique in the archive.
+u64 FileRecordNamed(const std::string& buf, std::string_view name) {
+    const u64 toc = Le(buf, 0x08, 8);
+    const u64 pool = toc + Le(buf, toc + 0x18, 8);
+    const u64 count = Le(buf, toc + 0x10, 8);
+    for (u64 i = 0, pos = FileRecords(buf, toc); i < count; ++i, pos += 0x50) {
+        if (buf.compare(pool + Le(buf, pos, 4), Le(buf, pos + 4, 4), name) == 0) {
+            return pos;
+        }
+    }
+    return 0;
+}
+
+// Paths lowercased: extraction writes base/exefs where MakeDump has Base/ExeFS.
+std::map<std::string, std::string> LowerPaths(const std::map<std::string, std::string>& tree) {
+    std::map<std::string, std::string> out;
+    for (const auto& [path, contents] : tree) {
+        std::string lower = path;
+        std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        out[lower] = contents;
+    }
+    return out;
+}
+
+void SetName(std::array<char, 0x200>& field, std::string_view value) {
+    std::copy(value.begin(), value.end(), field.begin());
+}
+
+void SetDeveloper(std::array<char, 0x100>& field, std::string_view value) {
+    std::copy(value.begin(), value.end(), field.begin());
+}
+
 } // namespace
 
 TEST_CASE("NUP packs base, updates and add-ons and reads back through NupContainer", "[nup]") {
@@ -369,6 +416,46 @@ TEST_CASE("NUP rejects a directory that contains its own ancestor", "[nup]") {
                 SetLe(buf, romfs_record + 0x08, Le(buf, root_record + 0x08, 4), 4);
                 SetLe(buf, romfs_record + 0x0C, Le(buf, root_record + 0x0C, 4), 4);
             }) == Loader::ResultStatus::ErrorNUPBadFormat);
+}
+
+TEST_CASE("NUP rejects a directory listed under two parents", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    // Give the base ExeFS directory the base RomFS directory's children: no cycle, but every
+    // RomFS subdirectory now has two parents (shared subtrees multiply when built).
+    REQUIRE(StatusAfterPatch(ReadAll(archive), [](std::string& buf, u64 toc) {
+                const u64 dirs = toc + 0x30 + Le(buf, toc + 0x04, 4) * 0x40;
+                const u64 exefs_dir = Le(buf, toc + 0x30 + 0x0C, 4);
+                const u64 romfs_dir = Le(buf, toc + 0x30 + 0x10, 4);
+                const u64 exefs_record = dirs + exefs_dir * 0x18;
+                const u64 romfs_record = dirs + romfs_dir * 0x18;
+                SetLe(buf, exefs_record + 0x08, Le(buf, romfs_record + 0x08, 4), 4);
+                SetLe(buf, exefs_record + 0x0C, Le(buf, romfs_record + 0x0C, 4), 4);
+            }) == Loader::ResultStatus::ErrorNUPBadFormat);
+}
+
+TEST_CASE("NUP rejects a member name that is not a plain file name", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+    const std::string nup = ReadAll(archive);
+
+    // Names are labels, never paths: a separator, a drive or stream colon or a NUL in one would
+    // reach whatever joins member names onto a host folder (extraction, dump_exefs).
+    for (const char bad : {'/', ':', static_cast<char>(0)}) {
+        INFO("replaced character " << static_cast<int>(bad));
+        REQUIRE(StatusAfterPatch(nup, [bad](std::string& buf, u64 toc) {
+                    const auto at = buf.find("shared.bin", toc);
+                    REQUIRE(at != std::string::npos);
+                    buf[at] = bad;
+                }) == Loader::ResultStatus::ErrorNUPBadFormat);
+    }
 }
 
 TEST_CASE("NUP marks updates standalone when the dump has no base", "[nup]") {
@@ -878,4 +965,292 @@ TEST_CASE("NUP edits localized titles and keeps the rest", "[nup]") {
     FileSys::NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
     REQUIRE(nup.GetPackages()[0].localized_titles.empty());
     REQUIRE(nup.GetPackages()[0].title_name == "Renamed");
+}
+
+TEST_CASE("NUP extract fails on a damaged extent and leaves no output", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    // One byte of a raw member's data: the TOC and its hash are untouched, so it still opens.
+    auto bytes = ReadAll(archive);
+    const u64 record = FileRecordNamed(bytes, "random.bin");
+    REQUIRE(record != 0);
+    REQUIRE(bytes[record + 0x40] == 0);
+    auto& flipped = bytes[Le(bytes, record + 0x10, 8) + 100];
+    flipped = static_cast<char>(flipped ^ 0x01);
+    const auto damaged = t.path / "Damaged.nup";
+    Put(damaged, bytes);
+
+    const auto out = t.path / "Extracted";
+    std::string error;
+    REQUIRE(FileSys::Nup::ExtractNup(damaged, out, {}, nullptr, &error) ==
+            FileSys::Nup::ExtractResult::InvalidSource);
+    REQUIRE(error.find("random.bin") != std::string::npos);
+    REQUIRE_FALSE(fs::exists(out));
+}
+
+TEST_CASE("NUP rejects a raw file record whose extent is not its size", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    const auto bytes = ReadAll(archive);
+    const u64 record = FileRecordNamed(bytes, "random.bin");
+    REQUIRE(record != 0);
+    REQUIRE(bytes[record + 0x40] == 0);
+    REQUIRE(StatusAfterPatch(bytes, [record](std::string& buf, u64) {
+                SetLe(buf, record + 0x18, Le(buf, record + 0x18, 8) - 1, 8);
+            }) == Loader::ResultStatus::ErrorNUPBadFormat);
+}
+
+TEST_CASE("NUP rejects a file listed twice", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    // The base ExeFS holds main and main.npdm; list main in both slots.
+    REQUIRE(StatusAfterPatch(ReadAll(archive), [](std::string& buf, u64 toc) {
+                const u64 dirs = toc + 0x30 + Le(buf, toc + 0x04, 4) * 0x40;
+                const u64 exefs_record = dirs + Le(buf, toc + 0x30 + 0x0C, 4) * 0x18;
+                REQUIRE(Le(buf, exefs_record + 0x0C, 4) == 2);
+                const u64 slot = ChildSlots(buf, toc) + Le(buf, exefs_record + 0x08, 4) * 4;
+                SetLe(buf, slot + 4, Le(buf, slot, 4), 4);
+            }) == Loader::ResultStatus::ErrorNUPBadFormat);
+}
+
+TEST_CASE("NUP keeps metadata where the loader reads it in a dump without a base", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    for (const auto* version : {"65536", "131072"}) {
+        Put(root / "updates" / version / "exefs/main", std::string{"main "} + version);
+        Put(root / "updates" / version / "exefs/main.npdm", Npdm(TitleId));
+        Put(root / "updates" / version / "romfs/file", std::string{"rom "} + version);
+    }
+    const auto archive = t.path / "Game.nup";
+    FileSys::Nup::PackOptions options;
+    options.metadata.title_name = "Standalone";
+    options.metadata.publisher = "Standalone Inc";
+    options.metadata.icon = {0xFF, 0xD8, 0xFF, 0xD9};
+    REQUIRE(FileSys::Nup::PackDump(root, archive, options) == FileSys::Nup::PackResult::Success);
+
+    const auto check = [&](const std::string& title) {
+        FileSys::RealVfsFilesystem real;
+        {
+            NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+            REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+            REQUIRE(nup.GetPackages().size() == 2);
+            REQUIRE(nup.GetPackages()[1].version == 131072);
+            REQUIRE(nup.FindMetadataPackage() == 1);
+            REQUIRE(nup.GetPackages()[1].title_name == title);
+            REQUIRE(nup.GetPackages()[0].title_name.empty());
+        }
+        Loader::AppLoader_NUP loader{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        std::string read_title;
+        REQUIRE(loader.ReadTitle(read_title) == Loader::ResultStatus::Success);
+        REQUIRE(read_title == title);
+        std::vector<u8> icon;
+        REQUIRE(loader.ReadIcon(icon) == Loader::ResultStatus::Success);
+        REQUIRE(icon == options.metadata.icon);
+        FileSys::NACP control;
+        REQUIRE(loader.ReadControlData(control) == Loader::ResultStatus::Success);
+        REQUIRE(control.GetDeveloperName() == "Standalone Inc");
+    };
+    check("Standalone");
+
+    FileSys::Nup::MetadataEdit edit;
+    edit.title_name = "Edited";
+    std::string error;
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
+            FileSys::Nup::EditResult::Success);
+    INFO(error);
+    check("Edited");
+    REQUIRE(FileSys::Nup::ProbeNupMetadata(archive).title_name == "Edited");
+}
+
+TEST_CASE("NUP loader keeps the control data of the dump", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    auto raw = std::make_unique<FileSys::RawNACP>();
+    auto& languages = raw->language_entries.language_entries;
+    SetName(languages[0].application_name, "Real Name");
+    SetDeveloper(languages[0].developer_name, "Real Dev");
+    SetName(languages[2].application_name, "Japanese Name");
+    SetDeveloper(languages[2].developer_name, "Japanese Dev");
+    raw->startup_user_account = 1;
+    raw->save_data_owner_id = TitleId;
+    raw->user_account_save_data_size = 0x400000;
+    raw->cache_storage_size = 0x1234000;
+    raw->cache_storage_journal_size = 0x56000;
+    raw->cache_storage_data_and_journal_max_size = 0x2000000;
+    raw->cache_storage_max_index = 7;
+    std::string nacp(sizeof(FileSys::RawNACP), '\0');
+    std::memcpy(nacp.data(), raw.get(), nacp.size());
+    // A sidecar next to the base ExeFS, where the loose loader looks for one.
+    Put(root / "Base/control.nacp", nacp);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    const auto check = [&](const std::string& title, const std::string& japanese,
+                           const std::string& developer) {
+        FileSys::RealVfsFilesystem real;
+        Loader::AppLoader_NUP loader{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        FileSys::NACP control;
+        REQUIRE(loader.ReadControlData(control) == Loader::ResultStatus::Success);
+        REQUIRE(control.GetApplicationName() == title);
+        REQUIRE(control.GetDeveloperName() == developer);
+        REQUIRE(control.language_entries.at(2).GetApplicationName() == japanese);
+        REQUIRE(control.raw.startup_user_account == 1);
+        REQUIRE(control.raw.save_data_owner_id == TitleId);
+        REQUIRE(control.raw.user_account_save_data_size == 0x400000);
+        REQUIRE(control.raw.cache_storage_size == 0x1234000);
+        REQUIRE(control.raw.cache_storage_journal_size == 0x56000);
+        REQUIRE(control.raw.cache_storage_data_and_journal_max_size == 0x2000000);
+        REQUIRE(control.raw.cache_storage_max_index == 7);
+        // What the game reads through GetRawBytes carries the same names.
+        FileSys::NACP reparsed{std::make_shared<FileSys::VectorVfsFile>(control.GetRawBytes())};
+        REQUIRE(reparsed.GetApplicationName() == title);
+    };
+    // The packer copied the name from this NACP, so every language keeps its own.
+    check("Real Name", "Japanese Name", "Real Dev");
+
+    // A name set by hand renames every language and keeps the rest of the control data.
+    FileSys::Nup::MetadataEdit edit;
+    edit.title_name = "Renamed";
+    edit.publisher = "New Dev";
+    std::string error;
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
+            FileSys::Nup::EditResult::Success);
+    INFO(error);
+    check("Renamed", "Renamed", "New Dev");
+}
+
+TEST_CASE("NUP low storage resume refuses a dump that changed", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    const auto archive = t.path / "Game.nup";
+    const FileSys::Nup::PackOptions options{.delete_sources = true, .chunk_bytes = 1};
+
+    // Interrupted with main, main.npdm and big.bin packed, journaled and deleted.
+    std::atomic_bool cancel = false;
+    REQUIRE(FileSys::Nup::PackDump(
+                root, archive, options,
+                [&](const auto& p) {
+                    if (p.files_done >= 4) {
+                        cancel = true;
+                    }
+                },
+                &cancel) == FileSys::Nup::PackResult::Cancelled);
+    REQUIRE(FileSys::Nup::HasResumableJournal(archive));
+    REQUIRE_FALSE(fs::exists(root / "Base/ExeFS/main"));
+    REQUIRE(fs::exists(root / "Base/RomFS/random.bin"));
+
+    std::string error;
+    SECTION("a packed file is back with other contents") {
+        Put(root / "Base/ExeFS/main", "a different main");
+        REQUIRE(FileSys::Nup::PackDump(root, archive, options, {}, nullptr, &error) ==
+                FileSys::Nup::PackResult::InvalidSource);
+        REQUIRE(error.find("dump changed") != std::string::npos);
+        REQUIRE(ReadAll(root / "Base/ExeFS/main") == "a different main");
+        REQUIRE(FileSys::Nup::HasResumableJournal(archive));
+
+        // The file that was packed is deleted again and the run finishes.
+        Put(root / "Base/ExeFS/main", "base main");
+        REQUIRE(FileSys::Nup::PackDump(root, archive, options, {}, nullptr, &error) ==
+                FileSys::Nup::PackResult::Success);
+        INFO(error);
+        REQUIRE_FALSE(fs::exists(root / "Base/ExeFS"));
+        FileSys::RealVfsFilesystem real;
+        NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+        REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+    }
+    SECTION("a file not packed yet changed") {
+        Put(root / "Base/RomFS/random.bin", "shorter");
+        REQUIRE(FileSys::Nup::PackDump(root, archive, options, {}, nullptr, &error) ==
+                FileSys::Nup::PackResult::InvalidSource);
+        REQUIRE(error.find("dump changed") != std::string::npos);
+        REQUIRE(ReadAll(root / "Base/RomFS/random.bin") == "shorter");
+        REQUIRE(FileSys::Nup::HasResumableJournal(archive));
+
+        // A pack that is not low-storage leaves the partial archive alone: it holds the files
+        // the interrupted run deleted.
+        REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::IoError);
+        REQUIRE(FileSys::Nup::HasResumableJournal(archive));
+
+        // Starting over removes the partial archive and its journal.
+        REQUIRE(FileSys::Nup::DiscardResumableJournal(archive, &error));
+        REQUIRE_FALSE(FileSys::Nup::HasResumableJournal(archive));
+        REQUIRE_FALSE(fs::exists(archive.string() + ".part"));
+    }
+}
+
+TEST_CASE("NUP round trip: pack, verify, extract, edit, reopen", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    // Compressible and several zstd output blocks long, so extraction streams it in pieces.
+    std::string large(600 * 1024, '\0');
+    u32 x = 99;
+    for (auto& c : large) {
+        x = x * 1664525 + 1013904223;
+        c = static_cast<char>('a' + (x >> 29));
+    }
+    Put(root / "Base/RomFS/large.bin", large);
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+    REQUIRE(std::ranges::count(RawFiles(ReadAll(archive)), u8{1}, &RawFile::codec) > 0);
+    {
+        FileSys::RealVfsFilesystem real;
+        NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+        REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+    }
+
+    // Every file of the dump comes back byte for byte (the listing is never packed).
+    const auto out = t.path / "Extracted";
+    std::string error;
+    REQUIRE(FileSys::Nup::ExtractNup(archive, out, {}, nullptr, &error) ==
+            FileSys::Nup::ExtractResult::Success);
+    INFO(error);
+    REQUIRE(LowerPaths(SourceTree(out)) == LowerPaths(SourceTree(root)));
+
+    FileSys::Nup::MetadataEdit edit;
+    edit.title_name = "Round Trip";
+    edit.publisher = "Round Trip Inc";
+    edit.icon = std::vector<u8>{0x89, 0x50, 0x4E, 0x47};
+    REQUIRE(FileSys::Nup::EditNupMetadata(archive, edit, &error) ==
+            FileSys::Nup::EditResult::Success);
+    {
+        FileSys::RealVfsFilesystem real;
+        NupContainer nup{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        REQUIRE(nup.GetStatus() == Loader::ResultStatus::Success);
+        REQUIRE(nup.VerifyIntegrity({}) == Loader::ResultStatus::Success);
+        const auto& meta = nup.GetPackages()[nup.FindMetadataPackage()];
+        REQUIRE(meta.title_name == "Round Trip");
+        REQUIRE(meta.publisher == "Round Trip Inc");
+        REQUIRE(meta.icon == edit.icon.value());
+
+        Loader::AppLoader_NUP loader{real.OpenFile(archive.string(), FileSys::OpenMode::Read)};
+        std::string title;
+        REQUIRE(loader.ReadTitle(title) == Loader::ResultStatus::Success);
+        REQUIRE(title == "Round Trip");
+        std::vector<u8> icon;
+        REQUIRE(loader.ReadIcon(icon) == Loader::ResultStatus::Success);
+        REQUIRE(icon == edit.icon.value());
+    }
+
+    // The edit rewrote metadata only: the data still extracts to the same tree.
+    const auto again = t.path / "Again";
+    REQUIRE(FileSys::Nup::ExtractNup(archive, again, {}, nullptr, &error) ==
+            FileSys::Nup::ExtractResult::Success);
+    REQUIRE(LowerPaths(SourceTree(again)) == LowerPaths(SourceTree(root)));
 }

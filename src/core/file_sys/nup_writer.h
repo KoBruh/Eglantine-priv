@@ -31,7 +31,7 @@ enum class PackResult { Success, Cancelled, InvalidSource, IoError };
 // disk space. Files above this size are therefore stored raw.
 constexpr u64 DefaultRawThreshold = 256ULL * 1024 * 1024;
 
-// Application metadata written to the base package (or the first package when there is no base).
+// Application metadata written to the base package (the newest update when there is no base).
 // In PackOptions an empty field keeps what the dump supplies; ProbeMetadata fills all of them.
 struct Metadata {
     std::string title_name;
@@ -69,19 +69,28 @@ std::filesystem::path DefaultArchivePath(const std::filesystem::path& dump_root)
 
 // Writes <archive>.part and renames it when done; an existing archive is never overwritten. A
 // cancelled or failed low-storage run keeps its .part and .journal, and calling this again with
-// the same arguments resumes it.
+// the same arguments resumes it, provided the dump is still the one it was planned from (the
+// journal records each source's size and modification time, and the SHA-256 of what it packed);
+// otherwise it fails with InvalidSource without deleting anything.
 PackResult PackDump(const std::filesystem::path& dump_root, const std::filesystem::path& archive,
                     const PackOptions& options = {},
                     const std::function<void(const PackProgress&)>& progress = {},
                     const std::atomic_bool* cancel = nullptr, std::string* error_out = nullptr);
 
 bool HasResumableJournal(const std::filesystem::path& archive);
+// Deletes an interrupted low-storage run's .journal and .part so the next PackDump starts over.
+// Files that run already deleted from the dump exist only in the .part and are lost with it.
+bool DiscardResumableJournal(const std::filesystem::path& archive,
+                             std::string* error_out = nullptr);
 
 enum class ExtractResult { Success, Cancelled, InvalidSource, IoError };
 
 // Unpacks every package back into a loose dump: base/, updates/<version>/ and
 // dlc/<titleid>/<n>/. A single base-only container is written bare, without the base/
 // wrapper, so it round-trips. An existing non-empty output directory is never overwritten.
+// Every file is checked against its stored SHA-256 as it is written, and the declared size of
+// the whole output against the free space first; a damaged archive fails with InvalidSource,
+// and any failure removes what this call wrote.
 ExtractResult ExtractNup(const std::filesystem::path& archive,
                          const std::filesystem::path& out_dir,
                          const std::function<void(const PackProgress&)>& progress = {},
@@ -101,7 +110,8 @@ struct MetadataEdit {
 
 enum class EditResult { Success, Cancelled, InvalidSource, IoError, NoChange };
 
-// Rewrites the target package's meta TLVs (base, or the first package when there is no base).
+// Rewrites the target package's meta TLVs (base, or the newest update when there is no base:
+// NupContainer::FindMetadataPackage, where the loader reads them).
 // Extents are copied untouched; the TOC hash and file size are updated and the replacement is
 // atomic. Returns NoChange when every field keeps its stored value. Progress reports archive
 // bytes rewritten against the new file size.

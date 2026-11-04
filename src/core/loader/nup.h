@@ -54,6 +54,10 @@ public:
 private:
     std::unique_ptr<FileSys::NupContainer> nup;
     std::unique_ptr<AppLoader> secondary_loader;
+    /// The ExeFS the program boots from, as stored.
+    FileSys::VirtualDir exefs_dir;
+    /// The merged RomFS, built on first use; LayeredFS mods are applied to it at Load.
+    FileSys::VirtualFile romfs;
 
     std::unique_ptr<FileSys::NACP> nacp_file;
     FileSys::VirtualFile icon_file;

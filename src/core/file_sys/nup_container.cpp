@@ -134,6 +134,7 @@ static_assert(sizeof(TlvHeader) == TlvHeaderSize);
 
 enum MetaType : u16 {
     MetaNpdm = 0x0001,
+    MetaNacp = 0x0002,
     MetaIcon = 0x0003,
     MetaDisplayVersion = 0x0004,
     MetaTitleName = 0x0005,
@@ -499,7 +500,10 @@ bool NupContainer::Parse() {
         FileRecord record{};
         std::memcpy(&record, base + pos, sizeof(record));
         pos += FileRecordSize;
+        // A raw extent is the file itself: one of another length would be served at the
+        // extent's length rather than the recorded one.
         if (record.codec > CodecZstd || record.codec_flags != 0 ||
+            (record.codec == CodecRaw && record.extent_size != record.size) ||
             (record.size == 0 && (record.extent_offset != 0 || record.extent_size != 0)) ||
             (record.size != 0 &&
              (record.extent_size == 0 || record.extent_offset < blob_offset ||
@@ -523,6 +527,14 @@ bool NupContainer::Parse() {
     std::memcpy(children.data(), base + children_offset, children_bytes);
     for (const u32 child : children) {
         if (child >= header.dir_count + header.file_count) {
+            status = Loader::ResultStatus::ErrorNUPBadFormat;
+            return false;
+        }
+        // Package roots are never children, so every listed member is named.
+        const std::string& name =
+            child < header.dir_count ? dirs[child].name : files[child - header.dir_count].name;
+        if (!IsPlainEntryName(name)) {
+            LOG_ERROR(Loader, "NUP member name is not a plain file name");
             status = Loader::ResultStatus::ErrorNUPBadFormat;
             return false;
         }
@@ -550,6 +562,13 @@ bool NupContainer::ValidateDirTree() const {
     };
     std::vector<u8> state(dirs.size(), Unvisited);
     std::vector<u32> height(dirs.size(), 0);
+    // A tree: a directory listed twice, under two parents or twice under one, passes the cycle
+    // check but is built once per path to it. A TOC of a few KB that lists each level twice
+    // builds 2^depth directories when the game list scans it.
+    std::vector<bool> listed(dirs.size(), false);
+    // Files likewise: the packer gives every path its own record (identical files share an
+    // extent, not a record), so a record listed twice only multiplies what extraction writes.
+    std::vector<bool> listed_files(files.size(), false);
     std::vector<Frame> stack;
     for (u32 start = 0; start < dirs.size(); ++start) {
         if (state[start] != Unvisited) {
@@ -572,8 +591,19 @@ bool NupContainer::ValidateDirTree() const {
             ++stack.back().next;
             const u32 child = children[static_cast<std::size_t>(node.first_child) + frame.next];
             if (child >= dirs.size()) {
+                const std::size_t file_index = child - dirs.size();
+                if (listed_files[file_index]) {
+                    LOG_ERROR(Loader, "NUP file {} is listed more than once", file_index);
+                    return false;
+                }
+                listed_files[file_index] = true;
                 continue;
             }
+            if (listed[child]) {
+                LOG_ERROR(Loader, "NUP directory {} is listed more than once", child);
+                return false;
+            }
+            listed[child] = true;
             if (state[child] == InProgress) {
                 LOG_ERROR(Loader, "NUP directory tree contains a cycle");
                 return false;
@@ -589,6 +619,15 @@ bool NupContainer::ValidateDirTree() const {
                 return false;
             }
         }
+    }
+    // Every package has a root of its own that no directory lists, for the same reason.
+    std::vector<bool> is_root(dirs.size(), false);
+    for (const auto& package : packages) {
+        if (listed[package.root_dir] || is_root[package.root_dir]) {
+            LOG_ERROR(Loader, "NUP package root directory {} is shared", package.root_dir);
+            return false;
+        }
+        is_root[package.root_dir] = true;
     }
     return true;
 }
@@ -615,6 +654,9 @@ bool NupContainer::ParseMeta(PackageInfo& package) {
         switch (header.type) {
         case MetaNpdm:
             package.npdm.assign(payload, payload + header.size);
+            break;
+        case MetaNacp:
+            package.nacp.assign(payload, payload + header.size);
             break;
         case MetaIcon:
             package.icon.assign(payload, payload + header.size);
@@ -699,6 +741,37 @@ std::optional<std::size_t> NupContainer::FindBestUpdatePackage() const {
         }
     }
     return best;
+}
+
+bool NupContainer::IsPlainEntryName(std::string_view name) {
+    return !name.empty() && name != "." && name != ".." &&
+           name.find_first_of(std::string_view{"/\\:\0", 4}) == std::string_view::npos;
+}
+
+std::size_t NupContainer::MetadataPackageIndex(
+    std::span<const std::pair<PackageKind, u32>> kinds_and_versions) {
+    std::optional<std::size_t> best_update;
+    for (std::size_t i = 0; i < kinds_and_versions.size(); ++i) {
+        const auto [kind, version] = kinds_and_versions[i];
+        if (kind == PackageKind::Base) {
+            return i;
+        }
+        // The first of equal versions, as FindBestUpdatePackage picks it.
+        if (kind == PackageKind::Update &&
+            (!best_update || version > kinds_and_versions[*best_update].second)) {
+            best_update = i;
+        }
+    }
+    return best_update.value_or(0);
+}
+
+std::size_t NupContainer::FindMetadataPackage() const {
+    std::vector<std::pair<PackageKind, u32>> kinds_and_versions;
+    kinds_and_versions.reserve(packages.size());
+    for (const auto& package : packages) {
+        kinds_and_versions.emplace_back(package.kind, package.version);
+    }
+    return MetadataPackageIndex(kinds_and_versions);
 }
 
 VirtualFile NupContainer::OpenFile(std::size_t file_index) {
@@ -818,33 +891,132 @@ VirtualDir NupContainer::MergeShadowDirs(const VirtualDir& base, const VirtualDi
                                                 base->GetName());
 }
 
-std::vector<u8> NupContainer::ReadExtentRaw(const FileNode& node) const {
-    return file->ReadBytes(static_cast<std::size_t>(node.extent_size),
-                           static_cast<std::size_t>(node.extent_offset));
+NupContainer::StreamResult NupContainer::StreamFile(
+    std::size_t file_index, const std::function<bool(std::span<const u8>)>& sink) const {
+    if (file_index >= files.size()) {
+        return StreamResult::Corrupt;
+    }
+    const FileNode& node = files[file_index];
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> hash{EVP_MD_CTX_new(),
+                                                                 &EVP_MD_CTX_free};
+    if (!hash || EVP_DigestInit_ex(hash.get(), EVP_sha256(), nullptr) != 1) {
+        return StreamResult::Corrupt;
+    }
+    u64 produced = 0;
+    const auto emit = [&](const u8* data, std::size_t size) {
+        EVP_DigestUpdate(hash.get(), data, size);
+        produced += size;
+        return sink(std::span<const u8>{data, size});
+    };
+
+    if (node.size != 0) {
+        if (node.extent_size > file->GetSize() ||
+            node.extent_offset > file->GetSize() - node.extent_size) {
+            return StreamResult::Corrupt;
+        }
+        if (node.codec == CodecRaw) {
+            // Parse guarantees a raw extent is exactly the file's size.
+            constexpr u64 ChunkSize = 4 * 1024 * 1024;
+            std::vector<u8> buffer(static_cast<std::size_t>(std::min(ChunkSize, node.size)));
+            while (produced < node.size) {
+                const auto chunk =
+                    static_cast<std::size_t>(std::min<u64>(buffer.size(), node.size - produced));
+                if (file->Read(buffer.data(), chunk,
+                               static_cast<std::size_t>(node.extent_offset + produced)) != chunk) {
+                    return StreamResult::Corrupt;
+                }
+                if (!emit(buffer.data(), chunk)) {
+                    return StreamResult::Stopped;
+                }
+            }
+        } else {
+            std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> dctx{ZSTD_createDCtx(),
+                                                                      &ZSTD_freeDCtx};
+            if (!dctx) {
+                return StreamResult::Corrupt;
+            }
+            std::vector<u8> in_buffer(ZSTD_DStreamInSize());
+            std::vector<u8> out_buffer(ZSTD_DStreamOutSize());
+            u64 read = 0;
+            bool frame_done = false;
+            while (!frame_done && read < node.extent_size) {
+                const auto chunk = static_cast<std::size_t>(
+                    std::min<u64>(in_buffer.size(), node.extent_size - read));
+                if (file->Read(in_buffer.data(), chunk,
+                               static_cast<std::size_t>(node.extent_offset + read)) != chunk) {
+                    return StreamResult::Corrupt;
+                }
+                read += chunk;
+                ZSTD_inBuffer input{in_buffer.data(), chunk, 0};
+                ZSTD_outBuffer output{};
+                do {
+                    output = {out_buffer.data(), out_buffer.size(), 0};
+                    const std::size_t result = ZSTD_decompressStream(dctx.get(), &output, &input);
+                    // The frame may declare any size; never produce more than the record says.
+                    if (ZSTD_isError(result) || output.pos > node.size - produced) {
+                        return StreamResult::Corrupt;
+                    }
+                    if (output.pos != 0 && !emit(out_buffer.data(), output.pos)) {
+                        return StreamResult::Stopped;
+                    }
+                    frame_done = result == 0;
+                } while (!frame_done && (input.pos < input.size || output.pos == output.size));
+            }
+            if (!frame_done) {
+                return StreamResult::Corrupt;
+            }
+        }
+    }
+
+    std::array<u8, 0x20> digest{};
+    unsigned int length = 0;
+    if (produced != node.size || EVP_DigestFinal_ex(hash.get(), digest.data(), &length) != 1 ||
+        length != digest.size() || digest != node.sha256) {
+        return StreamResult::Corrupt;
+    }
+    return StreamResult::Success;
+}
+
+NupContainer::DirEntries NupContainer::ListDir(u32 dir_index) const {
+    DirEntries out;
+    if (dir_index >= dirs.size()) {
+        return out;
+    }
+    const DirNode& node = dirs[dir_index];
+    const u64 end = static_cast<u64>(node.first_child) + node.child_count;
+    for (u64 slot = node.first_child; slot < end; ++slot) {
+        const u32 child = children[static_cast<std::size_t>(slot)];
+        if (child >= dirs.size()) {
+            out.file_indices.push_back(child - dirs.size());
+        } else {
+            out.subdirs.push_back(child);
+        }
+    }
+    return out;
+}
+
+const std::string& NupContainer::GetDirName(u32 dir_index) const {
+    static const std::string empty;
+    return dir_index < dirs.size() ? dirs[dir_index].name : empty;
+}
+
+const std::string& NupContainer::GetFileName(std::size_t file_index) const {
+    static const std::string empty;
+    return file_index < files.size() ? files[file_index].name : empty;
+}
+
+u64 NupContainer::GetFileSize(std::size_t file_index) const {
+    return file_index < files.size() ? files[file_index].size : 0;
 }
 
 Loader::ResultStatus NupContainer::VerifyIntegrity(
     std::function<bool(std::size_t, std::size_t)> progress_callback) const {
     const std::size_t total = files.size();
     for (std::size_t i = 0; i < total; ++i) {
-        const FileNode& node = files[i];
-        std::vector<u8> content;
-        if (node.size == 0) {
-            content = ReadExtentRaw(node);
-        } else if (node.codec == CodecRaw) {
-            content = ReadExtentRaw(node);
-        } else {
-            NupVfsFile view(file, node.extent_offset, node.extent_size, node.size, node.name,
-                            cache, i);
-            content = view.ReadAllBytes();
-        }
-        if (content.size() != node.size) {
-            LOG_ERROR(Loader, "NUP integrity check failed for {}: short read", node.name);
-            return Loader::ResultStatus::ErrorIntegrityVerificationFailed;
-        }
-        std::array<u8, 0x20> hash{};
-        if (!Sha256(content.data(), content.size(), hash) || hash != node.sha256) {
-            LOG_ERROR(Loader, "NUP integrity check failed for {}: SHA-256 mismatch", node.name);
+        // Streamed: a large member is neither read whole into memory nor spilled to disk.
+        if (StreamFile(i, [](std::span<const u8>) { return true; }) != StreamResult::Success) {
+            LOG_ERROR(Loader, "NUP integrity check failed for {}: SHA-256 mismatch or short read",
+                      files[i].name);
             return Loader::ResultStatus::ErrorIntegrityVerificationFailed;
         }
         if (progress_callback && !progress_callback(i + 1, total)) {

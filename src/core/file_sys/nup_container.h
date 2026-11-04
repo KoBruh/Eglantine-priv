@@ -10,8 +10,10 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "common/common_types.h"
@@ -116,6 +118,8 @@ public:
         u32 meta_size{};
 
         std::vector<u8> npdm;
+        /// The dump's control.nacp as packed, when it had one.
+        std::vector<u8> nacp;
         std::string title_name;
         std::string publisher;
         std::string source_dump;
@@ -152,10 +156,42 @@ public:
     /// Highest version among Update packages, if any.
     std::optional<std::size_t> FindBestUpdatePackage() const;
 
+    /// The package that carries the application's name, icon and control data: the base, else
+    /// the newest update (the one a container without a base boots), else the first package.
+    /// The packer writes application metadata there; the loader and the editor read it there.
+    static std::size_t MetadataPackageIndex(
+        std::span<const std::pair<PackageKind, u32>> kinds_and_versions);
+    std::size_t FindMetadataPackage() const;
+
+    /// Whether a member name is one plain file name: not empty, "." or "..", and without
+    /// separators, drive or stream colons or NULs. Names are labels, never paths: Parse rejects
+    /// any other, so nothing that joins them onto a host folder can leave it.
+    static bool IsPlainEntryName(std::string_view name);
+
     /// Opens a member file by node index; raw extents are zero-copy views into
     /// the container, zstd extents are lazily decompressed, cached in memory
     /// or, when large, in a temporary file.
     VirtualFile OpenFile(std::size_t file_index);
+
+    enum class StreamResult { Success, Corrupt, Stopped };
+
+    /// Hands a member file to `sink` in order, decompressing a zstd extent as it goes (nothing is
+    /// cached or written to a temporary file), and checks the result against the stored size and
+    /// SHA-256. On Corrupt, whatever `sink` received must be discarded. Stopped: `sink` returned
+    /// false.
+    StreamResult StreamFile(std::size_t file_index,
+                            const std::function<bool(std::span<const u8>)>& sink) const;
+
+    /// A directory's entries as stored, for copying a package out without building its tree:
+    /// subdirectory indices and member file indices.
+    struct DirEntries {
+        std::vector<u32> subdirs;
+        std::vector<std::size_t> file_indices;
+    };
+    DirEntries ListDir(u32 dir_index) const;
+    const std::string& GetDirName(u32 dir_index) const;
+    const std::string& GetFileName(std::size_t file_index) const;
+    u64 GetFileSize(std::size_t file_index) const;
 
     VirtualDir GetExeFSDir(std::size_t package_index);
     VirtualDir GetRomFSDir(std::size_t package_index);
@@ -190,7 +226,6 @@ private:
     bool ValidateDirTree() const;
     void BuildDirTree(u32 dir_index, VectorVfsDirectory& out);
     VirtualDir BuildPackageDir(u32 dir_index);
-    std::vector<u8> ReadExtentRaw(const FileNode& node) const;
 
     VirtualFile file;
     Loader::ResultStatus status{Loader::ResultStatus::ErrorNullFile};

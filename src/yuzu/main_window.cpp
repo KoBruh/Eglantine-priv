@@ -4116,17 +4116,47 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
         return;
     }
 
-    const bool resume = FileSys::Nup::HasResumableJournal(archive);
+    bool resume = FileSys::Nup::HasResumableJournal(archive);
+    if (resume) {
+        QMessageBox box(QMessageBox::Question, tr("Resume Conversion"),
+                        tr("An interrupted low-storage conversion of this folder was found.\n\n"
+                           "Resume continues it, and stops without deleting anything if the "
+                           "folder no longer holds the dump it started from. Start Over deletes "
+                           "the partial NUP and converts the folder as it is now."),
+                        QMessageBox::Cancel, this);
+        QPushButton* resume_button = box.addButton(tr("Resume"), QMessageBox::AcceptRole);
+        QPushButton* restart_button =
+            box.addButton(tr("Start Over"), QMessageBox::DestructiveRole);
+        box.setDefaultButton(resume_button);
+        box.exec();
+        if (box.clickedButton() == restart_button) {
+            if (QMessageBox::warning(
+                    this, tr("Start Over"),
+                    tr("The interrupted conversion deleted the files it had already moved into "
+                       "the partial NUP. Starting over deletes the partial NUP as well, so those "
+                       "files are lost unless the folder now holds a complete dump.\n\n"
+                       "Start over?"),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+                return;
+            std::string error;
+            if (!FileSys::Nup::DiscardResumableJournal(archive, &error)) {
+                // Plain text: the message quotes paths.
+                QMessageBox failed(QMessageBox::Critical, tr("Start Over"),
+                                   QString::fromStdString(error), QMessageBox::Ok, this);
+                failed.setTextFormat(Qt::PlainText);
+                failed.exec();
+                return;
+            }
+            resume = false;
+        } else if (box.clickedButton() != resume_button) {
+            return;
+        }
+    }
     bool delete_sources = resume;
     FileSys::Nup::Metadata metadata;
     QString progress_title;
     QPixmap progress_icon;
-    if (resume) {
-        if (QMessageBox::question(this, tr("Resume Conversion"),
-                                  tr("Resume the interrupted conversion?"),
-                                  QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
-            return;
-    } else {
+    if (!resume) {
         u64 needed{};
         {
             std::error_code ec;
@@ -4212,10 +4242,15 @@ void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
                                                     "Convert to NUP again."));
                     break;
                 case FileSys::Nup::PackResult::InvalidSource:
-                case FileSys::Nup::PackResult::IoError:
-                    QMessageBox::critical(this, tr("Conversion Failed"),
-                                          QString::fromStdString(error));
+                case FileSys::Nup::PackResult::IoError: {
+                    // Plain text: the message can quote file names from the dump, and as rich
+                    // text, markup in them would load resources.
+                    QMessageBox box(QMessageBox::Critical, tr("Conversion Failed"),
+                                    QString::fromStdString(error), QMessageBox::Ok, this);
+                    box.setTextFormat(Qt::PlainText);
+                    box.exec();
                     break;
+                }
                 }
             },
             Qt::QueuedConnection);
@@ -4306,10 +4341,12 @@ void MainWindow::OnGameListExtractNup(const std::string& game_path) {
                 nup_cancel.reset();
                 switch (result) {
                 case FileSys::Nup::ExtractResult::Success:
+                    // Success means every file was checked against its stored SHA-256 as it was
+                    // written; a damaged archive fails instead, so only then is deleting it safe.
                     QMessageBox::information(
                         this, tr("Extraction Complete"),
-                        tr("The NUP was extracted. You can delete the NUP file if you no longer "
-                           "need it."));
+                        tr("The NUP was extracted and every file matched its checksum. You can "
+                           "delete the NUP file if you no longer need it."));
                     // Only a new loose dump can appear, so one rescan is enough. The full refresh
                     // also rescans external content and the firmware on the UI thread.
                     game_list->RefreshGameDirectory();
@@ -4317,10 +4354,14 @@ void MainWindow::OnGameListExtractNup(const std::string& game_path) {
                 case FileSys::Nup::ExtractResult::Cancelled:
                     break;
                 case FileSys::Nup::ExtractResult::InvalidSource:
-                case FileSys::Nup::ExtractResult::IoError:
-                    QMessageBox::critical(this, tr("Extraction Failed"),
-                                          QString::fromStdString(error));
+                case FileSys::Nup::ExtractResult::IoError: {
+                    // Plain text, as for conversion errors: these quote names from the archive.
+                    QMessageBox box(QMessageBox::Critical, tr("Extraction Failed"),
+                                    QString::fromStdString(error), QMessageBox::Ok, this);
+                    box.setTextFormat(Qt::PlainText);
+                    box.exec();
                     break;
+                }
                 }
             },
             Qt::QueuedConnection);
@@ -4411,10 +4452,14 @@ void MainWindow::OnGameListEditNupMetadata(const std::string& game_path) {
                 case FileSys::Nup::EditResult::Cancelled:
                     break;
                 case FileSys::Nup::EditResult::InvalidSource:
-                case FileSys::Nup::EditResult::IoError:
-                    QMessageBox::critical(this, tr("Edit Failed"),
-                                          QString::fromStdString(error));
+                case FileSys::Nup::EditResult::IoError: {
+                    // Plain text, as for conversion errors.
+                    QMessageBox box(QMessageBox::Critical, tr("Edit Failed"),
+                                    QString::fromStdString(error), QMessageBox::Ok, this);
+                    box.setTextFormat(Qt::PlainText);
+                    box.exec();
                     break;
+                }
                 }
             },
             Qt::QueuedConnection);

@@ -318,11 +318,34 @@ struct PlanPackage {
     std::vector<u8> meta;
 };
 
+// A source file's size and modification time (in the file clock's own ticks) when it was
+// planned: the fingerprint a resumed low-storage run checks the dump against.
+struct SourceStamp {
+    u64 size{};
+    s64 mtime{};
+    friend bool operator==(const SourceStamp&, const SourceStamp&) = default;
+};
+
+std::optional<SourceStamp> StampOf(const fs::path& path) {
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    const auto time = fs::last_write_time(path, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    return SourceStamp{size, static_cast<s64>(time.time_since_epoch().count())};
+}
+
 struct PlanEntry {
     u32 package{};
     std::string path;   // inside the package tree, e.g. "romfs/Data/file.bin"
     std::string source; // relative to the dump root
     bool directory{};
+    // Files only; journals written before stamps existed have none.
+    std::optional<SourceStamp> stamp;
 };
 
 struct Plan {
@@ -654,12 +677,17 @@ private:
         return plan.packages.back().title_id;
     }
 
-    // Names, icon and control data belong to the base package, or the first one without a base.
-    // Our dumps rarely carry a control folder; when one does, the base's own wins, then updates.
+    // Names, icon and control data belong to the package the loader reads them from: the base,
+    // else the newest update. Our dumps rarely carry a control folder; when one does, the
+    // target's own wins, then the other packages' in order.
     void AddApplicationMetadata() {
-        const auto app = static_cast<u32>(std::distance(
-            plan.packages.begin(), std::ranges::find(plan.packages, KindBase, &PlanPackage::kind)));
-        const u32 target = app < plan.packages.size() ? app : 0;
+        std::vector<std::pair<NupContainer::PackageKind, u32>> kinds_and_versions;
+        for (const auto& package : plan.packages) {
+            kinds_and_versions.emplace_back(static_cast<NupContainer::PackageKind>(package.kind),
+                                            package.version);
+        }
+        const auto target =
+            static_cast<u32>(NupContainer::MetadataPackageIndex(kinds_and_versions));
         std::ranges::stable_sort(loaders, [target](const auto& a, const auto& b) {
             return (a.first == target) > (b.first == target);
         });
@@ -739,7 +767,8 @@ private:
         if (entry.path().filename() == ".listing" || IsExcluded(entry.path())) {
             return;
         }
-        plan.entries.push_back({package, path, Relative(entry.path()), false});
+        plan.entries.push_back(
+            {package, path, Relative(entry.path()), false, StampOf(entry.path())});
     }
 
     void CollectTree(u32 package, const fs::path& root, const std::string& prefix) {
@@ -781,10 +810,16 @@ Json PlanToJson(const Plan& plan) {
     }
     Json entries = Json::array();
     for (const auto& entry : plan.entries) {
-        entries.push_back(Json{{"package", entry.package},
-                               {"path", entry.path},
-                               {"source", entry.source},
-                               {"directory", entry.directory}});
+        Json json{{"package", entry.package},
+                  {"path", entry.path},
+                  {"source", entry.source},
+                  {"directory", entry.directory}};
+        // Optional keys, so a journal stays readable by builds that do not know them.
+        if (entry.stamp) {
+            json["size"] = entry.stamp->size;
+            json["mtime"] = entry.stamp->mtime;
+        }
+        entries.push_back(std::move(json));
     }
     return Json{{"format", "nup-journal"},
                 {"version", JournalVersion},
@@ -804,9 +839,15 @@ Plan PlanFromJson(const Json& json) {
                                  FromHex(package.at("meta").get<std::string>())});
     }
     for (const auto& entry : json.at("entries")) {
-        plan.entries.push_back({entry.at("package").get<u32>(), entry.at("path").get<std::string>(),
-                                entry.at("source").get<std::string>(),
-                                entry.at("directory").get<bool>()});
+        PlanEntry& planned = plan.entries.emplace_back();
+        planned.package = entry.at("package").get<u32>();
+        planned.path = entry.at("path").get<std::string>();
+        planned.source = entry.at("source").get<std::string>();
+        planned.directory = entry.at("directory").get<bool>();
+        if (entry.contains("size") && entry.contains("mtime")) {
+            planned.stamp =
+                SourceStamp{entry.at("size").get<u64>(), entry.at("mtime").get<s64>()};
+        }
     }
     return plan;
 }
@@ -864,6 +905,14 @@ public:
         std::error_code ec;
         if (fs::exists(archive, ec)) {
             throw PackError(PackResult::IoError, "archive already exists: " + ToUtf8(archive));
+        }
+        // Only a low-storage run resumes. Any other would overwrite the partial archive, which
+        // holds the files the interrupted run already deleted from the dump.
+        if (!options.delete_sources && HasResumableJournal(archive)) {
+            throw PackError(PackResult::IoError,
+                            "an interrupted low-storage conversion of this dump exists: resume "
+                            "it in low-storage mode, or delete " +
+                                ToUtf8(part) + " and " + ToUtf8(journal) + " to start over");
         }
         // A journal without a complete plan line was cut short before anything was deleted.
         const bool resume =
@@ -923,7 +972,8 @@ public:
 
     void Abort() {
         out.Close();
-        if (!options.delete_sources) {
+        // Only a .part this run wrote: one it refused to touch may be an interrupted run's.
+        if (!options.delete_sources && created_part) {
             RemoveFile(part);
         }
     }
@@ -935,6 +985,7 @@ private:
         if (!out.IsOpen()) {
             throw PackError(PackResult::IoError, "cannot create " + ToUtf8(part));
         }
+        created_part = true;
         WriteZeros(layout.blob_offset);
         cursor = layout.blob_offset;
         if (options.delete_sources) {
@@ -994,15 +1045,73 @@ private:
                                                      ToUtf8(part) + " and " + ToUtf8(journal) +
                                                      " to start over");
         }
+        CheckDumpUnchanged();
         if (!out.SetSize(end) || !out.Seek(static_cast<s64>(end))) {
             throw PackError(PackResult::IoError, "cannot truncate " + ToUtf8(part));
         }
         cursor = end;
 
-        // Journaled before an interruption, but the delete never happened.
+        // Journaled before an interruption, but the delete never happened. CheckDumpUnchanged
+        // made sure each one still there is the file that was packed.
         for (const auto& [index, extent] : journaled) {
             RemoveFile(SourceOf(index));
         }
+    }
+
+    // The journal names its sources by path only. A dump folder replaced by another of the same
+    // name (a fresh dump, another version) would lose every journaled file to the deletes above,
+    // and the rest would be packed from a different dump, so check before touching anything.
+    void CheckDumpUnchanged() {
+        const auto changed = [&](const fs::path& source) {
+            return PackError(PackResult::InvalidSource,
+                             "the dump changed since the interrupted conversion: " +
+                                 ToUtf8(source) +
+                                 " is not the file it planned or packed. Restore the original "
+                                 "folder to resume, or start over (delete " +
+                                 ToUtf8(part) + " and " + ToUtf8(journal) + ")");
+        };
+        std::vector<bool> is_journaled(layout.files.size(), false);
+        for (const auto& [index, extent] : journaled) {
+            is_journaled[index] = true;
+        }
+        // Not packed yet: still there as planned. Only a stat each, so this goes first.
+        for (size_t i = 0; i < layout.files.size(); ++i) {
+            const auto& stamp = plan.entries[layout.files[i].entry].stamp;
+            if (!is_journaled[i] && stamp && StampOf(SourceOf(i)) != stamp) {
+                throw changed(SourceOf(i));
+            }
+        }
+        // Packed, and still there when the interruption came before its delete: it must be what
+        // the journal recorded, or deleting it would lose a file the archive does not hold.
+        for (const auto& [index, extent] : journaled) {
+            const auto source = SourceOf(index);
+            std::error_code ec;
+            if (fs::exists(source, ec) && !MatchesExtent(source, extent)) {
+                throw changed(source);
+            }
+        }
+    }
+
+    bool MatchesExtent(const fs::path& source, const Extent& extent) {
+        Common::FS::IOFile in{source, Common::FS::FileAccessMode::Read};
+        if (!in.IsOpen() || in.GetSize() != extent.size) {
+            return false;
+        }
+        buffer.resize(ReadBufferSize);
+        hash.Reset();
+        u64 total = 0;
+        while (true) {
+            if (Cancelled()) {
+                throw PackError(PackResult::Cancelled, "cancelled");
+            }
+            const auto count = in.ReadSpan(std::span{buffer});
+            if (count == 0) {
+                break;
+            }
+            total += count;
+            hash.Update(buffer.data(), count);
+        }
+        return total == extent.size && hash.Final() == extent.sha256;
     }
 
     fs::path SourceOf(size_t file_index) const {
@@ -1423,6 +1532,7 @@ private:
     std::unordered_set<u64> sizes_seen;
 
     Common::FS::IOFile out;
+    bool created_part = false;
     u64 cursor = 0;
     u64 resume_end = 0;
     std::vector<size_t> chunk;
@@ -1543,6 +1653,21 @@ bool HasResumableJournal(const fs::path& archive) {
            fs::exists(WithSuffix(archive, ".journal"), ec);
 }
 
+bool DiscardResumableJournal(const fs::path& archive, std::string* error_out) {
+    // The journal first: without it a leftover .part is just overwritten by the next run.
+    for (const auto& path : {WithSuffix(archive, ".journal"), WithSuffix(archive, ".part")}) {
+        std::error_code ec;
+        fs::remove(path, ec);
+        if (ec) {
+            if (error_out) {
+                *error_out = "cannot delete " + ToUtf8(path) + ": " + ec.message();
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 PackResult PackDump(const fs::path& dump_root, const fs::path& archive, const PackOptions& options,
                     const std::function<void(const PackProgress&)>& progress,
                     const std::atomic_bool* cancel, std::string* error_out) {
@@ -1581,90 +1706,142 @@ u64 ReadLe(const std::vector<u8>& buf, size_t offset, size_t bytes) {
     return value;
 }
 
-void CountDir(const FileSys::VirtualDir& dir, u64& files, u64& bytes) {
-    if (dir == nullptr) {
-        return;
-    }
-    for (const auto& file : dir->GetFiles()) {
+// What a directory extracts to, as the archive declares it. Saturates rather than wraps: the
+// sizes come from the archive, and zstd members can declare any size.
+void CountDir(const FileSys::NupContainer& nup, u32 dir_index, u64& files, u64& bytes) {
+    const auto entries = nup.ListDir(dir_index);
+    for (const size_t file_index : entries.file_indices) {
         ++files;
-        bytes += file->GetSize();
+        const u64 size = nup.GetFileSize(file_index);
+        bytes = size > std::numeric_limits<u64>::max() - bytes ? std::numeric_limits<u64>::max()
+                                                                : bytes + size;
     }
-    for (const auto& sub : dir->GetSubdirectories()) {
-        CountDir(sub, files, bytes);
+    for (const u32 sub : entries.subdirs) {
+        CountDir(nup, sub, files, bytes);
     }
+}
+
+std::string FormatBytes(u64 bytes) {
+    constexpr u64 MiB = 1024 * 1024;
+    if (bytes >= 1024 * MiB) {
+        return fmt::format("{:.1f} GiB", static_cast<double>(bytes) / (1024.0 * MiB));
+    }
+    return fmt::format("{:.1f} MiB", static_cast<double>(bytes) / MiB);
 }
 
 // Archive member names are labels, not paths. Reject anything that is not exactly one
 // relative filename component so a crafted archive cannot escape the output directory.
 void CheckedName(const std::string& name) {
     const auto path = FromUtf8(name);
-    if (name.empty() || name == "." || name == ".." || name.find('/') != std::string::npos ||
-        name.find('\\') != std::string::npos || name.find(':') != std::string::npos ||
-        name.find('\0') != std::string::npos || path.filename() != path) {
+    if (!FileSys::NupContainer::IsPlainEntryName(name) || path.filename() != path) {
         throw ExtractError(ExtractResult::InvalidSource, "invalid file name in archive: " + name);
     }
+#ifdef _WIN32
+    // Windows strips a trailing dot or space (two names become one file), and opens a device
+    // for reserved names, with or without an extension: the file would be silently missing.
+    const auto reserved = [](std::string stem) {
+        for (char& c : stem) {
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
+        if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
+            stem == "CONIN$" || stem == "CONOUT$") {
+            return true;
+        }
+        return stem.size() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) &&
+               stem[3] >= '0' && stem[3] <= '9';
+    };
+    const std::string stem = name.substr(0, name.find('.'));
+    if (name.back() == '.' || name.back() == ' ' || reserved(stem)) {
+        throw ExtractError(ExtractResult::InvalidSource,
+                           "file name in archive cannot be written on Windows: " + name);
+    }
+#endif
 }
 
-void WriteDir(const FileSys::VirtualDir& dir, const fs::path& dest, PackProgress& progress,
-              const std::function<void(const PackProgress&)>& progress_cb,
-              const std::atomic_bool* cancel, u64& last_report) {
-    if (dir == nullptr) {
-        return;
+struct ExtractContext {
+    const FileSys::NupContainer& nup;
+    PackProgress& progress;
+    const std::function<void(const PackProgress&)>& progress_cb;
+    const std::atomic_bool* cancel;
+    u64 last_report{};
+
+    bool Cancelled() const {
+        return cancel && cancel->load();
     }
+};
+
+// Streams each member straight from the archive (a large zstd member is not staged in a
+// temporary file on the system drive) and checks it against its stored SHA-256 as it goes, so
+// a successful extraction is a verified copy.
+void WriteDir(ExtractContext& context, u32 dir_index, const fs::path& dest) {
     std::error_code ec;
     fs::create_directories(dest, ec);
     if (ec) {
         throw ExtractError(ExtractResult::IoError, "cannot create " + ToUtf8(dest));
     }
-    for (const auto& sub : dir->GetSubdirectories()) {
-        if (cancel && cancel->load()) {
+    const auto entries = context.nup.ListDir(dir_index);
+    for (const u32 sub : entries.subdirs) {
+        if (context.Cancelled()) {
             throw ExtractError(ExtractResult::Cancelled, "cancelled");
         }
-        CheckedName(sub->GetName());
-        WriteDir(sub, dest / FromUtf8(sub->GetName()), progress, progress_cb, cancel,
-                 last_report);
+        const auto& name = context.nup.GetDirName(sub);
+        CheckedName(name);
+        WriteDir(context, sub, dest / FromUtf8(name));
     }
-    std::vector<u8> buffer(ReadBufferSize);
-    for (const auto& file : dir->GetFiles()) {
-        if (cancel && cancel->load()) {
+    for (const size_t file_index : entries.file_indices) {
+        if (context.Cancelled()) {
             throw ExtractError(ExtractResult::Cancelled, "cancelled");
         }
-        CheckedName(file->GetName());
-        const auto out_path = dest / FromUtf8(file->GetName());
+        const auto& name = context.nup.GetFileName(file_index);
+        CheckedName(name);
+        const auto out_path = dest / FromUtf8(name);
+        // The output started empty, so anything here came from this archive: two packages for
+        // one folder, or names that differ only in case on a case-insensitive file system.
+        // Writing would replace the first, verified, copy.
+        if (fs::exists(out_path, ec)) {
+            throw ExtractError(ExtractResult::InvalidSource,
+                               "the archive holds two entries for " + ToUtf8(out_path));
+        }
         Common::FS::IOFile out{out_path, Common::FS::FileAccessMode::Write};
         if (!out.IsOpen()) {
             throw ExtractError(ExtractResult::IoError, "cannot write " + ToUtf8(out_path));
         }
-        const u64 size = file->GetSize();
-        u64 offset = 0;
-        while (offset < size) {
-            if (cancel && cancel->load()) {
-                throw ExtractError(ExtractResult::Cancelled, "cancelled");
-            }
-            const size_t chunk =
-                static_cast<size_t>(std::min<u64>(buffer.size(), size - offset));
-            const size_t got = file->Read(buffer.data(), chunk, static_cast<size_t>(offset));
-            if (got == 0) {
-                throw ExtractError(ExtractResult::IoError,
-                                   "short read of " + file->GetName());
-            }
-            if (out.WriteSpan(std::span<const u8>{buffer.data(), got}) != got) {
-                throw ExtractError(ExtractResult::IoError,
-                                   "write failed, the disk may be full");
-            }
-            offset += got;
-            progress.bytes_done += got;
-            if (progress.bytes_done - last_report >= ProgressStep) {
-                last_report = progress.bytes_done;
-                if (progress_cb) {
-                    progress_cb(progress);
+        bool cancelled = false;
+        bool write_failed = false;
+        const auto result =
+            context.nup.StreamFile(file_index, [&](std::span<const u8> chunk) {
+                if (context.Cancelled()) {
+                    cancelled = true;
+                    return false;
                 }
-            }
-        }
+                if (out.WriteSpan(chunk) != chunk.size()) {
+                    write_failed = true;
+                    return false;
+                }
+                context.progress.bytes_done += chunk.size();
+                if (context.progress.bytes_done - context.last_report >= ProgressStep) {
+                    context.last_report = context.progress.bytes_done;
+                    if (context.progress_cb) {
+                        context.progress_cb(context.progress);
+                    }
+                }
+                return true;
+            });
         out.Close();
-        ++progress.files_done;
-        if (progress_cb) {
-            progress_cb(progress);
+        if (cancelled) {
+            throw ExtractError(ExtractResult::Cancelled, "cancelled");
+        }
+        if (write_failed) {
+            throw ExtractError(ExtractResult::IoError, "write failed, the disk may be full");
+        }
+        if (result != FileSys::NupContainer::StreamResult::Success) {
+            throw ExtractError(ExtractResult::InvalidSource,
+                               "the archive is damaged: " + ToUtf8(out_path) +
+                                   " does not match its stored SHA-256");
+        }
+        ++context.progress.files_done;
+        if (context.progress_cb) {
+            context.progress_cb(context.progress);
         }
     }
 }
@@ -1769,17 +1946,25 @@ ExtractResult ExtractNup(const std::filesystem::path& archive, const std::filesy
                        std::to_string(idx);
             }
             targets.emplace_back(i, dest);
-            u64 files = 0, bytes = 0;
-            CountDir(nup.GetPackageDir(i), files, bytes);
-            progress.files_total += files;
-            progress.bytes_total += bytes;
+            CountDir(nup, package.root_dir, progress.files_total, progress.bytes_total);
+        }
+        // Before writing anything: the declared sizes are all an archive needs to fill a disk
+        // (a few KB of zstd can declare gigabytes).
+        std::error_code space_ec;
+        const auto space = fs::space(out_dir, space_ec);
+        if (!space_ec && progress.bytes_total > space.available) {
+            throw ExtractError(ExtractResult::IoError,
+                               fmt::format("not enough free space: the NUP extracts to {} but {} "
+                                           "has {} free",
+                                           FormatBytes(progress.bytes_total), ToUtf8(out_dir),
+                                           FormatBytes(space.available)));
         }
         if (progress_cb) {
             progress_cb(progress);
         }
-        u64 last_report = 0;
+        ExtractContext context{nup, progress, progress_cb, cancel};
         for (const auto& [index, dest] : targets) {
-            WriteDir(nup.GetPackageDir(index), dest, progress, progress_cb, cancel, last_report);
+            WriteDir(context, packages[index].root_dir, dest);
         }
         return ExtractResult::Success;
     } catch (const ExtractError& e) {
@@ -1864,17 +2049,6 @@ std::optional<size_t> NewestUpdateIndex(
     return best;
 }
 
-// Base package, or the first package when the container has no base: the same target the
-// packer attaches application metadata to.
-size_t NupEditTargetIndex(const std::vector<FileSys::NupContainer::PackageInfo>& packages) {
-    for (size_t i = 0; i < packages.size(); ++i) {
-        if (packages[i].kind == FileSys::NupContainer::PackageKind::Base) {
-            return i;
-        }
-    }
-    return 0;
-}
-
 } // namespace
 
 Metadata ProbeNupMetadata(const fs::path& archive) {
@@ -1890,7 +2064,7 @@ Metadata ProbeNupMetadata(const fs::path& archive) {
         return out;
     }
     const auto& packages = nup.GetPackages();
-    const size_t target = NupEditTargetIndex(packages);
+    const size_t target = nup.FindMetadataPackage();
     const auto& package = packages[target];
     out.title_name = package.title_name;
     out.icon = package.icon;
@@ -1949,7 +2123,7 @@ EditResult EditNupMetadata(const fs::path& archive, const MetadataEdit& edit,
             return fail(EditResult::InvalidSource, "not a valid NUP file: " + ToUtf8(archive));
         }
         const auto& packages = nup.GetPackages();
-        target = NupEditTargetIndex(packages);
+        target = nup.FindMetadataPackage();
         update = NewestUpdateIndex(packages).value_or(NoUpdate);
         if (update == target) {
             update = NoUpdate;
