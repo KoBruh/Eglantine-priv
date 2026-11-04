@@ -3592,13 +3592,15 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
         case 0x210: case 0x810: case 0xa10: case 0xc10: { // IADD3 with zero third source and no carry outputs
             // 64-bit adds: IADD3 with a carry-out predicate (bits 81-83), then IADD3.X (bit 74) with
             // a carry-in predicate (bits 87-89, negate 90). Uniform forms keep UPn in R239 bit 6-n.
+            // A negated b (bit 63; the immediate form has none) is left to the carry forms below.
             if ((opcode == 0x210 || opcode == 0x810 || opcode == 0xa10) && insn.Bits(64, 8) == 255 &&
                 !insn.Bits(73, 1) && !insn.Bits(75, 2) && insn.Bits(84, 3) == 7 && insn.Bits(77, 4) == 15 &&
-                !insn.Bits(72, 1) && (insn.Bits(81, 3) != 7 || insn.Bits(74, 1))) {
+                !insn.Bits(72, 1) && (insn.Bits(81, 3) != 7 || insn.Bits(74, 1)) &&
+                (opcode == 0x810 || !insn.Bits(63, 1))) {
                 const bool carry_in = insn.Bits(74, 1) != 0;
                 const u32 carry_out = insn.Bits(81, 3);
                 const u32 a = insn.Bits(24, 8);
-                if ((carry_in && carry_out != 7) || (opcode == 0x210 && (insn.words[1] & ~(0xffU | 0x80000000U))) ||
+                if ((carry_in && carry_out != 7) || (opcode == 0x210 && (insn.words[1] & ~0xffU)) ||
                     (opcode == 0xa10 && !valid_cbuf()) ||
                     (rewritten_uniform && carry_out != 7 && carry_out > 1) ||
                     (rewritten_uniform && carry_in && insn.Bits(87, 3) > 1 && insn.Bits(87, 3) != 7))
@@ -3645,25 +3647,63 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 !insn.Bits(72, 2) &&
                 insn.Bits(81, 3) != 7 && !insn.Bits(74, 1) && insn.Bits(77, 4) == 15 &&
                 insn.Bits(87, 4) == 15) {
-                // IADD3 R, P[, Q], a, b, [-]c: the carry of a + b in P and of that + c in Q.
-                const u32 a = insn.Bits(24, 8), c = insn.Bits(64, 8);
-                const u32 b = opcode == 0x210 ? insn.Bits(32, 8) : operand(1, false);
-                emit(0x5c10000000000000ULL | predicate | 250 | (u64{a} << 8) | (u64{b} << 20));
-                unsigned_less(insn.Bits(81, 3), 250, a);
-                emit(0x5c10000000000000ULL | predicate | 251 | (u64{255} << 8) | (u64{c} << 20) |
-                     (u64{insn.Bits(75, 1)} << 48));
-                emit(0x5c10000000000000ULL | predicate | 252 | (u64{250} << 8) | (u64{251} << 20));
-                if (insn.Bits(84, 3) != 7) unsigned_less(insn.Bits(84, 3), 252, 250);
-                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{252} << 20));
+                // IADD3 R, P[, Q], a, [-]b, [-]c: the 34-bit sum, a negated source counting as ~x + 1
+                // (Mesa NAK's IADD3 fold), built in R253 (.CC) with the carry count in R254 (.X). P is
+                // set when the count reaches 1 and Q when it reaches 2; IADD3.X adds both back. The
+                // uniform form keeps its predicates in R239, which this does not map.
+                const u32 first_output = insn.Bits(81, 3), second_output = insn.Bits(84, 3);
+                if (rewritten_uniform || first_output == second_output)
+                    return fail(index, "native integer carry mode");
+                const bool negate_b = opcode != 0x810 && insn.Bits(63, 1), negate_c = insn.Bits(75, 1);
+                const u32 a = insn.Bits(24, 8);
+                u32 b = opcode == 0x210 ? insn.Bits(32, 8) : operand(1, false), c = insn.Bits(64, 8);
+                const auto invert = [&](u32& source, u32 target) {
+                    emit(0x0400000000000000ULL | predicate | target | (u64{source} << 8) |
+                         (u64{0xffffffffU} << 20) | (u64{2} << 53));
+                    source = target;
+                };
+                if (negate_b) invert(b, 251);
+                if (negate_c) invert(c, 252);
+                const auto accumulate = [&](u32 source) {
+                    emit(0x5c10000000000000ULL | predicate | 253 | (u64{253} << 8) | (u64{source} << 20) |
+                         (u64{1} << 47));
+                    emit(0x5c10000000000000ULL | predicate | 254 | (u64{254} << 8) | (u64{255} << 20) |
+                         (u64{1} << 43));
+                };
+                emit(0x5c10000000000000ULL | predicate | 253 | (u64{a} << 8) | (u64{b} << 20) | (u64{1} << 47));
+                emit(0x5c10000000000000ULL | predicate | 254 | (u64{255} << 8) | (u64{255} << 20) | (u64{1} << 43));
+                if (c != 255) accumulate(c);
+                if (negate_b || negate_c) {
+                    mov_imm(250, u32{negate_b} + u32{negate_c});
+                    accumulate(250);
+                }
+                if (dest != 255) emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{253} << 20));
+                // An output that is also the guard predicate is written last.
+                const bool guard_first = (native_predicate & 7) != 7 && first_output == (native_predicate & 7);
+                for (const u32 output : {guard_first ? 1U : 0U, guard_first ? 0U : 1U}) {
+                    const u32 target = output ? second_output : first_output;
+                    if (target == 7) continue;
+                    mov_imm(250, output + 1);
+                    emit(0x5b60000000000000ULL | predicate | 7 | (u64{target} << 3) | (u64{254} << 8) |
+                         (u64{250} << 20) | (u64{7} << 39) | (u64{6} << 49));
+                }
                 break;
             }
             if (insn.Bits(74, 1) && !insn.Bits(72, 2)) {
-                // IADD3.X R, a, b, [-]c, P: a + b + c and the carry predicate of a previous add.
-                // Carry outputs and a second carry input are not lowered (a + b + c + P can carry twice).
-                if (insn.Bits(81, 3) != 7 || insn.Bits(84, 3) != 7 || insn.Bits(77, 4) != 15)
+                // IADD3.X R, a, [~]b, [-]c, P: a + b + c and the carry predicate of a previous add.
+                // Carry outputs and a second carry input are not lowered (a + b + c + P can carry twice),
+                // nor the uniform form, whose carry is in R239. b's modifier (bit 63) is a bitwise NOT
+                // here: the + 1 of a negation comes in as the carry.
+                if (insn.Bits(81, 3) != 7 || insn.Bits(84, 3) != 7 || insn.Bits(77, 4) != 15 ||
+                    rewritten_uniform || (opcode == 0x210 && (insn.words[1] & ~0x800000ffU)))
                     return fail(index, "native integer carry mode");
                 const u32 a = insn.Bits(24, 8), c = insn.Bits(64, 8);
-                const u32 b = opcode == 0x210 ? insn.Bits(32, 8) : operand(1, false);
+                u32 b = opcode == 0x210 ? insn.Bits(32, 8) : operand(1, false);
+                if (opcode != 0x810 && insn.Bits(63, 1)) {
+                    emit(0x0400000000000000ULL | predicate | 251 | (u64{b} << 8) | (u64{0xffffffffU} << 20) |
+                         (u64{2} << 53));
+                    b = 251;
+                }
                 emit(0x5c10000000000000ULL | predicate | 250 | (u64{a} << 8) | (u64{b} << 20));
                 emit(0x5c10000000000000ULL | predicate | 251 | (u64{250} << 8) | (u64{c} << 20) |
                      (u64{insn.Bits(75, 1)} << 48));
