@@ -1212,6 +1212,10 @@ Errno Socket::Connect(SockAddrIn addr_in, int flags) {
         }
         return *error;
     }
+    if (routing.route == PrivateServerRoute::Routed && addr_in.ip == routing.gateway &&
+        addr_in.portno == 443) {
+        addr_in.portno = Settings::values.private_server_gateway_port.GetValue();
+    }
 
     const sockaddr host_addr_in = TranslateFromSockAddrIn(addr_in);
     const auto connect_host = [this, &host_addr_in] {
