@@ -278,7 +278,9 @@ private:
                   StartGameType with_config = StartGameType::Normal);
     void BootGameFromList(const QString& filename, StartGameType with_config);
     void ShutdownGame();
-    void TerminateEmulationThread();
+    void AbandonStuckEmulationThread();
+    void OfferRestartAfterStuckEmulation();
+    [[noreturn]] void ExitAfterStuckEmulation(bool restart);
 
     void SetDiscordEnabled(bool state);
     void LoadAmiibo(const QString& filename);
@@ -550,6 +552,7 @@ private:
     bool emulation_running = false;
     bool boot_in_progress = false;
     bool close_pending = false;
+    bool stuck_emulation_notice_pending = false;
     QElapsedTimer diagnostic_timer;
     // The path to the game currently running
     QString current_game_path;

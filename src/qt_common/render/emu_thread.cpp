@@ -3,6 +3,9 @@
 
 #include <qdebug.h>
 #include <chrono>
+#include <cstdlib>
+#include <thread>
+#include <vector>
 #include "core/core.h"
 #include "core/cpu_manager.h"
 #include "emu_thread.h"
@@ -11,9 +14,46 @@
 #include "video_core/rasterizer_interface.h"
 #include "video_core/renderer_base.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+namespace {
+
+// Threads given to EmuThread::Abandon. Never deleted: they may still be running when the process
+// exits. Only the UI thread touches this list.
+std::vector<EmuThread*>& AbandonedThreads() {
+    static std::vector<EmuThread*> threads;
+    return threads;
+}
+
+} // Anonymous namespace
+
 EmuThread::EmuThread() {}
 
 EmuThread::~EmuThread() = default;
+
+void EmuThread::Abandon(std::unique_ptr<EmuThread> thread) {
+    if (!thread) {
+        return;
+    }
+    thread->disconnect();
+    AbandonedThreads().push_back(thread.release());
+}
+
+bool EmuThread::HasAbandonedThread() {
+    return !AbandonedThreads().empty();
+}
+
+void EmuThread::ExitProcessNow(int exit_code) {
+#ifdef _WIN32
+    // ExitProcess, which _Exit ends in, still runs every DLL's detach code (the GPU driver's
+    // among them) after killing the other threads, and that can wait forever on a lock one of
+    // them held. TerminateProcess ends the process without running any of it.
+    TerminateProcess(GetCurrentProcess(), static_cast<UINT>(exit_code));
+#endif
+    std::_Exit(exit_code);
+}
 
 void EmuThread::run() {
     Common::SetCurrentThreadName("EmuControlThread");
@@ -77,6 +117,15 @@ void EmuThread::run() {
             EmulationPaused(lk);
             m_should_run_cv.wait(lk, stop_token, [&] { return m_should_run; });
             EmulationResumed(lk);
+        }
+    }
+
+    // EDEN_NX2_HANG_ON_STOP=1 keeps this thread from ever stopping, to check how the frontend
+    // copes with an emulation thread that does not stop.
+    if (const char* const hang = std::getenv("EDEN_NX2_HANG_ON_STOP"); hang && *hang == '1') {
+        LOG_WARNING(Frontend, "EDEN_NX2_HANG_ON_STOP: the emulation thread will not stop");
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::hours{1});
         }
     }
 

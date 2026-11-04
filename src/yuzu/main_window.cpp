@@ -87,6 +87,7 @@
 #include <QInputDialog>
 #include <QMimeData>
 #include <QPalette>
+#include <QProcess>
 #include <QProgressDialog>
 #include <QScreen>
 #include <QShortcut>
@@ -1677,12 +1678,14 @@ void MainWindow::UpdateMenuState() {
         action->setEnabled(emulation_running);
     }
 
-    ui->action_Firmware_From_Folder->setEnabled(!emulation_running);
-    ui->action_Firmware_From_ZIP->setEnabled(!emulation_running);
-    ui->action_Install_Keys->setEnabled(!emulation_running);
+    // An abandoned emulation thread still uses the System: nothing may install into it.
+    const bool system_busy = emulation_running || EmuThread::HasAbandonedThread();
+    ui->action_Firmware_From_Folder->setEnabled(!system_busy);
+    ui->action_Firmware_From_ZIP->setEnabled(!system_busy);
+    ui->action_Install_Keys->setEnabled(!system_busy);
 
     for (QAction* action : applet_actions) {
-        action->setEnabled(is_firmware_available && !emulation_running);
+        action->setEnabled(is_firmware_available && !system_busy);
     }
 
     ui->action_Capture_Screenshot->setEnabled(emulation_running && !is_paused);
@@ -1921,6 +1924,12 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
     if (boot_in_progress || close_pending) {
         return;
     }
+    // Every way of starting emulation (game list, drag and drop, command line, recent files,
+    // QLaunch, restarts and sub-programs) comes through here.
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
+        return;
+    }
     boot_in_progress = true;
     game_list->SetScanEnabled(false);
     QElapsedTimer boot_timer;
@@ -1929,10 +1938,13 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         boot_in_progress = false;
         LOG_INFO(Frontend, "Launch finished: elapsed_ms={} running={}", boot_timer.elapsed(),
                  emulation_running);
-        if (!emulation_running) {
+        // When the game being replaced did not stop, its threads still read the settings and
+        // the System: leave both, and the game list scan that uses the System, alone.
+        const bool core_abandoned = EmuThread::HasAbandonedThread();
+        if (!emulation_running && !core_abandoned) {
             Settings::RestoreGlobalState(QtCommon::system->IsPoweredOn());
         }
-        if (!emulation_running && !close_pending) {
+        if (!emulation_running && !close_pending && !core_abandoned) {
             game_list->SetScanEnabled(true);
             game_list->PopulateAsync(UISettings::values.game_dirs);
         }
@@ -1944,6 +1956,10 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         ShutdownGame();
     }
     if (close_pending) {
+        return;
+    }
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
         return;
     }
     LOG_INFO(Frontend, "Eglantine starting...");
@@ -2070,7 +2086,10 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         [this](std::size_t program_index_) { render_window->ExecuteProgram(program_index_); });
 
     QtCommon::system->RegisterExitCallback([this] {
-        QtCommon::emu_thread->ForceStop();
+        // Gone once a thread that did not stop was abandoned; its game may still ask to exit.
+        if (QtCommon::emu_thread) {
+            QtCommon::emu_thread->ForceStop();
+        }
         render_window->Exit();
     });
 
@@ -2254,16 +2273,83 @@ void MainWindow::OnEmulationStopTimeExpired() {
 }
 
 void MainWindow::OnEmulationStopTimeout() {
-    TerminateEmulationThread();
+    AbandonStuckEmulationThread();
     OnEmulationStopped();
 }
 
-void MainWindow::TerminateEmulationThread() {
-    if (QtCommon::emu_thread && QtCommon::emu_thread->isRunning()) {
-        LOG_ERROR(Frontend, "Emulation thread failed to stop, terminating it");
-        QtCommon::emu_thread->terminate();
-        QtCommon::emu_thread->wait();
+void MainWindow::AbandonStuckEmulationThread() {
+    if (!QtCommon::emu_thread || !QtCommon::emu_thread->isRunning()) {
+        return;
     }
+    // Terminating the thread would not make the System usable again: the CPU, GPU and service
+    // threads it started keep running, and on Windows every lock it held stays locked forever
+    // (on Linux and macOS, cancelling it unwinds through noexcept frames and aborts). Leave it
+    // running instead, keep the System away from the next boot, and offer a restart.
+    LOG_CRITICAL(Frontend,
+                 "Emulation thread did not stop {} ms after ForceStop; leaving it running. "
+                 "Games cannot start until Eglantine restarts",
+                 EmuThreadStopTimeoutMs);
+    Common::Log::Flush();
+    EmuThread::Abandon(std::move(QtCommon::emu_thread));
+    // Told once, after the window is back to the game list; a refused boot tells it instead.
+    stuck_emulation_notice_pending = true;
+    QTimer::singleShot(0, this, [this] {
+        if (stuck_emulation_notice_pending && !boot_in_progress && !close_pending) {
+            OfferRestartAfterStuckEmulation();
+        }
+    });
+}
+
+void MainWindow::OfferRestartAfterStuckEmulation() {
+    stuck_emulation_notice_pending = false;
+    QMessageBox box(QMessageBox::Warning, tr("Restart Eglantine"),
+                    tr("The last game did not stop, and part of it is still running. Eglantine "
+                       "has to restart before it can start another game.\n\n"
+                       "Your settings are saved before it restarts."),
+                    QMessageBox::NoButton, this);
+    QPushButton* const restart = box.addButton(tr("Restart Eglantine"), QMessageBox::AcceptRole);
+    box.addButton(tr("Not Now"), QMessageBox::RejectRole);
+    box.setDefaultButton(restart);
+    box.exec();
+    if (box.clickedButton() == restart) {
+        ExitAfterStuckEmulation(true);
+    }
+}
+
+void MainWindow::ExitAfterStuckEmulation(bool restart) {
+    LOG_WARNING(Frontend, "{} Eglantine while an emulation thread is still running",
+                restart ? "Restarting" : "Closing");
+    // Save what closing normally saves (the configuration is otherwise saved by its destructor).
+    // The rest of a normal exit, unloading input devices, shutting the network down and
+    // destroying the System, would race with the threads still running or wait on their locks.
+    UpdateUISettings();
+    game_list->SaveInterfaceLayout();
+    UISettings::SaveWindowState();
+    hotkey_registry.SaveHotkeys();
+    config->SaveAllValues();
+    // A NUP conversion would leave a partial archive behind: stop it as the destructor does.
+    if (nup_cancel) {
+        nup_cancel->store(true);
+    }
+    nup_watcher.waitForFinished();
+    if (restart) {
+        // No arguments: the old ones could boot the game that did not stop.
+        QString program = QCoreApplication::applicationFilePath();
+#ifdef __linux__
+        // Inside an AppImage the executable lives in a mount that goes away with this process.
+        if (const QString appimage = qEnvironmentVariable("APPIMAGE"); !appimage.isEmpty()) {
+            program = appimage;
+        }
+#endif
+        if (!QProcess::startDetached(program, {}, QDir::currentPath())) {
+            LOG_ERROR(Frontend, "Could not start {}", program.toStdString());
+            QMessageBox::warning(this, tr("Restart Eglantine"),
+                                 tr("Eglantine could not start again. Start it yourself after it "
+                                    "closes."));
+        }
+    }
+    Common::Log::Flush();
+    EmuThread::ExitProcessNow(0);
 }
 
 void MainWindow::OnEmulationStopped() {
@@ -2280,6 +2366,10 @@ void MainWindow::OnEmulationStopped() {
         QtCommon::emu_thread->wait();
         QtCommon::emu_thread.reset();
     }
+    // A thread that did not stop was abandoned: the CPU, GPU and service threads may still run
+    // inside the System. Restore the window, but leave the System, the render target the GPU
+    // thread may still present to, and the settings those threads read alone.
+    const bool core_abandoned = EmuThread::HasAbandonedThread();
 
     if (shutdown_dialog) {
         shutdown_dialog->deleteLater();
@@ -2288,7 +2378,9 @@ void MainWindow::OnEmulationStopped() {
 
     emulation_running = false;
 
-    discord_rpc->Update();
+    if (!core_abandoned) {
+        discord_rpc->Update();
+    }
     Common::FeralGamemode::Stop();
 
     // The emulation is stopped, so closing the window or not does not matter anymore
@@ -2311,10 +2403,13 @@ void MainWindow::OnEmulationStopped() {
     OnTasStateChanged();
     render_window->FinalizeCamera();
 
-    QtCommon::system->GetFrontendAppletHolder().SetCurrentAppletId(Service::AM::AppletId::None);
+    if (!core_abandoned) {
+        QtCommon::system->GetFrontendAppletHolder().SetCurrentAppletId(
+            Service::AM::AppletId::None);
 
-    // Enable all controllers
-    QtCommon::system->HIDCore().SetSupportedStyleTag({Core::HID::NpadStyleSet::All});
+        // Enable all controllers
+        QtCommon::system->HIDCore().SetSupportedStyleTag({Core::HID::NpadStyleSet::All});
+    }
 
     render_window->removeEventFilter(render_window);
     render_window->setAttribute(Qt::WA_Hover, false);
@@ -2329,7 +2424,8 @@ void MainWindow::OnEmulationStopped() {
     game_fps_label->setVisible(false);
     emu_frametime_label->setVisible(false);
     renderer_status_button->setEnabled(!UISettings::values.has_broken_vulkan);
-    refresh_button->setEnabled(true);
+    // Refreshing reads the System's content; it stays off with an abandoned thread, like the scan.
+    refresh_button->setEnabled(!core_abandoned);
 
     if (!firmware_label->text().isEmpty()) {
         firmware_label->setVisible(true);
@@ -2338,18 +2434,23 @@ void MainWindow::OnEmulationStopped() {
     current_game_path.clear();
 
     // When closing the game, destroy the GLWindow to clear the context after the game is closed
-    render_window->ReleaseRenderTarget();
+    if (!core_abandoned) {
+        render_window->ReleaseRenderTarget();
+    }
 
-    // Enable game list
+    // Enable game list: with an abandoned thread, starting a game offers a restart.
     game_list->setEnabled(true);
 
-    Settings::RestoreGlobalState(QtCommon::system->IsPoweredOn());
-    QtCommon::system->HIDCore().ReloadInputDevices();
+    if (!core_abandoned) {
+        Settings::RestoreGlobalState(QtCommon::system->IsPoweredOn());
+        QtCommon::system->HIDCore().ReloadInputDevices();
+    }
     UpdateStatusButtons();
-    LOG_INFO(Frontend, "Emulation cleanup completed");
+    LOG_INFO(Frontend, "Emulation cleanup completed{}",
+             core_abandoned ? " (emulation thread abandoned)" : "");
     if (close_pending) {
         QTimer::singleShot(0, this, &QWidget::close);
-    } else if (!boot_in_progress) {
+    } else if (!boot_in_progress && !core_abandoned) {
         game_list->SetScanEnabled(true);
         game_list->PopulateAsync(UISettings::values.game_dirs);
     }
@@ -2374,7 +2475,7 @@ void MainWindow::ShutdownGame() {
         timeout.start(EmuThreadStopTimeoutMs);
         loop.exec(QEventLoop::ExcludeUserInputEvents);
     }
-    TerminateEmulationThread();
+    AbandonStuckEmulationThread();
     OnEmulationStopped();
 }
 
@@ -2562,6 +2663,11 @@ static bool RomFSRawCopy(size_t total_size, size_t& read_size, QProgressDialog& 
 // translations_common? strings_common? qt_strings? who knows
 void MainWindow::OnGameListRemoveInstalledEntry(u64 program_id,
                                                 QtCommon::Game::InstalledEntryType type) {
+    // An abandoned emulation thread may still be using the System this would change.
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
+        return;
+    }
     const QString entry_question = [type] {
         switch (type) {
         case QtCommon::Game::InstalledEntryType::Game:
@@ -2602,6 +2708,11 @@ void MainWindow::OnGameListRemoveInstalledEntry(u64 program_id,
 
 void MainWindow::OnGameListRemoveFile(u64 program_id, QtCommon::Game::GameListRemoveTarget target,
                                       const std::string& game_path) {
+    // An abandoned emulation thread may still be using the System this would change.
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
+        return;
+    }
     const QString question = [target] {
         switch (target) {
         case QtCommon::Game::GameListRemoveTarget::GlShaderCache:
@@ -2852,6 +2963,11 @@ void MainWindow::OnGameListShowList(bool show) {
 };
 
 void MainWindow::OnGameListOpenPerGameProperties(const std::string& file) {
+    // An abandoned emulation thread may still be using the System this would change.
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
+        return;
+    }
     u64 title_id{};
     const auto v_file = Core::GetGameFileFromPath(QtCommon::vfs, file);
     const auto loader = Loader::GetLoader(*QtCommon::system, v_file);
@@ -2958,6 +3074,11 @@ void MainWindow::IncrementInstallProgress() {
 }
 
 void MainWindow::OnMenuInstallToNAND() {
+    // An abandoned emulation thread may still be using the System this would change.
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
+        return;
+    }
     const QString file_filter =
         tr("Installable Switch File (*.nca *.nsp *.nsz *.xci *.xcz);;Nintendo Content Archive "
            "(*.nca);;Nintendo Submission Package (*.nsp *.nsz);;NX Cartridge "
@@ -4019,17 +4140,32 @@ void MainWindow::OnVerifyInstalledContents() {
 }
 
 void MainWindow::OnInstallFirmware() {
+    // An abandoned emulation thread may still be using the System this would change.
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
+        return;
+    }
     QtCommon::Content::InstallFirmware();
     OnCheckFirmwareDecryption();
 }
 
 void MainWindow::OnInstallFirmwareFromZIP() {
+    // An abandoned emulation thread may still be using the System this would change.
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
+        return;
+    }
     QtCommon::Content::InstallFirmwareZip();
     OnCheckFirmwareDecryption();
 }
 
 // TODO(crueter): QtCommon this: game list populate can be a signal?
 void MainWindow::OnInstallDecryptionKeys() {
+    // An abandoned emulation thread may still be using the System this would change.
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
+        return;
+    }
     // Don't do this while emulation is running.
     if (QtCommon::emu_thread != nullptr && QtCommon::emu_thread->IsRunning())
         return;
@@ -4469,6 +4605,11 @@ void MainWindow::OnGameListEditNupMetadata(const std::string& game_path) {
 
 void MainWindow::LaunchFirmwareApplet(u64 raw_program_id,
                                       std::optional<Service::NFP::CabinetMode> cabinet_mode) {
+    // An abandoned emulation thread may still be using the System this would change.
+    if (EmuThread::HasAbandonedThread()) {
+        OfferRestartAfterStuckEmulation();
+        return;
+    }
     auto const program_id = Service::AM::AppletProgramId(raw_program_id);
     auto result = FirmwareManager::VerifyFirmware(*QtCommon::system.get());
     using namespace QtCommon::StringLookup;
@@ -5157,6 +5298,11 @@ void MainWindow::closeEvent(QCloseEvent* event) {
             OnShutdownBeginDialog();
         }
         return;
+    }
+    if (EmuThread::HasAbandonedThread()) {
+        // Does not return: the rest of this, and the destructors after it, would use the System
+        // the abandoned thread is still running.
+        ExitAfterStuckEmulation(false);
     }
     LOG_INFO(Frontend, "Closing frontend after emulation cleanup");
 

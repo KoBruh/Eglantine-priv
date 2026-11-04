@@ -31,7 +31,9 @@
 #include <cstring>
 #endif
 
+#include "common/logging.h"
 #include "main_window.h"
+#include "qt_common/render/emu_thread.h"
 
 #ifdef _WIN32
 #include <atomic>
@@ -362,5 +364,13 @@ int main(int argc, char* argv[]) {
     main_window.show();
 
     app.connect(&app, &QGuiApplication::applicationStateChanged, &main_window, &MainWindow::OnAppFocusStateChanged);
-    return app.exec();
+    const int exit_code = app.exec();
+    if (EmuThread::HasAbandonedThread()) {
+        // Closing the window already ends the process in this case; this covers any other way
+        // out. main_window's destructor and the static destructors after it would destroy the
+        // System an emulation thread that did not stop is still running.
+        Common::Log::Flush();
+        EmuThread::ExitProcessNow(exit_code);
+    }
+    return exit_code;
 }

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <memory>
 #include <optional>
 
 #include <QThread>
@@ -74,6 +75,25 @@ public:
         m_pending_shader_cache_title = program_id;
         m_should_run_cv.notify_one();
     }
+
+    /**
+     * Keeps a thread that did not stop after ForceStop() alive for the rest of the process,
+     * disconnected from everything. Destroying a running QThread aborts the process, and
+     * QThread::terminate() would leave the locks the thread holds locked (Windows) or unwind it
+     * through noexcept frames (POSIX), while the CPU, GPU and service threads it started keep
+     * running either way. The System it ran must not be used again in this process.
+     */
+    static void Abandon(std::unique_ptr<EmuThread> thread);
+
+    /// Whether a thread was abandoned in this process, so the System is unusable until it exits.
+    [[nodiscard]] static bool HasAbandonedThread();
+
+    /**
+     * Ends the process right away, without running destructors, atexit handlers or DLL detach
+     * code: with an abandoned thread, any of them could use the System it is still running or
+     * wait on locks it holds. Flush the log and save what must be saved first.
+     */
+    [[noreturn]] static void ExitProcessNow(int exit_code);
 
 private:
     void EmulationPaused(std::unique_lock<std::mutex>& lk);
