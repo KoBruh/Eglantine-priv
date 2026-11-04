@@ -117,6 +117,7 @@ cmake -S . -B '$buildUnix' -G Ninja \
   -DUSE_DISCORD_PRESENCE=OFF \
   -DUSE_CCACHE=ON \
   -DYUZU_BUILD_PRESET=v3 \
+  -DENABLE_LTO=ON \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \

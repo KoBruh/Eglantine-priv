@@ -138,7 +138,8 @@ jobs:
           test -s eglantine.profdata
 
       # Eden builds its Windows PGO binaries with MSYS2's clang toolchain, so we do the same. The
-      # package list is docs/Deps.md (MSYS2) plus what the bundled FFmpeg needs to compile.
+      # package list is docs/Deps.md (MSYS2) plus what the bundled FFmpeg needs to compile, and
+      # llvm-tools for llvm-ar, which archives the ThinLTO objects.
       - name: Set up MSYS2
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
@@ -154,7 +155,7 @@ jobs:
             openssl:p boost:p fmt:p lz4:p nlohmann-json:p zlib:p zstd:p libiconv:p
             vulkan-memory-allocator:p vulkan-devel:p glslang:p enet:p opus:p
             libusb:p unordered_dense:p jbigkit:p xz:p libdeflate:p bzip2:p
-            lerc:p graphite2:p libwebp:p libtiff:p brotli:p ccache:p
+            lerc:p graphite2:p libwebp:p libtiff:p brotli:p ccache:p llvm-tools:p
 
       - name: Cache CPM downloads
         uses: actions/cache@v5
@@ -175,6 +176,19 @@ jobs:
           key: objects/${{ matrix.platform }}/${{ github.sha }}
           restore-keys: |
             objects/${{ matrix.platform }}/
+
+      # ThinLTO (ENABLE_LTO below): the compile steps write LLVM bitcode, and lld optimizes and
+      # compiles it to machine code module by module when it links each program. lld keeps that
+      # output for every module in .ltocache (--thinlto-cache-dir), so a later link only redoes the
+      # modules whose code or whose imports from other modules changed. Saved and restored like the
+      # compiler objects; the build step prunes what the build did not use.
+      - name: Restore ThinLTO cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .ltocache
+          key: lto/${{ matrix.platform }}/${{ github.sha }}
+          restore-keys: |
+            lto/${{ matrix.platform }}/
 
       - name: Configure Linux
         if: runner.os == 'Linux'
@@ -201,7 +215,8 @@ jobs:
             "-DYUZU_BUILD_PRESET=${{ matrix.preset }}"
             "-DCMAKE_C_COMPILER=clang-$PGO_LLVM_VERSION"
             "-DCMAKE_CXX_COMPILER=clang++-$PGO_LLVM_VERSION"
-            "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld"
+            -DENABLE_LTO=ON
+            "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld -Wl,--thinlto-cache-dir=$PWD/.ltocache"
           )
           # The -mllvm option names static functions by file name only, as the training build did,
           # so they match although this checkout is elsewhere (tools/pgo/README.md). Clang warns
@@ -244,7 +259,8 @@ jobs:
             "-DYUZU_BUILD_PRESET=${{ matrix.preset }}" \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+            -DENABLE_LTO=ON \
+            "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -Wl,--thinlto-cache-dir=$(cygpath -m "$PWD/.ltocache")" \
             "-DCMAKE_C_FLAGS=$profile" \
             "-DCMAKE_CXX_FLAGS=$profile"
 
@@ -253,17 +269,23 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          set -euo pipefail
           ccache --zero-stats > /dev/null
+          stamp=$(mktemp)
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           ccache --show-stats
+          bash tools/ci/prune-lto-cache.sh .ltocache "$stamp"
 
       - name: Build MinGW PGO
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
+          set -euo pipefail
           ccache --zero-stats > /dev/null
+          stamp=$(mktemp)
           cmake --build build/release --target yuzu yuzu-cmd --parallel
           ccache --show-stats
+          bash tools/ci/prune-lto-cache.sh .ltocache "$stamp"
 
       - name: Save compiler objects
         if: always() && !cancelled()
@@ -271,6 +293,13 @@ jobs:
         with:
           path: .ccache
           key: objects/${{ matrix.platform }}/${{ github.sha }}
+
+      - name: Save ThinLTO cache
+        if: always() && !cancelled()
+        uses: actions/cache/save@v5
+        with:
+          path: .ltocache
+          key: lto/${{ matrix.platform }}/${{ github.sha }}
 
       # Plain tar.gz with the two programs. GitHub artifacts drop the executable bit, so a tar is
       # what keeps it. This one is not self-contained: it needs Qt 6 and the usual libraries

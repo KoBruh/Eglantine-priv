@@ -53,8 +53,10 @@ fi
 # Ubuntu's own clang 18 cannot read a profile from a current LLVM, so clang comes from the LLVM apt
 # repository. The versioned packages are named explicitly: that repository's unversioned clang/lld
 # metapackages can lag the binaries they depend on and then resolve to nothing. lld-N only ships
-# ld.lld under /usr/lib/llvm-N/bin, which is why the workflow passes -B there.
-if ! command -v "clang-$llvm" > /dev/null || [ ! -x "/usr/lib/llvm-$llvm/bin/ld.lld" ]; then
+# ld.lld under /usr/lib/llvm-N/bin, which is why the workflow passes -B there. llvm-N has llvm-ar-N,
+# which CMake uses to archive the bitcode objects of a ThinLTO build (ENABLE_LTO).
+if ! command -v "clang-$llvm" > /dev/null || [ ! -x "/usr/lib/llvm-$llvm/bin/ld.lld" ] ||
+    ! command -v "llvm-ar-$llvm" > /dev/null; then
     codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
     curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key |
         sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
@@ -62,7 +64,7 @@ if ! command -v "clang-$llvm" > /dev/null || [ ! -x "/usr/lib/llvm-$llvm/bin/ld.
         sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
     updated=false
     apt_update
-    sudo apt-get install -y --no-install-recommends "clang-$llvm" "lld-$llvm"
+    sudo apt-get install -y --no-install-recommends "clang-$llvm" "lld-$llvm" "llvm-$llvm"
 fi
 
 # GitHub's Ubuntu images have a current CMake in /usr/local/bin; plain Ubuntu 24.04 only has 3.28

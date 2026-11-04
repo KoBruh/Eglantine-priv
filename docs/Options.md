@@ -41,8 +41,8 @@ These options control dependencies.
 - `DYNARMIC_TESTS` (OFF) Compile dynarmic's tests (`dynarmic_tests`)
   - `YUZU_TESTS` and `BUILD_TESTING` do not turn it on: pass it as well
 - `ENABLE_LTO` (OFF) Enable link-time optimization
-  - Not recommended on Windows
-  - UNIX may be better off appending `-flto=thin` to compiler args
+  - With clang (Linux, MinGW) this is ThinLTO (`-flto=thin` when compiling and linking) and needs `llvm-ar` and lld (`-fuse-ld=lld` in `CMAKE_EXE_LINKER_FLAGS`). The release builds use it with lld's cache, `-Wl,--thinlto-cache-dir=<dir>`, so a relink only recompiles the modules that changed
+  - With MSVC it is full LTO (`/GL`), which is slow to link
 - `USE_FASTER_LINKER` (OFF) Check if a faster linker is available
   - Not recommended outside of Linux
 - `YUZU_INSTALL_UDEV_RULES` (OFF) Install udev rules to enable hidraw access
