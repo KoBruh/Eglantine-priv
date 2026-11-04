@@ -84,7 +84,30 @@ never breaks the build, it just stops helping. Retrain:
   MSYS2's clang unless the profile is rewritten for it;
 - before a release, if the last training is old.
 
-To see how stale it is, build with the profile and count the mismatches: configure like
-"Configure MinGW PGO" without `-Wno-backend-plugin`, adding `-mllvm -pgo-warn-missing-function` to
-also list functions with no profile, then count `control flow change detected` and
-`no profile data available` in the build log.
+## Checking a profile
+
+**Staleness.** Build with the profile and count the mismatches: configure like "Configure MinGW
+PGO", but replace `-Wno-backend-plugin` with `-Wno-error=backend-plugin` (sirit builds with
+`-Werror`) and add `-mllvm -pgo-warn-missing-function`. Then count `hash mismatch` (functions
+changed since training) and `no profile data available` (functions training never ran, or new
+ones) in the build log. Build it from a checkout in another directory to also check that the
+profile matches a checkout elsewhere, as on the CI.
+
+**Speed.** Build the same commit without the profile and run `pokopia_walk.txt` with `--uncapped`
+on both builds, alternating them, a few times each. Compare the boot loading time ("Boot loading
+screen ends" in `report.md`) and the CPU time per frame once the world is up (`threads.csv`, less
+the host timer thread, which spins). Pokopia paces itself to about 120 fps even uncapped, so its
+frame time barely moves; the CPU each frame costs is what PGO lowers.
+
+## The profile in the repository
+
+- Trained on `dev` at 79214e383b (after the first upstream integration) with MSYS2's clang and
+  `llvm-profdata` 23.1.4. apt.llvm.org's `llvm-profdata` 23.1.5, the Linux jobs' LLVM, reads it.
+- 8 runs (four scenarios, docked and handheld), 1,261 s of play. 2.1 MB; 7,630 of the 32,581
+  instrumented functions ran.
+- A MinGW `-fprofile-use` build of the same commit, in another directory: no hash mismatches, and
+  every profiled function matched, 1,950 of them static. 50,483 functions have no profile and are
+  built as without PGO.
+- Against a MinGW build without PGO, `pokopia_walk` docked and uncapped, five alternating pairs:
+  boot to the title 32.8 s → 30.6 s, CPU per world frame 34.1 ms → 30.7 ms, frame time
+  8.79 ms → 8.59 ms.

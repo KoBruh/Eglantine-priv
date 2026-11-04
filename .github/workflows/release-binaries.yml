@@ -28,9 +28,10 @@ on:
 permissions:
   contents: read
 
-# Clang major the Linux PGO build uses, from apt.llvm.org. A profile is written by a current clang
-# and an older reader refuses it, so this has to stay at or above whatever produced
-# eglantine.profdata; bump it when a refreshed profile needs a newer LLVM.
+# Clang major the Linux PGO build uses, from apt.llvm.org. A clang refuses a profile written by a
+# newer LLVM, so this and MSYS2's clang (the Windows job) both have to be at or above the LLVM that
+# wrote eglantine.profdata (23: tools/pgo/README.md); bump it when a refreshed profile needs a
+# newer one.
 env:
   PGO_LLVM_VERSION: "23"
   # Qt for the Linux builds (Windows uses MSYS2's). The boat snapshot has this version in /opt/Qt:
@@ -60,9 +61,10 @@ jobs:
       fail-fast: false
       matrix:
         # Every build is clang with profile-guided optimization (PGO), the fastest build of the
-        # emulator, against the repo's eglantine.profdata. (Eden's profile, from Switch 1 games, ran
-        # Mario Kart World at about half the speed.) Windows uses MSYS2's MinGW clang: MSVC cannot
-        # read an LLVM .profdata file.
+        # emulator, against the repo's eglantine.profdata: our profile, trained on Pokémon Pokopia
+        # with tools/pgo/train-profile.ps1. (Eden's profile, from Switch 1 games, ran Mario Kart
+        # World at about half the speed.) Windows uses MSYS2's MinGW clang, which mangles names like
+        # the Linux builds: MSVC cannot read an LLVM .profdata file.
         # The x86_64 Linux job runs on a boat.dev sandbox (8 vCPU, 16 GB: https://docs.boat.dev/ci)
         # started from the eglantine-ci snapshot, which has every package, clang, CMake and Qt
         # installed (tools/ci/boat-snapshot.sh). boat has no Windows or Arm machines, so those
@@ -122,6 +124,7 @@ jobs:
           cache: true
 
       # The profile is in the source tree, where both the Linux and MSYS2 configure steps read it.
+      # tools/pgo/train-profile.ps1 makes it (tools/pgo/README.md: when to refresh it).
       - name: Check PGO profile
         shell: bash
         run: |
@@ -191,20 +194,26 @@ jobs:
             "-DCMAKE_CXX_COMPILER=clang++-$PGO_LLVM_VERSION"
             "-DCMAKE_EXE_LINKER_FLAGS=-B/usr/lib/llvm-$PGO_LLVM_VERSION/bin -fuse-ld=lld"
           )
-          # Same flags Eden's CI passes for its clang PGO build.
-          profile="-fprofile-use=$PWD/eglantine.profdata -Wno-backend-plugin \
+          # The -mllvm option names static functions by file name only, as the training build did,
+          # so they match although this checkout is elsewhere (tools/pgo/README.md). Clang warns
+          # that it is unused on link lines; that is harmless.
+          profile="-fprofile-use=$PWD/eglantine.profdata \
+            -mllvm -static-func-full-module-prefix=false -Wno-backend-plugin \
             -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
           flags+=("-DCMAKE_C_FLAGS=$profile" "-DCMAKE_CXX_FLAGS=$profile")
           cmake -S . -B build/release -G Ninja "${flags[@]}"
 
       # MinGW build: system Qt and libraries from MSYS2, clang plus the repo's PGO profile. The profile
       # path is converted to its Windows form because clang runs with the MSYS mount underneath.
+      # tools/pgo/train-profile.ps1 configures its instrumented build the same way, with
+      # -fprofile-generate for -fprofile-use; keep the two in step.
       - name: Configure MinGW PGO
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          profile="-fprofile-use=$(cygpath -m "$PWD/eglantine.profdata") -Wno-backend-plugin \
+          profile="-fprofile-use=$(cygpath -m "$PWD/eglantine.profdata") \
+            -mllvm -static-func-full-module-prefix=false -Wno-backend-plugin \
             -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
           cmake -S . -B build/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
