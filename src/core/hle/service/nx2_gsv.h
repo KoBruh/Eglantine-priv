@@ -13,6 +13,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <cstdlib>
 #include <cstdio>
 #include <initializer_list>
@@ -146,13 +147,47 @@ inline void TipcHandshake(HLERequestContext& ctx, std::string_view session) {
     TipcReplyWords(ctx, {w[2], w[3]});
 }
 
-// Replies with success and a copied handle to a new session served by `iface`.
+// Replies with success and a copied handle to a new session served by `iface`, whose creation
+// reference is released once the handle is in the reply (AddCopyObjectReleased): the client's
+// handle is then the only reference to the client session, so closing it closes the session and
+// destroys `iface`. With the creation reference kept, every session lived (with its threads,
+// timers and syncpoint) until shutdown, each holding one of the process's sessions.
 template <class T>
 inline void ReturnRawSession(Core::System& system, HLERequestContext& ctx, std::shared_ptr<T> iface) {
     auto* client = CreateRawSession(system, ctx, std::move(iface));
+    // A copy handle, as the Switch 2 SDK expects (it panics on a move handle here, e.g. at
+    // ISelfController 2000), but holding the only reference to the client end: once the guest
+    // closes it, the session ends and its resources go.
     IPC::ResponseBuilder rb{ctx, 2, 1, 0};
     rb.Push(ResultSuccess);
-    rb.PushCopyObjects(ctx, *client);
+    ctx.AddCopyObjectReleased(client);
+}
+
+// Called by the destructors of the sessions ReturnRawSession hands out, which run once their
+// client closes them: logs the first close of each kind, then each kind's count at most every 10 s.
+inline void Nx2LogSessionClosed(std::string_view kind) {
+    struct Count {
+        u64 closed{};
+        std::chrono::steady_clock::time_point logged{};
+    };
+    struct Counts {
+        std::mutex mutex;
+        std::map<std::string, Count, std::less<>> by_kind;
+    };
+    // Never freed: a session can still be destroyed while statics are.
+    static Counts* const counts = new Counts;
+    std::scoped_lock lk{counts->mutex};
+    auto it = counts->by_kind.find(kind);
+    if (it == counts->by_kind.end()) {
+        it = counts->by_kind.emplace(std::string{kind}, Count{}).first;
+    }
+    auto& count = it->second;
+    ++count.closed;
+    const auto now = std::chrono::steady_clock::now();
+    if (count.closed == 1 || now - count.logged >= std::chrono::seconds{10}) {
+        count.logged = now;
+        LOG_INFO(Service, "{} session closed ({} so far)", kind, count.closed);
+    }
 }
 
 // nn::gs::sdk::QueryApplicationGpuTimeSpan opens this session with GSV 1121.
@@ -165,6 +200,11 @@ public:
             {0, &INx2GpuTimeSession::Initialize, "Initialize"},
             {11, &INx2GpuTimeSession::QueryApplicationGpuTimeSpan, "QueryApplicationGpuTimeSpan"},
         });
+    }
+
+    // Each QueryApplicationGpuTimeSpan opens one and closes it again.
+    ~INx2GpuTimeSession() override {
+        Nx2LogSessionClosed(GetServiceName());
     }
 
 private:
@@ -271,6 +311,7 @@ public:
         for (auto& [slot, event] : m_events) {
             m_context.CloseEvent(event);
         }
+        Nx2LogSessionClosed(GetServiceName());
     }
 
 private:
@@ -450,11 +491,28 @@ public:
     ~INx2GpuSession() override {
         // Waits for a backing the GPU thread may be doing.
         Tegra::Nx2SetSparseBacking({});
+        // The registry outlives the session: drop this session's memory as 102 does, and its
+        // handles, which the next gpu session numbers from 1 again (vi2 composites look images up
+        // by handle). Regions the GPU still maps are left to the kernel's teardown: freeing their
+        // pages here could race the GPU thread's work on them.
+        auto& registry = Nvidia::Devices::Nx2GpuMemoryRegistry::Get();
+        for (const auto& [handle, memory] : m_memory) {
+            const auto [address, size] = memory;
+            if (size != 0) {
+                registry.Unregister(address, size);
+            }
+            if (size == 0x2000) {
+                Tegra::Nx2RemoveSemaphoreRegion(address);
+            }
+            registry.ForgetHandle(handle);
+        }
+        FreeReleasedRegions();
         for (auto* event : m_events) {
             if (event != nullptr) {
                 m_context.CloseEvent(event);
             }
         }
+        Nx2LogSessionClosed(GetServiceName());
     }
 
 private:
@@ -654,7 +712,13 @@ private:
     // console's graphics server completes unmap jobs behind the submitted work.
     void SignalAfterGpu(u32 slot) {
         auto* const event = EventFor(slot);
-        system.GPU().RunInOrder([this, event] { event->Signal(system.Kernel()); });
+        // The GPU thread may get to this after the session is gone, which closes its events: the
+        // job holds a reference to the event and none to the session.
+        event->Open(kernel);
+        system.GPU().RunInOrder([&kernel_core = kernel, event] {
+            event->Signal(kernel_core);
+            event->Close(kernel_core);
+        });
     }
 
     // Sub 102: word 2 is the memory handle 101 returned, word 3 the job slot. The game frees the
@@ -1527,6 +1591,7 @@ public:
         for (auto& [id, event] : m_events) {
             m_context.CloseEvent(event);
         }
+        Nx2LogSessionClosed(GetServiceName());
     }
 
 private:
@@ -1605,6 +1670,7 @@ public:
         for (auto* event : m_events) {
             m_context.CloseEvent(event);
         }
+        Nx2LogSessionClosed(GetServiceName());
     }
 
 private:
@@ -2509,8 +2575,12 @@ public:
             m_context.CloseEvent(m_event);
         }
         if (m_syncpoint != NoSyncpoint) {
-            NvdrvSyncpoints().FreeSyncpoint(m_syncpoint);
+            // Through the module it came from: during shutdown nvdrv may no longer be registered
+            // (and GetService would wait for it).
+            m_nvdrv->GetContainer().GetSyncpointManager().FreeSyncpoint(m_syncpoint);
         }
+        // Once per movie: the session is closed when its player finishes.
+        Nx2LogSessionClosed(GetServiceName());
     }
 
 private:
@@ -2567,11 +2637,10 @@ private:
     }
 
     Nvidia::NvCore::SyncpointManager& NvdrvSyncpoints() {
-        return system.ServiceManager()
-            .GetService<Nvidia::NVDRV>("nvdrv", true)
-            ->GetModule()
-            ->GetContainer()
-            .GetSyncpointManager();
+        if (!m_nvdrv) {
+            m_nvdrv = system.ServiceManager().GetService<Nvidia::NVDRV>("nvdrv", true)->GetModule();
+        }
+        return m_nvdrv->GetContainer().GetSyncpointManager();
     }
 
     void CreateDecoderService(HLERequestContext& ctx) {
@@ -3033,6 +3102,7 @@ private:
     std::shared_ptr<ReadyState> m_ready = std::make_shared<ReadyState>();
     std::shared_ptr<Core::Timing::EventType> m_ready_timer;
     u64 m_submitted{};
+    std::shared_ptr<Nvidia::Module> m_nvdrv; ///< Owns m_syncpoint's allocation
     u32 m_syncpoint{NoSyncpoint}; ///< Counts finished frames (allocated at the first register)
     u32 m_sync_base{};            ///< Its value before the first frame
 
@@ -3110,11 +3180,15 @@ public:
         if (m_syncpt_poll) {
             system.CoreTiming().UnscheduleEvent(m_syncpt_poll);
         }
+        if (m_syncpt_process != nullptr) {
+            m_syncpt_process->Close(system.Kernel());
+        }
         for (auto* event : m_syncpt_events) {
             if (event != nullptr) {
                 m_context.CloseEvent(event);
             }
         }
+        Nx2LogSessionClosed(GetServiceName());
     }
 
 private:
@@ -3210,7 +3284,16 @@ private:
         auto rw = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(ctx.GetCopyHandle(0));
         auto ro = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(ctx.GetCopyHandle(1));
         if (rw.IsNotNull() && ro.IsNotNull() && ro->GetSize() >= 0x2000) {
-            m_syncpt_memory = &ro->GetOwner()->GetMemory();
+            // The poller writes the process's memory until this session is destroyed, which can
+            // be after the process would be: the server session is closed (and with it the last
+            // reference the session holds to the process) before its handler goes. Keep it.
+            auto* const owner = ro->GetOwner();
+            owner->Open(system.Kernel());
+            if (m_syncpt_process != nullptr) {
+                m_syncpt_process->Close(system.Kernel());
+            }
+            m_syncpt_process = owner;
+            m_syncpt_memory = &owner->GetMemory();
             m_syncpt_rw = GetInteger(rw->GetSourceAddress());
             m_syncpt_ro = GetInteger(ro->GetSourceAddress());
             m_syncpt_count = max_syncpoints;
@@ -3707,6 +3790,7 @@ private:
     KernelHelpers::ServiceContext m_context;
     std::array<Kernel::KEvent*, 2> m_syncpt_events{};
     std::mutex m_syncpt_mutex;
+    Kernel::KProcess* m_syncpt_process{}; ///< Opened: owns m_syncpt_memory
     Core::Memory::Memory* m_syncpt_memory{};
     u64 m_syncpt_rw{};
     u64 m_syncpt_ro{};

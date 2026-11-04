@@ -355,6 +355,14 @@ public:
         outgoing_copy_objects.emplace_back(object);
     }
 
+    /// A copy handle whose reference goes to the caller with it, as a move handle's does: for an
+    /// object made for this reply (a new session's client end) that the caller alone keeps open,
+    /// where the caller expects a copy handle.
+    void AddCopyObjectReleased(Kernel::KAutoObject* object) {
+        outgoing_copy_objects.emplace_back(object);
+        released_copy_objects.emplace_back(object);
+    }
+
     void AddDomainObject(SessionRequestHandlerPtr object) {
         outgoing_domain_objects.emplace_back(std::move(object));
     }
@@ -417,6 +425,8 @@ private:
     boost::container::static_vector<Handle, IPC::MAX_INCOMING_COPY_HANDLERS> incoming_copy_handles;
     boost::container::static_vector<Kernel::KAutoObject*, IPC::MAX_OUTGOING_MOVE_OBJECTS> outgoing_move_objects;
     boost::container::static_vector<Kernel::KAutoObject*, IPC::MAX_OUTGOING_COPY_OBJECTS> outgoing_copy_objects;
+    /// The outgoing copy objects whose reference goes to the caller (AddCopyObjectReleased).
+    boost::container::static_vector<Kernel::KAutoObject*, IPC::MAX_OUTGOING_COPY_OBJECTS> released_copy_objects;
     boost::container::static_vector<SessionRequestHandlerPtr, IPC::MAX_OUTGOING_DOMAIN_OBJECTS> outgoing_domain_objects;
 
     mutable std::array<Common::ScratchBuffer<u8>, 3> read_buffer_data_a{};

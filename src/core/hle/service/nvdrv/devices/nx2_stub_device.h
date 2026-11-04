@@ -38,6 +38,10 @@ inline NvResult Nx2UnknownIoctl(const char* device, Ioctl command, std::span<con
 // the memory at GPU address == CPU address, and NormalMapGpuMemory4K (211) maps a memory handle at
 // a chosen GPU address (also in sparse regions). Every nvhost-as-gpu address space applies each
 // mapping, including ones made before the address space existed.
+//
+// Listeners run under the registry's lock, which the GPU thread takes too (BackSparse, when it
+// first writes a lazily backed sparse block): they queue their GPU work in order and must not
+// wait for the GPU thread.
 class Nx2GpuMemoryRegistry {
 public:
     using Listener = std::function<void(u64 gpu_address, u64 cpu_address, u64 size)>;
@@ -341,6 +345,12 @@ public:
             return std::nullopt;
         }
         return range.second + (cpu_address - start);
+    }
+
+    /// A gpu session that made `handle` closed: the next one numbers its handles from 1 again.
+    void ForgetHandle(u32 handle) {
+        std::scoped_lock lk{handle_mutex};
+        handle_mappings.erase(handle);
     }
 
     std::optional<u64> GpuAddressOf(u32 handle, u64 offset) {

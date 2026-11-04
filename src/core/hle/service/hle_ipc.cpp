@@ -283,6 +283,11 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer() {
         Handle handle{};
         if (object) {
             R_TRY(handle_table.Add(kernel, &handle, object));
+
+            // A released copy object's reference went to the caller with the handle.
+            if (std::ranges::find(released_copy_objects, object) != released_copy_objects.end()) {
+                object->Close(kernel);
+            }
         }
         cmd_buf[current_offset++] = handle;
     }
