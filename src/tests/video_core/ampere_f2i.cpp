@@ -928,4 +928,88 @@ TEST_CASE("Ampere texel fetches of R+B or G+B take alpha into scratch", "[video_
         REQUIRE(((*tlds >> 50) & 7) == swizzle);
     }
 }
+TEST_CASE("Ampere ULDC.U8 and ULDC.U16 load through Maxwell LDC", "[video_core][ampere]") {
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    // ULDC.U16 UR4, c[6][0x20] (Star Fox), as captured.
+    const Instruction halfword{{0x00047ab9, 0x01800800, 0x00000400, 0x000fe200}};
+    const auto lowered = LowerToMaxwell(std::array{halfword, exit});
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(lowered.instructions.size() == 2);
+    REQUIRE(lowered.instructions.front() == 0xef9200600207ffdcULL);
+    // ULDC.U8 UR4, c[6][0x21]: width 0, any byte offset.
+    Instruction byte = halfword;
+    byte.words[1] = 0x01800840;
+    byte.words[2] = 0;
+    const auto byte_load = LowerToMaxwell(std::array{byte, exit});
+    REQUIRE(static_cast<bool>(byte_load));
+    REQUIRE(byte_load.instructions.front() == 0xef9000600217ffdcULL);
+    // Odd halfword offsets, and offsets the signed Maxwell field can't hold, stay rejected.
+    Instruction odd = halfword;
+    odd.words[1] = 0x01800840;
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{odd, exit})));
+    Instruction far = halfword;
+    far.words[1] = 0x01800000 | (0x8000U << 6);
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{far, exit})));
+    // Indexed subword loads are not lowered.
+    Instruction indexed{{0x00047abb, 0x01800800, 0x08000400, 0x000fe200}};
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{indexed, exit})));
+}
+
+TEST_CASE("Ampere SURED.ADD reduces into buffers and 2D surfaces", "[video_core][ampere]") {
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    // SURED.D.ADD, buffer (Yoshi's compute), as captured; then the 2D form of title 1.
+    for (const u32 dimension : {1U, 3U}) {
+        Instruction reduce{{0x0500759f, 0x00c00206 | (dimension << 29), 0x0010e000, 0x000fe200}};
+        const auto lowered = LowerToMaxwell(std::array{reduce, exit});
+        INFO(lowered.error);
+        REQUIRE(static_cast<bool>(lowered));
+        const u64 sured = lowered.instructions.front();
+        REQUIRE((sured >> 52) == 0xeb4);
+        REQUIRE(((sured >> 33) & 7) == dimension);
+        REQUIRE((sured & 0xff) == 6);
+        REQUIRE(((sured >> 8) & 0xff) == 5);
+    }
+    for (const u32 dimension : {0U, 2U, 4U, 5U}) {
+        Instruction reduce{{0x0500759f, 0x00c00206 | (dimension << 29), 0x0010e000, 0x000fe200}};
+        REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{reduce, exit})));
+    }
+}
+
+TEST_CASE("Ampere BRA.U branches as BRA", "[video_core][ampere]") {
+    const Instruction nop{{0x00007918, 0, 0, 0x000fc000}};
+    const Instruction exit{{0x0000794d, 0, 0x03800000, 0}};
+    // @!P0 BRA.U forward to the EXIT (DK Bananza's fragment shader, at 0x5b0 of 133).
+    std::array<Instruction, 133> code;
+    code.fill(nop);
+    code[91] = Instruction{{0x00008947, 0x00000281, 0x03800000, 0x000fea00}};
+    code.back() = exit;
+    const auto lowered = LowerToMaxwell(code);
+    INFO(lowered.error);
+    REQUIRE(static_cast<bool>(lowered));
+    REQUIRE(lowered.source_size == sizeof(code));
+    // The same branch without .U lowers to the same code.
+    auto plain = code;
+    plain[91].words[1] = 0x00000280;
+    const auto plain_lowered = LowerToMaxwell(plain);
+    REQUIRE(static_cast<bool>(plain_lowered));
+    REQUIRE(lowered.instructions == plain_lowered.instructions);
+    // Backward, and with a second predicate.
+    REQUIRE(static_cast<bool>(LowerToMaxwell(
+        std::array{nop, Instruction{{0x00008947, 0xffffffe1, 0x0383ffff, 0x000fea00}}, exit})));
+    REQUIRE(static_cast<bool>(LowerToMaxwell(
+        std::array{Instruction{{0x00008947, 0x11, 0x04800000, 0x000fea00}}, nop, exit})));
+    // Unknown fields stay rejected.
+    const Instruction branch{{0x00008947, 0x1, 0x03800000, 0x000fea00}};
+    for (const u32 bit : {82U, 83U, 84U, 85U, 86U, 92U, 93U, 94U, 95U, 96U, 100U, 104U}) {
+        auto unsupported = branch;
+        unsupported.words[bit / 32] |= 1U << (bit % 32);
+        const auto rejected = LowerToMaxwell(std::array{unsupported, exit});
+        INFO(bit);
+        REQUIRE_FALSE(static_cast<bool>(rejected));
+        REQUIRE(rejected.error == "native branch convergence mode");
+    }
+    auto divergence = branch; // bit 91 makes it the .DIV/.CONV form
+    divergence.words[2] |= 1U << 27;
+    REQUIRE_FALSE(static_cast<bool>(LowerToMaxwell(std::array{divergence, exit})));
+}
 } // namespace

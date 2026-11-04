@@ -1159,14 +1159,19 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 emit(0x5c98000000000000ULL | predicate | target | (u64{source} << 20) | (u64{15} << 39));
             break;
         }
-        case 0xab9: case 0xabb: { // ULDC U32/U64, direct or indexed.
+        case 0xab9: case 0xabb: { // ULDC U32/U64 direct or indexed, U8/U16 direct.
             const u32 uniform_dest = insn.Bits(16, 8), index_reg = insn.Bits(24, 8);
             const u32 width = insn.Bits(73, 3);
+            // ULDC.U8 and .U16 (Star Fox: ULDC.U16 UR4, c[6][0x20]) become Maxwell LDC.U8/.U16,
+            // whose offset is signed: only offsets below 0x8000.
+            const bool subword = opcode == 0xab9 && (width == 0 || width == 2);
+            const u32 alignment = width == 0 ? 1U : width == 2 ? 2U : 4U;
             const u32 target = uniform_register(uniform_dest);
             const u32 index_target = opcode == 0xabb ? uniform_register(index_reg) : 255U;
-            if (target == ~0U || target == 255 || (width != 4 && width != 5) ||
+            if (target == ~0U || target == 255 || (!subword && width != 4 && width != 5) ||
+                (subword && insn.Bits(38, 16) >= 0x8000) ||
                 (width == 5 && ((uniform_dest & 1) || uniform_register(uniform_dest + 1) != target + 1)) ||
-                bank() >= 18 || insn.Bits(38, 16) % 4 || insn.Bits(62, 2) ||
+                bank() >= 18 || insn.Bits(38, 16) % alignment || insn.Bits(62, 2) ||
                 (insn.words[2] & ~0xe00U) != (opcode == 0xab9 ? 0U : 0x08000000U) ||
                 index_target == ~0U)
                 return fail(index, "native uniform constant load mode");
@@ -1466,15 +1471,19 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
             const u32 binding = insn.Bits(54, 5), offset = insn.Bits(40, 14);
             const u32 coordinate = insn.Bits(24, 8), data = insn.Bits(32, 8);
             const u32 first_reserved = uses_uniform_bank ? 216U : 246U;
-            if (insn.words[2] != 0x0010e000 || insn.Bits(61, 3) != 3 ||
+            // A buffer (dimension 1, one coordinate; Yoshi's compute) or 2D (3, two), numbered
+            // as on Maxwell.
+            const u32 dimension = insn.Bits(61, 3);
+            if (insn.words[2] != 0x0010e000 || (dimension != 1 && dimension != 3) ||
                 insn.Bits(59, 2) || binding >= 18 || offset > 0x1fff ||
-                coordinate >= first_reserved - 1 || (data >= first_reserved && data != 255))
+                coordinate >= first_reserved - (dimension == 3 ? 1 : 0) ||
+                (data >= first_reserved && data != 255))
                 return fail(index, "native surface reduction mode");
             if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
                 return fail(index, "native surface descriptor buffer conflict");
             result.required_texture_buffer = binding;
             emit(0xeb40000000000000ULL | predicate | data | (u64{coordinate} << 8) |
-                 (u64{3} << 33) | (u64{offset} << 36) | (u64{1} << 51));
+                 (u64{dimension} << 33) | (u64{offset} << 36) | (u64{1} << 51));
             break;
         }
         case 0xb97: { // SULD.P.1D/1D buffer/2D/3D.IGN, direct descriptor, channel mask at 72-75.
@@ -3950,6 +3959,12 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 insn.words[0] = 0x7947;
                 insn.words[1] &= ~3U;
                 insn.words[2] = 0x03800000 | (insn.words[2] & 0x3ffffU);
+            } else if ((insn.words[1] & 3) == 1) {
+                // .U (offset bits 0-1 = 1): the whole warp branches or none of it does, as a plain
+                // BRA here (DK Bananza's fragment shaders). Nothing but Pc (87-90) and the offset.
+                if ((insn.words[2] & 0xf87c0000U) || (insn.words[3] & 0x1ffU))
+                    return fail(index, "native branch convergence mode");
+                insn.words[1] &= ~3U;
             }
             u64 branch_predicate = predicate;
             if (opcode == 0x947 && insn.Bits(87, 4) != 7) {

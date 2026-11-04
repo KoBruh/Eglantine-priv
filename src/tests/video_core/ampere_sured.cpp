@@ -137,7 +137,8 @@ TEST_CASE("Ampere SURED preserves predicate and register operands",
 
 TEST_CASE("Ampere SURED rejects unsupported formats and descriptor conflicts",
           "[video_core][ampere][sured]") {
-    const u32 bit = GENERATE(59U, 60U, 61U, 62U, 63U, 72U, 73U, 74U, 75U,
+    // Not bit 62: it makes the 2D form (dimension 3) a buffer (1), which lowers too.
+    const u32 bit = GENERATE(59U, 60U, 61U, 63U, 72U, 73U, 74U, 75U,
                             77U, 78U, 79U, 80U, 84U, 85U, 86U, 87U, 88U, 89U);
     std::array code{captured, exit_instruction};
     code[0].words[bit / 32] ^= 1U << (bit % 32);

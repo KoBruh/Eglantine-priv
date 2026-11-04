@@ -389,8 +389,9 @@ TEST_CASE("Ampere uniform bindless TEX lowers with branches around its handle se
     }
     const std::array<Instruction, 4> interrupted{{sample[0], Branch(0), sample[1], sample[2]}};
     REQUIRE(static_cast<bool>(LowerToMaxwell(interrupted)));
-    // Branches that are misaligned or leave the program are still rejected.
-    const std::array<Instruction, 4> misaligned{{sample[0], sample[1], Branch(1), sample[2]}};
+    // Branches that are misaligned or leave the program are still rejected (an offset's two low
+    // bits are the .U/.DIV/.CONV modifiers: 4 is the misaligned one).
+    const std::array<Instruction, 4> misaligned{{sample[0], sample[1], Branch(4), sample[2]}};
     const auto rejected = LowerToMaxwell(misaligned);
     REQUIRE_FALSE(static_cast<bool>(rejected));
     REQUIRE(rejected.error_offset == 32);
