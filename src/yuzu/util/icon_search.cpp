@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cctype>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -25,6 +26,7 @@
 #include <QDialogButtonBox>
 #include <QIcon>
 #include <QImage>
+#include <QImageReader>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -47,22 +49,58 @@ constexpr int IconTargetSize = 256;
 constexpr int MinCandidateScore = 300;
 constexpr std::size_t MaxIconDownloads = 3;
 constexpr std::size_t MaxSgdbChoices = 8;
+// The sources serve icons of 100 to 512 pixels a side. A bigger picture is not an icon, and
+// decoding it would only cost memory.
+constexpr int MaxSourceIconSide = 2048;
+
+// Decodes a downloaded icon. Only PNG and JPEG are accepted, and the size in the header is
+// checked before any pixel is decoded.
+QImage DecodeIconImage(const std::string& body) {
+    constexpr std::string_view png_magic = "\x89PNG\r\n\x1a\n";
+    constexpr std::string_view jpeg_magic = "\xFF\xD8\xFF";
+    const char* format = body.starts_with(png_magic)    ? "png"
+                         : body.starts_with(jpeg_magic) ? "jpeg"
+                                                        : nullptr;
+    if (format == nullptr) {
+        return {};
+    }
+    QByteArray bytes = QByteArray::fromRawData(body.data(), static_cast<qsizetype>(body.size()));
+    QBuffer buffer(&bytes);
+    if (!buffer.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    QImageReader reader(&buffer, format);
+    reader.setAutoDetectImageFormat(false);
+    const QSize size = reader.size();
+    if (!size.isValid() || size.isEmpty() || size.width() > MaxSourceIconSide ||
+        size.height() > MaxSourceIconSide) {
+        return {};
+    }
+    QImage image;
+    if (!reader.read(&image)) {
+        return {};
+    }
+    return image;
+}
 
 std::vector<u8> EncodeSquareIcon(const QImage& source) {
     if (source.isNull()) {
         return {};
     }
-    QImage img = source.convertToFormat(QImage::Format_RGBA8888);
-    if (img.width() != IconTargetSize || img.height() != IconTargetSize) {
-        img = img.scaled(IconTargetSize, IconTargetSize, Qt::KeepAspectRatioByExpanding,
-                         Qt::SmoothTransformation);
-        if (img.width() > IconTargetSize || img.height() > IconTargetSize) {
-            const int x = (img.width() - IconTargetSize) / 2;
-            const int y = img.height() > img.width() ? (img.height() - IconTargetSize) / 3
-                                                     : (img.height() - IconTargetSize) / 2;
-            img = img.copy(x, y, IconTargetSize, IconTargetSize);
-        }
+    // Crop to a square before scaling, so the scaled image is never bigger than the icon. A
+    // tall picture keeps more of its top, where a game's logo usually is.
+    QImage img = source;
+    if (img.width() != img.height()) {
+        const int side = std::min(img.width(), img.height());
+        const int x = (img.width() - side) / 2;
+        const int y = img.height() > img.width() ? (img.height() - side) / 3 : 0;
+        img = img.copy(x, y, side, side);
     }
+    if (img.width() != IconTargetSize) {
+        img = img.scaled(IconTargetSize, IconTargetSize, Qt::IgnoreAspectRatio,
+                         Qt::SmoothTransformation);
+    }
+    img = img.convertToFormat(QImage::Format_RGBA8888);
     QByteArray encoded;
     QBuffer buffer(&encoded);
     buffer.open(QIODevice::WriteOnly);
@@ -173,74 +211,168 @@ struct HttpResult {
     std::string detail;
 };
 
+constexpr int MaxRedirects = 3;
+
+struct IconUrl {
+    std::string origin; // https://host
+    std::string path;   // /path?query
+};
+
+// Splits an https URL on one of the icon hosts. Anything else is refused: another scheme,
+// another host, or a port or user name in front of the host.
+std::optional<IconUrl> ParseIconUrl(std::string_view url) {
+    constexpr std::string_view scheme = "https://";
+    if (!url.starts_with(scheme)) {
+        return std::nullopt;
+    }
+    const auto host_end = url.find_first_of("/?#", scheme.size());
+    const std::string host = Common::ToLower(url.substr(
+        scheme.size(), host_end == std::string_view::npos ? host_end : host_end - scheme.size()));
+    if (host.empty() ||
+        host.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789.-") != std::string::npos ||
+        !IsAllowedIconHost(host)) {
+        return std::nullopt;
+    }
+    std::string path{host_end == std::string_view::npos ? std::string_view{"/"}
+                                                        : url.substr(host_end)};
+    path.erase(std::min(path.find('#'), path.size()));
+    if (!path.starts_with('/')) {
+        path.insert(0, 1, '/');
+    }
+    return IconUrl{std::string{scheme} + host, std::move(path)};
+}
+
+// The URL a redirect's Location points to: absolute, scheme-relative or a path on the same host.
+std::string ResolveRedirect(const IconUrl& from, std::string_view location) {
+    if (location.starts_with("//")) {
+        return "https:" + std::string{location};
+    }
+    if (location.starts_with('/')) {
+        return from.origin + std::string{location};
+    }
+    return std::string{location};
+}
+
+bool IsRedirectStatus(int status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+}
+
 // Every request shares one deadline and cancel flag, so a whole search can never run past it.
+// Redirects are followed here rather than by httplib, at most MaxRedirects of them, and each
+// hop goes through the same https, host and deadline checks as the first request.
 HttpResult HttpGet(const std::string& full_url, std::chrono::steady_clock::time_point deadline,
                    const std::atomic_bool& cancel, const std::string& bearer_token = {}) {
     using namespace std::chrono;
     HttpResult result;
-    if (cancel) {
-        result.status = HttpStatus::Cancelled;
+    auto url = ParseIconUrl(full_url);
+    if (!url) {
+        result.detail = "unexpected URL";
         return result;
     }
-    constexpr std::string_view scheme = "https://";
-    if (!full_url.starts_with(scheme)) {
-        result.detail = "unsupported URL";
-        return result;
-    }
-    const auto path_start = full_url.find('/', scheme.size());
-    const std::string origin =
-        path_start == std::string::npos ? full_url : full_url.substr(0, path_start);
-    const std::string path =
-        path_start == std::string::npos ? std::string{"/"} : full_url.substr(path_start);
-    if (!IsAllowedIconHost(std::string_view{origin}.substr(scheme.size()))) {
-        result.detail = "unexpected host";
-        return result;
-    }
-    const auto remaining = duration_cast<milliseconds>(deadline - steady_clock::now());
-    if (remaining.count() <= 0) {
-        result.status = HttpStatus::Timeout;
-        return result;
-    }
-    try {
-        httplib::Client client(origin);
-        client.set_connection_timeout(remaining);
-        client.set_read_timeout(remaining);
-        client.set_write_timeout(remaining);
-        client.set_max_timeout(remaining);
-        client.set_follow_location(true);
+    const std::string first_origin = url->origin;
+    for (int redirects = 0;; ++redirects) {
+        if (cancel) {
+            result.status = HttpStatus::Cancelled;
+            return result;
+        }
+        const auto remaining = duration_cast<milliseconds>(deadline - steady_clock::now());
+        if (remaining.count() <= 0) {
+            result.status = HttpStatus::Timeout;
+            return result;
+        }
+        int status = 0;
+        std::string location;
+        bool too_large = false;
+        bool cancelled = false;
+        result.body.clear();
+        try {
+            httplib::Client client(url->origin);
+            client.set_connection_timeout(remaining);
+            client.set_read_timeout(remaining);
+            client.set_write_timeout(remaining);
+            client.set_max_timeout(remaining);
 #ifdef YUZU_BUNDLED_OPENSSL
-        client.load_ca_cert_store(kCert, sizeof(kCert));
+            client.load_ca_cert_store(kCert, sizeof(kCert));
 #endif
-        httplib::Headers headers{{"User-Agent", "Eglantine"}};
-        if (!bearer_token.empty()) {
-            headers.emplace("Authorization", "Bearer " + bearer_token);
-        }
-        auto res = client.Get(path, headers);
-        if (!res) {
-            result.status = res.error() == httplib::Error::Canceled || steady_clock::now() >= deadline
-                                ? HttpStatus::Timeout
-                                : HttpStatus::NetworkError;
-            result.detail = httplib::to_string(res.error());
+            httplib::Headers headers{{"User-Agent", "Eglantine"}};
+            // The API key only goes to the host it was given for, not to where it redirects.
+            if (!bearer_token.empty() && url->origin == first_origin) {
+                headers.emplace("Authorization", "Bearer " + bearer_token);
+            }
+            auto res = client.Get(
+                url->path, headers,
+                [&](const httplib::Response& response) {
+                    status = response.status;
+                    location = response.get_header_value("Location");
+                    // Only a 200 has a body worth reading.
+                    return status == 200;
+                },
+                [&](const char* chunk, std::size_t length) {
+                    // Stop as soon as the body passes the limit, instead of buffering all of it.
+                    if (cancel) {
+                        cancelled = true;
+                        return false;
+                    }
+                    if (length > MaxHttpBodySize - result.body.size()) {
+                        too_large = true;
+                        return false;
+                    }
+                    result.body.append(chunk, length);
+                    return true;
+                });
+            // A response without a body (204) never reaches the handler.
+            if (status == 0 && res) {
+                status = res->status;
+            }
+            if (IsRedirectStatus(status)) {
+                if (redirects >= MaxRedirects) {
+                    result.detail = "too many redirects";
+                    return result;
+                }
+                auto next = ParseIconUrl(ResolveRedirect(*url, location));
+                if (!next) {
+                    result.detail = "redirect to an unexpected host";
+                    return result;
+                }
+                url = std::move(next);
+                continue;
+            }
+            if (cancelled) {
+                result.status = HttpStatus::Cancelled;
+                return result;
+            }
+            if (status != 0 && status != 200) {
+                result.status = status == 401 || status == 403 ? HttpStatus::Unauthorized
+                                                               : HttpStatus::NetworkError;
+                result.detail = fmt::format("HTTP {}", status);
+                return result;
+            }
+            if (too_large) {
+                result.detail = "unexpected response size";
+                return result;
+            }
+            if (!res) {
+                result.status =
+                    res.error() == httplib::Error::Canceled || steady_clock::now() >= deadline
+                        ? HttpStatus::Timeout
+                        : HttpStatus::NetworkError;
+                result.detail = httplib::to_string(res.error());
+                return result;
+            }
+            if (result.body.empty()) {
+                result.detail = "unexpected response size";
+                return result;
+            }
+            result.status = HttpStatus::Ok;
+            return result;
+        } catch (const std::exception& e) {
+            result.detail = e.what();
+            return result;
+        } catch (...) {
+            result.detail = "unknown error";
             return result;
         }
-        if (res->status != 200) {
-            result.status = res->status == 401 || res->status == 403 ? HttpStatus::Unauthorized
-                                                                      : HttpStatus::NetworkError;
-            result.detail = fmt::format("HTTP {}", res->status);
-            return result;
-        }
-        if (res->body.empty() || res->body.size() > MaxHttpBodySize) {
-            result.detail = "unexpected response size";
-            return result;
-        }
-        result.status = HttpStatus::Ok;
-        result.body = std::move(res->body);
-    } catch (const std::exception& e) {
-        result.detail = e.what();
-    } catch (...) {
-        result.detail = "unknown error";
     }
-    return result;
 }
 
 struct IconCandidate {
@@ -401,11 +533,7 @@ IconSearchResult RunIconSearch(const std::string& raw_query, u64 tid, const std:
             }
         };
         const auto decode_icon = [&out](const std::string& body) {
-            QImage img;
-            if (img.loadFromData(reinterpret_cast<const uchar*>(body.data()),
-                                 static_cast<int>(body.size()))) {
-                out.icon_bytes = EncodeSquareIcon(img);
-            }
+            out.icon_bytes = EncodeSquareIcon(DecodeIconImage(body));
             return !out.icon_bytes.empty();
         };
 
