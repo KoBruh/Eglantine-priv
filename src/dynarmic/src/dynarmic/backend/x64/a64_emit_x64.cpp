@@ -986,11 +986,29 @@ bool EmitTerminalImpl(A64EmitX64& e, IR::Term::PopRSBHint, IR::LocationDescripto
     return true;
 }
 
+// The check a backward LinkBlock makes, for indirect branches: forward branches skip theirs
+// (TranslatorVisitor's LinkTo), so without it a loop that goes back only through BR or BLR (a
+// threaded interpreter's handlers) never sees HaltExecution or the end of its cycles. The branch
+// already stored its target in pc, where the next Run starts.
+void EmitIndirectBranchHaltCheck(A64EmitX64& e) {
+    if (e.conf.enable_cycle_counting) {
+        e.code.cmp(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], 0);
+        e.code.jng(e.code.GetForceReturnFromRunCodeAddress());
+    } else {
+        e.code.cmp(dword[e.code.ABI_JIT_PTR + offsetof(A64JitState, halt_reason)], 0);
+        e.code.jne(e.code.GetForceReturnFromRunCodeAddress());
+    }
+}
+
 bool EmitTerminalImpl(A64EmitX64& e, IR::Term::FastDispatchHint, IR::LocationDescriptor initial_location, bool is_single_step) {
     if (!e.conf.HasOptimization(OptimizationFlag::FastDispatch) || is_single_step) {
         e.code.ReturnFromRunCode();
-    } else if (e.fpcr_is_block_fpcr &&
-               !::Dynarmic::Common::AbOff(::Dynarmic::Common::AbIndirectSiteCache, A64::LocationDescriptor{initial_location}.Experiment())) {
+        return true;
+    }
+    // Here rather than in the handlers: a return that missed the RSB enters them after its own.
+    EmitIndirectBranchHaltCheck(e);
+    if (e.fpcr_is_block_fpcr &&
+        !::Dynarmic::Common::AbOff(::Dynarmic::Common::AbIndirectSiteCache, A64::LocationDescriptor{initial_location}.Experiment())) {
         // This branch's own entry: the block it went to last, else the table (which fills it).
         const auto& entry = e.site_caches.emplace_back();
         EmitLocationHashOfStoredPC(e, initial_location);

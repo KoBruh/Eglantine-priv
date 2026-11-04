@@ -535,3 +535,116 @@ TEST_CASE("A64: calls, returns and indirect branches through the return stack bu
         CHECK(jit.GetRegister(1) == 112);
     }
 }
+
+namespace {
+
+// A threaded interpreter's dispatch: each handler loads the next one's address and branches to
+// it, so its loop goes back only through BR. The loads read table_address, and the read that is
+// number halt_at asks the jit to halt. A loop that does not see the halt (or the end of its
+// cycles) is let out to a BRK after overrun_limit more reads, so that it fails instead of hanging.
+class DispatchLoopEnv final : public A64TestEnv {
+public:
+    static constexpr u64 table_address = 0x10000;
+    static constexpr u64 overrun_limit = 1000;
+
+    A64::Jit* jit = nullptr;
+    u64 handler_address = 0;
+    u64 escape_address = 0;
+    u64 halt_at = 0;  // none
+    u64 reads = 0;
+    bool overran = false;
+
+    u64 MemoryRead(u64 vaddr, size_t size) override {
+        if (vaddr != table_address || size != sizeof(u64)) {
+            return A64TestEnv::MemoryRead(vaddr, size);
+        }
+        ++reads;
+        if (reads == halt_at) {
+            jit->HaltExecution();
+        }
+        if (reads > halt_at + overrun_limit) {
+            overran = true;
+            return escape_address;
+        }
+        return handler_address;
+    }
+
+    void ExceptionRaised(u64, A64::Exception) override {
+        jit->HaltExecution();
+    }
+};
+
+A64::UserConfig DispatchLoopConfig(DispatchLoopEnv& env, bool enable_cycle_counting) {
+    A64::UserConfig conf{};
+    conf.callbacks = &env;
+    conf.enable_cycle_counting = enable_cycle_counting;
+    return conf;
+}
+
+}  // namespace
+
+TEST_CASE("A64: a loop only through an indirect branch sees a halt and the end of its cycles", "[a64]") {
+    SECTION("a halt asked for in the loop") {
+        DispatchLoopEnv env;
+        A64::Jit jit{DispatchLoopConfig(env, false)};
+        env.jit = &jit;
+
+        oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+        code.LDR(X0, X2);  // 0: the one handler, which goes to itself
+        code.BR(X0);       // through the branch's own cache entry once it is filled
+        code.BRK(0);       // 8: where a loop that overran is let out
+        env.handler_address = 0;
+        env.escape_address = 8;
+        env.halt_at = 10;
+
+        jit.SetPC(0);
+        jit.SetRegister(2, DispatchLoopEnv::table_address);
+        CheckedRun([&]() { jit.Run(); });
+        CHECK(!env.overran);
+        CHECK(env.reads == 10);
+        CHECK(jit.GetPC() == 0);  // the branch stored its target
+    }
+
+    SECTION("a halt asked for in a block that may change the FPCR") {
+        DispatchLoopEnv env;
+        A64::Jit jit{DispatchLoopConfig(env, false)};
+        env.jit = &jit;
+
+        oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+        code.LDR(X0, X2);                        // 0
+        code.MSR(oaknut::SystemReg::FPCR, XZR);  // goes on to 8 through the fast dispatch handler
+        code.BR(X0);                             // 8
+        code.BRK(0);                             // 12
+        env.handler_address = 0;
+        env.escape_address = 12;
+        env.halt_at = 10;
+
+        jit.SetPC(0);
+        jit.SetRegister(2, DispatchLoopEnv::table_address);
+        CheckedRun([&]() { jit.Run(); });
+        CHECK(!env.overran);
+        CHECK(env.reads == 10);
+        CHECK(jit.GetPC() == 8);  // halted at the MSR's dispatch, not one block later at the BR
+    }
+
+    SECTION("cycle counting") {
+        DispatchLoopEnv env;
+        A64::Jit jit{DispatchLoopConfig(env, true)};
+        env.jit = &jit;
+
+        oaknut::VectorCodeGenerator code{env.code_mem, nullptr};
+        code.LDR(X0, X2);  // 0
+        code.BR(X0);
+        code.BRK(0);       // 8
+        env.handler_address = 0;
+        env.escape_address = 8;
+        env.ticks_left = 100;  // each time round costs at least one
+
+        jit.SetPC(0);
+        jit.SetRegister(2, DispatchLoopEnv::table_address);
+        CheckedRun([&]() { jit.Run(); });
+        CHECK(!env.overran);
+        CHECK(env.reads <= 100);
+        CHECK(jit.GetPC() == 0);
+    }
+}

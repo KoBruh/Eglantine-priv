@@ -12,7 +12,8 @@ namespace Dynarmic::A64 {
 
 // Halt checks (HaltExecution) go on backward edges only: every loop jumps backward somewhere, so
 // each iteration still checks, while the forward edges of ifs and loop exits jump straight to
-// the next block. Half a billion blocks a second end in a branch in some games.
+// the next block. Half a billion blocks a second end in a branch in some games. An indirect branch
+// (BR, BLR), which may go either way, is checked where the backend dispatches it.
 static IR::Term::LeafTerminal LinkTo(TranslatorVisitor& v, u64 target) {
     const IR::LocationDescriptor location = v.ir.current_location->SetPC(target);
     if (target <= v.ir.PC()) {
