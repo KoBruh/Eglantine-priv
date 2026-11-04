@@ -109,21 +109,17 @@ miss the 120 fps slot (over 9 ms in `EDEN_NX2_FRAME_LOG`), are what PGO lowers.
 
 ## The profile in the repository
 
-- Trained on `dev` at ea3ae74a75 with MSYS2's clang and `llvm-profdata` 23.1.4, configured as
-  the release builds are now (`v3` preset, ThinLTO). The previous profile was trained at 79214e383b,
-  173 commits earlier.
-- 8 runs (four scenarios, docked and handheld), 1,271 s of play, with the `120 FPS` mod. 3.7 MB;
-  13,999 of the 53,843 instrumented functions ran.
+- Trained on `dev` after the third upstream nx2 merge (the code of 351ef46ae8) with MSYS2's clang
+  and `llvm-profdata` 23.1.4, configured as the release builds are (`v3` preset, ThinLTO). The
+  previous profile was trained at ea3ae74a75, before that merge.
+- 8 runs (four scenarios, docked and handheld), 1,244 s of play at the game's own 60 FPS (no FPS
+  mod), from a portable user folder. 3.7 MB; 14,003 of the 53,863 instrumented functions ran.
 - A MinGW `-fprofile-use` build in another directory, configured as the release (`v3`, ThinLTO):
-  2 functions with a hash mismatch, both cold library templates (a `boost::algorithm` string
-  search and an `nlohmann::json` constructor); 44,624 functions have no profile and are built as
-  without PGO. The same profile in a build without `v3` and LTO: 5 mismatches.
-- What it replaced: the previous profile against this code had 78 mismatched functions, among them
-  the GPU thread's hottest (`Tegra::DmaPusher::ProcessCommands`, 3.5 billion counts discarded; the
-  graphics pipeline's configure function, 1.7 billion; `Maxwell3D::Front`, 1.1 billion;
-  `ShaderCache::RefreshStages`; `GraphicsPipeline::Next`; `Kernel::Svc::Call`), and 51,017
-  functions without a profile.
-- Against the previous profile, in the earlier release configuration (no `v3`, no LTO),
-  `pokopia_walk` docked and uncapped with the `120 FPS` mod, alternating runs: in-world frames over
-  9 ms 377 → 347 (of 7,500), CPU per world frame 25.4 → 24.2 ms (all threads but the timer),
-  1% low 98.3 → 99.8 fps; the mean stays at the game's 120 fps.
+  2 functions with a hash mismatch, the same cold library templates as before (an
+  `nlohmann::json` constructor, reported in five files, and a `boost::algorithm` string search);
+  44,636 functions have no profile and are built as without PGO.
+- Pokopia in the world, release builds, `240 FPS` mod with FPS Limit 240 and VSync off, a fixed
+  walk (95-190 s): the merged code with the previous profile 169.8 fps (3 runs) against `dev`'s
+  181.4 (4); with this profile 181.7 (3), against 185.1 for `dev` in the runs alternating with
+  them (1.8% under). The old profile had gone stale in code the merge changed, the draw path
+  among it (60% more time per draw in the profiler).
