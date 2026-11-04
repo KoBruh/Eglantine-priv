@@ -169,6 +169,21 @@ NpadIdType HIDCore::GetLastActiveController() const {
     return last_active_controller;
 }
 
+void HIDCore::SetNmouseInUse(bool in_use) {
+    nmouse_in_use = in_use;
+}
+
+bool HIDCore::IsNmouseInUse() const {
+    if (!nmouse_in_use) {
+        return false;
+    }
+    // Pokemon Pokopia opens the mouse buffer at boot with any controller, but only Joy-Cons
+    // are a mouse: with player 1 on another controller, clicks stay clicks and the host cursor
+    // stays.
+    const auto style = GetEmulatedController(NpadIdType::Player1)->GetNpadStyleIndex();
+    return style == NpadStyleIndex::JoyconDual || style == NpadStyleIndex::JoyconRight;
+}
+
 void HIDCore::EnableAllControllerConfiguration() {
     player_1->EnableConfiguration();
     player_2->EnableConfiguration();

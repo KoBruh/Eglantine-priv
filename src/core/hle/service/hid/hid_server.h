@@ -286,7 +286,10 @@ private:
     Result NativeInputCommand3111(AppletResourceUserId aruid);
     Result SetNativeInputFlags3112(u32 flags, AppletResourceUserId aruid);
     Result SetNativeInputFlags3113(u32 flags, AppletResourceUserId aruid);
-    Result NativeInputCommand3131(AppletResourceUserId aruid);
+    Result InitializeNmouse(u8 mode, u32 parameter0, u32 parameter1, u32 parameter2,
+                            ClientAppletResourceUserId aruid, u64 size,
+                            InCopyHandle<Kernel::KTransferMemory> memory);
+    Result FinalizeNmouse(AppletResourceUserId aruid);
     Result SetNativeInputParameters(u32 first, u32 second, AppletResourceUserId aruid);
     Result GetNativeInputState3133(Out<u64> out_state, AppletResourceUserId aruid);
     Result SetNativeInputEnabled3135(u8 enabled, AppletResourceUserId aruid);

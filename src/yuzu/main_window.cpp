@@ -5078,12 +5078,18 @@ void MainWindow::HideMouseCursor() {
 }
 
 void MainWindow::ShowMouseCursor() {
-    render_window->unsetCursor();
+    render_window->SetCursorHidden(false);
     if (QtCommon::emu_thread != nullptr && UISettings::values.hide_mouse)
         mouse_hide_timer.start();
 }
 
 void MainWindow::OnMouseActivity() {
+    // A game reading the Switch 2 mouse draws its own pointer: the host one would be a second
+    // cursor.
+    if (QtCommon::system->HIDCore().IsNmouseInUse()) {
+        render_window->SetCursorHidden(true);
+        return;
+    }
     if (!Settings::values.mouse_panning) {
         ShowMouseCursor();
     }

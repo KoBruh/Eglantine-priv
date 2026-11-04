@@ -116,6 +116,10 @@ public:
 
     bool IsLoadingComplete() const;
 
+    /// The host pointer hidden (or shown again) over the render area. The renderer draws into a
+    /// native child window, and on Wayland the pointer takes that window's cursor, not this one's.
+    void SetCursorHidden(bool hidden);
+
     void CaptureScreenshot(const QString& screenshot_path);
 
     /**

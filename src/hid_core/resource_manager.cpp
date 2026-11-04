@@ -23,6 +23,7 @@
 #include "hid_core/resources/keyboard/keyboard.h"
 #include "hid_core/resources/mouse/debug_mouse.h"
 #include "hid_core/resources/mouse/mouse.h"
+#include "hid_core/resources/mouse/nmouse.h"
 #include "hid_core/resources/npad/npad.h"
 #include "hid_core/resources/palma/palma.h"
 #include "hid_core/resources/shared_memory_format.h"
@@ -154,6 +155,10 @@ std::shared_ptr<Mouse> ResourceManager::GetMouse() const {
     return mouse;
 }
 
+std::shared_ptr<Nmouse> ResourceManager::GetNmouse() const {
+    return nmouse;
+}
+
 std::shared_ptr<NPad> ResourceManager::GetNpad() const {
     return npad;
 }
@@ -230,6 +235,7 @@ void ResourceManager::InitializeHandheldConfig() {
 void ResourceManager::InitializeHidCommonSampler() {
     debug_pad = std::make_shared<DebugPad>(system.HIDCore());
     mouse = std::make_shared<Mouse>(system.HIDCore());
+    nmouse = std::make_shared<Nmouse>(system.HIDCore());
     debug_mouse = std::make_shared<DebugMouse>(system.HIDCore());
     keyboard = std::make_shared<Keyboard>(system.HIDCore());
     unique_pad = std::make_shared<UniquePad>(system.HIDCore());
@@ -504,6 +510,7 @@ void ResourceManager::UpdateNpad(std::chrono::nanoseconds ns_late) {
 void ResourceManager::UpdateMouseKeyboard(std::chrono::nanoseconds ns_late) {
     auto& core_timing = system.CoreTiming();
     mouse->OnUpdate(core_timing);
+    nmouse->OnUpdate(core_timing);
     debug_mouse->OnUpdate(core_timing);
     keyboard->OnUpdate(core_timing);
 }

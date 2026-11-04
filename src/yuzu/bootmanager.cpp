@@ -876,6 +876,21 @@ bool GRenderWindow::InitializeVulkan() {
     return true;
 }
 
+void GRenderWindow::SetCursorHidden(bool hidden) {
+    if (hidden) {
+        setCursor(QCursor(Qt::BlankCursor));
+    } else {
+        unsetCursor();
+    }
+    if (child_widget != nullptr) {
+        if (hidden) {
+            child_widget->setCursor(QCursor(Qt::BlankCursor));
+        } else {
+            child_widget->unsetCursor();
+        }
+    }
+}
+
 void GRenderWindow::InitializeNull() {
     child_widget = new NullRenderWidget(this);
     main_context = std::make_unique<DummyContext>();

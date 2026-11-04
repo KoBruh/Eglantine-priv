@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 
 #include "common/common_funcs.h"
@@ -61,6 +62,13 @@ public:
     /// Returns the npad id of the last controller that pushed a button
     NpadIdType GetLastActiveController() const;
 
+    /// An application reads the Switch 2 mouse (nn::hid::InitializeNmouse): the host mouse is
+    /// player 1's right Joy-Con mouse, it draws its own pointer, and the host mouse buttons are
+    /// that Joy-Con's ZR and R.
+    void SetNmouseInUse(bool in_use);
+    /// Also needs player 1 on Dual or right Joy-Cons, the controllers that are a mouse.
+    bool IsNmouseInUse() const;
+
     /// Sets all emulated controllers into configuring mode.
     void EnableAllControllerConfiguration();
 
@@ -91,6 +99,7 @@ public:
     Kernel::KernelCore& kernel;
     NpadStyleTag supported_style_tag{NpadStyleSet::All};
     NpadIdType last_active_controller{NpadIdType::Handheld};
+    std::atomic<bool> nmouse_in_use{false};
 };
 
 } // namespace Core::HID

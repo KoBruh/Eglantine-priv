@@ -76,6 +76,8 @@ add_library(hid_core STATIC
     resources/mouse/mouse.cpp
     resources/mouse/mouse.h
     resources/mouse/mouse_types.h
+    resources/mouse/nmouse.cpp
+    resources/mouse/nmouse.h
     resources/npad/npad.cpp
     resources/npad/npad.h
     resources/npad/npad_data.cpp

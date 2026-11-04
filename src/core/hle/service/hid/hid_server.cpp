@@ -28,6 +28,7 @@
 #include "hid_core/resources/debug_pad/debug_pad.h"
 #include "hid_core/resources/keyboard/keyboard.h"
 #include "hid_core/resources/mouse/mouse.h"
+#include "hid_core/resources/mouse/nmouse.h"
 #include "hid_core/resources/npad/npad.h"
 #include "hid_core/resources/npad/npad_types.h"
 #include "hid_core/resources/npad/npad_vibration.h"
@@ -262,7 +263,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {3113, C<&IHidServer::SetNativeInputFlags3113>, "SetNativeInputFlags3113"},
         {3114, &IHidServer::StubReplyZeroed, "Unknown3114"},
         {3130, &IHidServer::StubReplyZeroed, "Unknown3130"},
-        {3131, C<&IHidServer::NativeInputCommand3131>, "NativeInputCommand3131"},
+        {3131, C<&IHidServer::FinalizeNmouse>, "FinalizeNmouse"},
         {3132, C<&IHidServer::SetNativeInputParameters>, "SetNativeInputParameters"},
         {3133, C<&IHidServer::GetNativeInputState3133>, "GetNativeInputState3133"},
         {3134, &IHidServer::StubReplyZeroed, "Unknown3134"},
@@ -270,7 +271,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {3136, C<&IHidServer::SetNmouseButtonConfigJoyLeftJcms>, "SetNmouseButtonConfigJoyLeftJcms"},
         {3137, C<&IHidServer::SetNmouseButtonConfigJoyRightJcms>, "SetNmouseButtonConfigJoyRightJcms"},
         {3138, C<&IHidServer::SetMergedNmouseSourceTypes>, "SetMergedNmouseSourceTypes"},
-        {3139, C<&IHidServer::RegisterNativeInputMemory>, "RegisterNativeInputMemory"},
+        {3139, C<&IHidServer::InitializeNmouse>, "InitializeNmouse"},
         {3140, C<&IHidServer::SetNativeInputValues3140>, "SetNativeInputValues3140"},
         {3141, C<&IHidServer::SetNativeInputValues3141>, "SetNativeInputValues3141"},
         {3142, C<&IHidServer::SetNativeInputFloats3142>, "SetNativeInputFloats3142"},
@@ -1622,9 +1623,24 @@ Result IHidServer::SetNativeInputFlags3113(u32 flags, AppletResourceUserId aruid
     R_SUCCEED();
 }
 
-Result IHidServer::NativeInputCommand3131(AppletResourceUserId aruid) {
-    LOG_INFO(Service_HID, "(STUBBED) Native input command 3131, aruid={}", aruid.pid);
-    return CheckNativeInputAruid(aruid);
+// 3139, nn::hid's InitializeNmouse: the buffer the SDK reads the Joy-Con 2 mice from, with the
+// pointer range in parameter0 and parameter1. Nmouse fills it from the host mouse.
+Result IHidServer::InitializeNmouse(u8 mode, u32 parameter0, u32 parameter1, u32 parameter2,
+                                    ClientAppletResourceUserId aruid, u64 size,
+                                    InCopyHandle<Kernel::KTransferMemory> memory) {
+    R_TRY(RegisterNativeInputMemory(mode, parameter0, parameter1, parameter2, aruid, size, memory));
+    GetResourceManager()->GetNmouse()->Initialize(memory->GetSourceAddress(), size,
+                                                  memory->GetOwner(), static_cast<s32>(parameter0),
+                                                  static_cast<s32>(parameter1));
+    R_SUCCEED();
+}
+
+// 3131, nn::hid's FinalizeNmouse.
+Result IHidServer::FinalizeNmouse(AppletResourceUserId aruid) {
+    LOG_INFO(Service_HID, "Native Joy-Con mouse finalized, aruid={}", aruid.pid);
+    R_TRY(CheckNativeInputAruid(aruid));
+    GetResourceManager()->GetNmouse()->Finalize();
+    R_SUCCEED();
 }
 
 Result IHidServer::SetNativeInputParameters(u32 first, u32 second, AppletResourceUserId aruid) {

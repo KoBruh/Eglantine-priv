@@ -18,6 +18,7 @@
 #include "core/hle/kernel/k_readable_event.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "hid_core/frontend/emulated_controller.h"
+#include "hid_core/frontend/emulated_devices.h"
 #include "hid_core/hid_core.h"
 #include "hid_core/hid_result.h"
 #include "hid_core/hid_util.h"
@@ -463,6 +464,17 @@ void NPad::RequestPadStateUpdate(Kernel::KernelCore& kernel, u64 aruid, Core::HI
                                           btn::StickRRight | btn::StickRDown;
         pad_entry.npad_buttons.raw = button_state.raw & right_button_mask;
         pad_entry.r_stick = stick_state.right;
+
+        // The host mouse is this Joy-Con's mouse (Nmouse): its clicks are the Joy-Con's ZR and R.
+        if (npad_id == Core::HID::NpadIdType::Player1 && hid_core.IsNmouseInUse()) {
+            const auto mouse_buttons = hid_core.GetEmulatedDevices()->GetMouseButtons();
+            if (mouse_buttons.left) {
+                pad_entry.npad_buttons.raw |= btn::ZR;
+            }
+            if (mouse_buttons.right) {
+                pad_entry.npad_buttons.raw |= btn::R;
+            }
+        }
     }
 
     if (controller_type != Core::HID::NpadStyleIndex::JoyconRight) {
