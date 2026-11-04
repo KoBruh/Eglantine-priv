@@ -41,6 +41,8 @@ u32 TranslationReads::Ask(Shader::Environment& env, Query query, u32 arg0, u32 a
     }
     case Query::HasHLEMacroState:
         return env.HasHLEMacroState() ? 1 : 0;
+    case Query::CbufStorageBufferPointer:
+        return env.IsCbufStorageBufferPointer(arg0, arg1) ? 1 : 0;
     }
     UNREACHABLE_MSG("Unknown environment query {}", static_cast<u32>(query));
 }
@@ -52,13 +54,21 @@ TranslationReads::Properties TranslationReads::PropertiesOf(const Shader::Enviro
     if (env.ShaderStage() == Shader::Stage::Geometry) {
         result.gp_passthrough_mask = env.GpPassthroughMask();
     }
+    // Translation reads the mesh state of task and mesh programs only (translate_program.cpp).
+    if (env.ShaderStage() == Shader::Stage::Task || env.ShaderStage() == Shader::Stage::Mesh) {
+        result.mesh_registers = env.MeshRegisters();
+        std::memcpy(result.mesh_primitive_header.data(), &env.MeshPrimitiveHeader(),
+                    sizeof(result.mesh_primitive_header));
+    }
     result.workgroup_size = env.WorkgroupSize();
     result.stage = env.ShaderStage();
     result.start_address = env.StartAddress();
     result.texture_bound_buffer = env.TextureBoundBuffer();
+    result.surface_bound_buffer = env.SurfaceBoundBuffer();
     result.local_memory_size = env.LocalMemorySize();
     result.shared_memory_size = env.SharedMemorySize();
     result.is_proprietary_driver = env.IsProprietaryDriver();
+    result.is_native_program = env.IsNativeProgram();
     return result;
 }
 
@@ -93,6 +103,8 @@ RecordingEnvironment::RecordingEnvironment(Shader::Environment& inner_) : inner{
     // Shader::Environment's own accessors read these members.
     sph = inner->SPH();
     gp_passthrough_mask = inner->GpPassthroughMask();
+    mesh_registers = inner->MeshRegisters();
+    mesh_primitive_header = inner->MeshPrimitiveHeader();
     stage = inner->ShaderStage();
     start_address = inner->StartAddress();
     is_proprietary_driver = inner->IsProprietaryDriver();
@@ -107,6 +119,15 @@ u64 RecordingEnvironment::ReadInstruction(u32 address) {
 
 u32 RecordingEnvironment::TranslateProgramAddress(u32 address) const {
     return inner->TranslateProgramAddress(address);
+}
+
+// A fixed property, compared by TranslationReads::Matches.
+bool RecordingEnvironment::IsNativeProgram() const {
+    return inner->IsNativeProgram();
+}
+
+bool RecordingEnvironment::IsCbufStorageBufferPointer(u32 index, u32 offset) {
+    return AskAndRecord(TranslationReads::Query::CbufStorageBufferPointer, index, offset) != 0;
 }
 
 u32 RecordingEnvironment::ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) {
@@ -152,6 +173,10 @@ bool RecordingEnvironment::HasHLEMacroState() const {
 // Fixed properties, compared as a whole by TranslationReads::Matches.
 u32 RecordingEnvironment::TextureBoundBuffer() const {
     return inner->TextureBoundBuffer();
+}
+
+u32 RecordingEnvironment::SurfaceBoundBuffer() const {
+    return inner->SurfaceBoundBuffer();
 }
 
 u32 RecordingEnvironment::LocalMemorySize() const {
