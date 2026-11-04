@@ -941,8 +941,31 @@ Maxwell3D::FrontState& Maxwell3D::Front(Core::System& system, VideoCommon::GpuSp
         macro_params.clear();
         executing_macro = 0;
         front_macros = true;
+        split.AddFrontEngine([this] { FrontHandBack(); });
     }
     return *front;
+}
+
+void Maxwell3D::FrontHandBack() {
+    if (!front) {
+        return;
+    }
+    // The back has run everything the front sent, so the registers, the shadow RAM and the macro
+    // bind pointer here are the ones the front mirrored, and the macro code and bindings it wrote
+    // live in the shared macro engine. What only the front held is the macro call it was
+    // collecting parameters for: the rest of them now arrive here.
+    executing_macro = front->executing_macro;
+    macro_params = std::move(front->parameters);
+    // Those words were read from command lists the front already passed: nothing to read them
+    // again from (RefreshParameters skips segments without an address).
+    macro_segments.clear();
+    if (!macro_params.empty()) {
+        macro_segments.emplace_back(0, macro_params.size());
+    }
+    current_macro_dirty = false;
+    // A later start copies the state again: this copy goes stale as this thread runs.
+    front.reset();
+    front_macros = false;
 }
 
 void Maxwell3D::FrontWrite(VideoCommon::GpuSplit& split, FrontState& fs, u32 method,

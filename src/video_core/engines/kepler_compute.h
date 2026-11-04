@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "common/bit_field.h"
@@ -244,9 +245,6 @@ public:
     }
 
     bool IsNativeMode() const { return native_mode; }
-    /// Whether the program being dispatched is a pass of a game DLSS evaluation the game's own
-    /// network may draw: its matrix multiplies (tensor-core instructions) are then emulated.
-    [[nodiscard]] bool EmulatesNativeTensorPrograms() const;
 
     /// GPU thread split with macros on its front half (gpu_split.h, EDEN_NX2_SPLIT=2), called by
     /// the front instead of CallMethod for native compute engines: runs their macros and macro
@@ -265,12 +263,15 @@ private:
     MacroEngine& FrontMacroEngine(FrontState& state);
     std::span<u32> FrontMacroPositions(FrontState& state);
     void FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split, FrontState& state);
+    /// The split stopped (GpuSplit::AddFrontEngine): takes the macro state back from the front.
+    void FrontHandBack();
     std::unique_ptr<FrontState> front;
     bool front_macros{}; ///< The front owns the macro code and bindings (the back skips them)
 
     bool DispatchNativeCompute(const NativeQmdScheduler::Descriptor& descriptor);
     void ProcessNativeReportSemaphore(u32 argument);
     void DescribeNativeResources(const NativeQmdScheduler::Descriptor& qmd, bool always = false);
+    bool StartsDlssEvaluation();
     bool RememberDlssMotionVectors();
     bool IsDlssOutputPass();
     bool FinishDlssEvaluation();
@@ -301,6 +302,9 @@ private:
         std::unordered_set<GPUVAddr> pending;
         u32 dispatches{};
         u32 evaluations{};
+        /// Programs that failed the first pass's signature, with how many times in a row; only
+        /// checked now and then after a few (StartsDlssEvaluation).
+        std::unordered_map<GPUVAddr, u32> first_pass_misses;
         /// What the Graphics tab was last told.
         VideoCore::GameDlssStatus status{};
     } dlss_chain;

@@ -10,6 +10,8 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "common/common_types.h"
 
@@ -56,9 +58,18 @@ public:
     }
 
     /// Starts the back thread once the split is wanted (EDEN_NX2_SPLIT=1, a Switch 2 title,
-    /// commands read without cache flushes). Called by the front between commands.
+    /// commands read without cache flushes). Called by the front between commands. Also stops it
+    /// when the settings no longer allow it, and hands the engines back (AddFrontEngine).
     void MaybeStart(Core::System& system);
     void Stop();
+
+    /// An engine whose macros the front took over (Maxwell3D and KeplerCompute Front). When the
+    /// split stops mid-game, `hand_back` runs on the front once the back thread is gone, so the
+    /// engine takes back what its front copy held and runs on one thread again; the next start
+    /// copies it afresh. Front thread only.
+    void AddFrontEngine(std::function<void()>&& hand_back) {
+        hand_backs.push_back(std::move(hand_back));
+    }
 
     /// An engine method write, executed as DmaPusher would (method sink, ConsumeSink, call).
     /// `segment`: the engine's current_dma_segment for the call, when the engine reads it.
@@ -190,6 +201,8 @@ private:
     Tegra::Engines::EngineInterface* front_engine{};
     /// Semaphore releases sent to the back: address, write position after them.
     std::unordered_map<GPUVAddr, u64> sent_releases;
+    /// What gives the engines the front took over back their state (AddFrontEngine).
+    std::vector<std::function<void()>> hand_backs;
 
     // Back side.
     Tegra::Engines::EngineInterface* back_engine{};

@@ -107,8 +107,19 @@ void GpuSplit::MaybeStart(Core::System& system_) {
                          Settings::values.renderer_backend.GetValue() == Settings::RendererBackend::Vulkan;
     if (active && !allowed) {
         Drain();
+        // From here on this thread runs the engines' methods and macros itself. The engines the
+        // front took over get back what their front copies held (a macro call still collecting
+        // parameters, which compute macro code is current, where the compute binds go); without
+        // that they kept dropping macro uploads and binds and a cut macro call lost its first
+        // parameters. That happens once the back thread is gone, so nothing else touches them.
+        auto engines = std::move(hand_backs);
+        hand_backs.clear();
         Stop();
-        LOG_INFO(HW_GPU, "GPU thread split: stopped ({})", ab_off ? "A/B window" : "safe DMA or not Vulkan");
+        for (auto& hand_back : engines) {
+            hand_back();
+        }
+        LOG_INFO(HW_GPU, "GPU thread split: stopped ({}), {} engine(s) handed back to one thread",
+                 ab_off ? "A/B window" : "safe DMA or not Vulkan", engines.size());
         return;
     }
     if (!allowed) {
@@ -157,6 +168,11 @@ void GpuSplit::Stop() {
     publish_every = PublishEvery;
     front_engine = nullptr;
     back_engine = nullptr;
+    // At shutdown the engines go away with the session (and the ring may still hold their work):
+    // nothing to hand back.
+    hand_backs.clear();
+    // Positions in the old ring: after a restart they would look unfinished.
+    sent_releases.clear();
     front_macros = false;
     published.store(0, std::memory_order_relaxed);
     consumed.store(0, std::memory_order_relaxed);

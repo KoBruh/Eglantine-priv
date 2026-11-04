@@ -559,7 +559,7 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
     }
     // Fortune's Weave's DLSS evaluation runs from its first pass to the pass that writes the
     // upscaled image. Its inputs are kept from the first pass for a replacement upscale.
-    if (RememberDlssMotionVectors()) {
+    if (StartsDlssEvaluation()) {
         dlss_chain.active = true;
         dlss_chain.rejected = 0;
         dlss_chain.dispatches = 0;
@@ -647,11 +647,6 @@ VideoCore::GameDlssReason KeplerCompute::GameDlssBlocker() const {
         return GameDlssReason::Unsupported;
     }
     return GameDlssReason::None;
-}
-
-bool KeplerCompute::EmulatesNativeTensorPrograms() const {
-    return dlss_chain.active && dlss_chain.failure == VideoCore::GameDlssReason::None &&
-           GameDlssBlocker() == VideoCore::GameDlssReason::None;
 }
 
 // Checks the network's output against its input (on the GPU; the result arrives a few frames
@@ -855,13 +850,60 @@ void KeplerCompute::DescribeNativeResources(const NativeQmdScheduler::Descriptor
 
 std::atomic<u32> g_nx2_trace_draws_after_upscale{};
 
+namespace {
+/// The first DLSS pass's constant bank 0 reaches its motion vectors' handle (+0x290).
+constexpr u32 DLSS_FIRST_PASS_CBUF_SIZE = 0x294;
+/// Dispatches in a row a program may fail the first pass's signature before it is only checked
+/// now and then: a few, in case the real first pass ran once before its inputs were set up.
+constexpr u32 DLSS_FIRST_PASS_MISSES = 8;
+/// After that, one dispatch in this many is checked again: the same program can become the first
+/// pass later in the session (menus run it with other inputs first).
+constexpr u32 DLSS_FIRST_PASS_RECHECK = 64;
+/// Programs remembered as not a first pass at most: past that the memo starts over, in case
+/// programs come and go (one at a reused address is then checked again).
+constexpr size_t DLSS_FIRST_PASS_MEMO_SIZE = 4096;
+} // Anonymous namespace
+
+// Whether this dispatch is the first pass of a DLSS evaluation (RememberDlssMotionVectors). Every
+// native compute dispatch of every game comes here, and the check reads two handles and two
+// texture headers from guest memory: a program that keeps failing it is only checked again on
+// every DLSS_FIRST_PASS_RECHECK-th dispatch, so other programs cost a lookup per dispatch (none
+// when constant bank 0 is too small).
+bool KeplerCompute::StartsDlssEvaluation() {
+    if (launch_description.const_buffer_config[0].size.Value() < DLSS_FIRST_PASS_CBUF_SIZE) {
+        return false;
+    }
+    auto& misses = dlss_chain.first_pass_misses;
+    const GPUVAddr program = regs.code_loc.Address();
+    const auto known = misses.find(program);
+    if (known != misses.end() && known->second >= DLSS_FIRST_PASS_MISSES &&
+        ++known->second % DLSS_FIRST_PASS_RECHECK != 0) {
+        return false;
+    }
+    if (RememberDlssMotionVectors()) {
+        if (known != misses.end()) {
+            misses.erase(known);
+        }
+        return true;
+    }
+    if (known != misses.end()) {
+        ++known->second;
+    } else {
+        if (misses.size() >= DLSS_FIRST_PASS_MEMO_SIZE) {
+            misses.clear();
+        }
+        misses.emplace(program, 1U);
+    }
+    return false;
+}
+
 // Fire Emblem: Fortune's Weave's first DLSS pass (rejected, before the network) has the input colour
 // at cbuf0+0x278, its motion vectors (R16G16 float, the input's size) at +0x290, its depth (Z32, the
 // input's size) at +0x298 and this frame's camera jitter (x, y; input pixels, Halton bases 2 and 3
 // less 0.5) at +0x1b0.
 bool KeplerCompute::RememberDlssMotionVectors() {
     const auto& cbuf = launch_description.const_buffer_config[0];
-    if (cbuf.size.Value() < 0x294) return false;
+    if (cbuf.size.Value() < DLSS_FIRST_PASS_CBUF_SIZE) return false;
     const GPUVAddr cbuf_address = (GPUVAddr{cbuf.address_high} << 32) | cbuf.address_low;
     const auto image = [&](u32 offset) -> std::optional<Texture::TICEntry> {
         const u32 tic_index = memory_manager.Read<u32>(cbuf_address + offset) & 0xfffff;
@@ -997,10 +1039,12 @@ bool KeplerCompute::UpscaleInsteadOfNativeProgram() {
         .src_x1 = static_cast<s32>(input->Width()),
         .src_y1 = static_cast<s32>(input->Height()),
     };
-    // Debug: does the input hold anything? Download it once and count non-zero words.
+    // EDEN_NX2_SAMPLE_AT=<n> (debug): at the n-th fallback, download the input, the output and
+    // the 2560x1440 targets of one session of title 4 and count non-zero words. Off by default:
+    // the flushes stall the GPU thread, and the addresses mean nothing in other games.
     static const u32 sample_at = [] {
         const char* value = std::getenv("EDEN_NX2_SAMPLE_AT");
-        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 20U;
+        return value ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : ~0U;
     }();
     if (static u32 sampled{}; sampled++ == sample_at) {
         const auto sample = [&](const Texture::TICEntry& tic) {
@@ -1162,8 +1206,28 @@ KeplerCompute::FrontState& KeplerCompute::Front(VideoCommon::GpuSplit& split) {
         front->bind_pointer = native_bind_pointer;
         front->macro = native_macro;
         front_macros = true;
+        split.AddFrontEngine([this] { FrontHandBack(); });
     }
     return *front;
+}
+
+void KeplerCompute::FrontHandBack() {
+    if (!front) {
+        return;
+    }
+    // The back has run everything the front sent (native_registers match its copy) and the macro
+    // code and bindings the front wrote live in the shared macro engines. What only the front
+    // held: the macro call it was collecting parameters for, whether this channel uploaded its
+    // own compute macros (which code and bindings its macros use) and where the next bind goes.
+    native_executing_macro = front->executing_macro;
+    native_parameters = std::move(front->parameters);
+    native_compute_uploaded = front->compute_uploaded;
+    native_bind_pointer = front->bind_pointer;
+    native_macro = &FrontMacroEngine(*front);
+    native_macro_positions = FrontMacroPositions(*front);
+    // A later start copies the state again: this copy goes stale as this thread runs.
+    front.reset();
+    front_macros = false;
 }
 
 void KeplerCompute::FrontApply(FrontState& fs, u32 method, u32 argument) {
