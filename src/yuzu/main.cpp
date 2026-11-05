@@ -34,6 +34,7 @@
 #include <sys/types.h>
 #endif
 
+#include "common/fs/fs_paths.h"
 #include "common/logging.h"
 #include "common/x64/cpu_requirements.h"
 #include "main_window.h"
@@ -46,7 +47,6 @@
 #include <cstring>
 #include <QScreen>
 #include <windows.h>
-#include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
 
 // Crash report for the Qt frontend (eden-cli has EDEN_NX2_CRASH_DUMP): on an unhandled exception
