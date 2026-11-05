@@ -16,7 +16,7 @@ Use this when you need to review the logs to determine an issue or provide them 
 
 ###  Windows
 
-*By default the Eglantine folder is stored in your AppData `C:\Users\<USER>\AppData\Roaming\eden\log`, or the local **user** folder if you have a portable installation.*
+*By default the Eglantine folder is stored in your AppData `C:\Users\<USER>\AppData\Roaming\eglantine\log`, or the local **user** folder if you have a portable installation.*
 
 <aside>
 
@@ -27,7 +27,7 @@ Use this when you need to review the logs to determine an issue or provide them 
 
 ### Steam Deck
 
-*By default the Eglantine folder is stored in `/home/deck/.local/share/eden`, or the local **user** folder if you have a portable installation.*
+*By default the Eglantine folder is stored in `/home/deck/.local/share/eglantine`, or the local **user** folder if you have a portable installation.*
 
 <aside>
 

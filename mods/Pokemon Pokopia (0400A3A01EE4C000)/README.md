@@ -24,7 +24,7 @@ Pick the highest mod your monitor can show and your PC can keep up with. With VS
 ## Installing
 
 1. In Eglantine, right-click Pokémon Pokopia and choose **Open Mod Data Location**.
-   - On Windows that is `%APPDATA%\eden\load\0400A3A01EE4C000`; on Linux, `~/.local/share/eden/load/0400A3A01EE4C000`.
+   - On Windows that is `%APPDATA%\eglantine\load\0400A3A01EE4C000`; on Linux, `~/.local/share/eglantine/load/0400A3A01EE4C000`.
 2. Copy **one** of the four folders into it, for example `240 FPS`.
 3. Right-click the game, open **Properties → Add-Ons**, and check that exactly one FPS mod is enabled.
 4. In the same **Properties** window, open **Graphics** and set **FPS Limit (FPS mods)** to the mod's number, for example 240. It sits just under VSync Mode.

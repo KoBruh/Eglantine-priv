@@ -46,6 +46,7 @@
 #include <cstring>
 #include <QScreen>
 #include <windows.h>
+#include "common/fs/fs_paths.h"
 #include "common/fs/path_util.h"
 
 // Crash report for the Qt frontend (eden-cli has EDEN_NX2_CRASH_DUMP): on an unhandled exception
@@ -255,9 +256,9 @@ static void LoadNx2Switches(const char* argv0) {
         ParseSwitchFile(exe.parent_path() / "nx2_switches.txt", switches);
     }
     if (const char* appdata = std::getenv("APPDATA")) {
-        ParseSwitchFile(std::filesystem::path{appdata} / "eden" / "nx2_switches.txt", switches);
+        ParseSwitchFile(std::filesystem::path{appdata} / EDEN_DIR / "nx2_switches.txt", switches);
     } else if (const char* home = std::getenv("HOME")) {
-        ParseSwitchFile(std::filesystem::path{home} / ".config" / "eden" / "nx2_switches.txt",
+        ParseSwitchFile(std::filesystem::path{home} / ".config" / EDEN_DIR / "nx2_switches.txt",
                         switches);
     }
     for (const auto& [name, value] : switches) {

@@ -13,7 +13,7 @@
     3. Merges them with MSYS2's llvm-profdata into eglantine.profdata at the repository root.
 
     The runs render off-screen, never take focus and are muted, so the PC stays usable. They use
-    the normal emulator user folder (%APPDATA%\eden): keys, firmware and a Pokopia save that is
+    the normal emulator user folder (%APPDATA%\eglantine): keys, firmware and a Pokopia save that is
     past the intro must be there.
 
 .EXAMPLE
@@ -31,7 +31,7 @@ param(
     [string] $WorkDir = 'build\pgo-training',
     # The sdl2-config.ini the runs read their key mappings and settings from. Default: the one in
     # the emulator's user folder. With a portable user folder next to the instrumented eden-cli
-    # (<BuildDir>\bin\user) and its config here, the training leaves %APPDATA%\eden alone.
+    # (<BuildDir>\bin\user) and its config here, the training leaves %APPDATA%\eglantine alone.
     [string] $Config,
     [string] $Output = 'eglantine.profdata',
     [string[]] $Scenarios = @(

@@ -37,7 +37,7 @@ Some mods are designed for real Nintendo Switch consoles and refer to the **SD c
 The emulated SD card is located at:
 
 ```
-%AppData%\eden\sdmc
+%AppData%\eglantine\sdmc
 ```
 
 Example:
@@ -78,7 +78,7 @@ https://github.com/Raytwo/ARCropolis/releases/
 Extract the **`atmosphere`** folder into:
 
 ```
-%AppData%\eden\sdmc
+%AppData%\eglantine\sdmc
 ```
 
 This is the **emulated SD card directory**.
@@ -114,7 +114,7 @@ The `exefs` folder should be **next to the `romfs` folder**.
 Verify installation by checking that the following file exists:
 
 ```
-%AppData%\eden\sdmc\atmosphere\contents\01006A800016E000\exefs\subsdk9
+%AppData%\eglantine\sdmc\atmosphere\contents\01006A800016E000\exefs\subsdk9
 ```
 
 ---
@@ -166,7 +166,7 @@ sdmc\atmosphere\contents\01006A800016E000\exefs
 - Files were extracted to:
 
 ```
-%AppData%\eden\sdmc
+%AppData%\eglantine\sdmc
 ```
 
 ---
