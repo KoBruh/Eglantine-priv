@@ -52,7 +52,7 @@ our own code playing Pokémon Pokopia, and `train-profile.ps1` rebuilds it from 
 ## Training a new profile
 
 Needs Windows, [MSYS2](https://www.msys2.org) (`winget install MSYS2.MSYS2`, in `C:\msys64`),
-Python 3 on `PATH`, a Pokopia dump and the emulator's user folder (`%APPDATA%\eden`) with keys,
+Python 3 on `PATH`, a Pokopia dump and the emulator's user folder (`%APPDATA%\eglantine`) with keys,
 firmware and a Pokopia save past the intro. The scenarios load that save; the same runs are what
 `tools/nx2` scenarios always do, but a game can autosave while it runs.
 

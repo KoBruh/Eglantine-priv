@@ -80,10 +80,10 @@ def default_config():
         return portable
     if os.name == "nt":
         base = pathlib.Path(os.environ.get("APPDATA", pathlib.Path.home() / ".config"))
-        return base / "eden" / "config" / "sdl2-config.ini"
-    # Elsewhere the config is in XDG_CONFIG_HOME/eden, with no config subfolder.
+        return base / "eglantine" / "config" / "sdl2-config.ini"
+    # Elsewhere the config is in XDG_CONFIG_HOME/eglantine, with no config subfolder.
     base = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or pathlib.Path.home() / ".config")
-    return base / "eden" / "sdl2-config.ini"
+    return base / "eglantine" / "sdl2-config.ini"
 
 
 def key_map(config_path):

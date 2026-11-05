@@ -82,6 +82,7 @@ void ThreadManager::StartThread(VideoCore::RendererBase& renderer, Core::Fronten
     rasterizer = renderer.ReadRasterizer();
     thread = std::jthread([&](std::stop_token stop_token) {
         Common::SetCurrentThreadName("GPU");
+        VideoCommon::GpuSplit::MarkGpuThread();
         Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
         system.RegisterHostThread();
 

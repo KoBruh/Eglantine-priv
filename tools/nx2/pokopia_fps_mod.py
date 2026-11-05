@@ -41,7 +41,7 @@ The emulator presents at most once per refresh of the emulated display when the 
 on: set "Switch 2 Display Refresh Rate" (nx2_refresh_rate) to at least the target.
 
 Writes <load dir>/0400A3A01EE4C000/<fps> FPS/exefs/<build id>.ips; the default load dir is the
-emulator's (%APPDATA%\\eden\\load). Remove that folder, or disable the mod in the game's add-ons,
+emulator's (%APPDATA%\\eglantine\\load). Remove that folder, or disable the mod in the game's add-ons,
 to go back.
 """
 import argparse
@@ -192,7 +192,7 @@ def main():
     parser.add_argument("--poll-us", type=int, default=100,
                         help="main loop poll interval in microseconds (default 100; the game's is 1000)")
     parser.add_argument("--load-dir", type=pathlib.Path,
-                        default=pathlib.Path(os.environ.get("APPDATA", "~")) / "eden" / "load")
+                        default=pathlib.Path(os.environ.get("APPDATA", "~")) / "eglantine" / "load")
     args = parser.parse_args()
 
     nso = args.main.read_bytes()

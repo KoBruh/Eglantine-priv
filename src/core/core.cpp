@@ -19,6 +19,9 @@
 #include "common/settings_enums.h"
 #include "common/string_util.h"
 #include "core/arm/exclusive_monitor.h"
+#ifdef HAS_HYPERVISOR
+#include "core/arm/hypervisor/hv_vm.h"
+#endif
 #include "core/core.h"
 
 #include "launch_timestamp_cache.h"
@@ -340,6 +343,12 @@ struct System::Impl {
     void InitializeKernel(System& system) {
         LOG_DEBUG(Core, "initialized OK");
 
+        // ShutdownMainProcess releases it after a Switch 2 game; create it before the check below
+        // so an empty slot alone does not rerun the full Initialize.
+        if (!device_memory.has_value()) {
+            device_memory.emplace();
+        }
+
         // Setting changes may require a full system reinitialization (e.g., disabling multicore).
         ReinitializeIfNecessary(system);
         kernel.Initialize();
@@ -584,6 +593,18 @@ struct System::Impl {
 
         // Reset all glue registrations
         arp_manager.ResetAll();
+
+        // The guest RAM section keeps every page the game touched until it is destroyed (up to
+        // 12 GiB), and the next Load reuses it. Switch 2 only: Switch 1 keeps its behaviour.
+        // InitializeKernel creates it again, sized for the next game.
+        if (Settings::CurrentProgramIsSwitch2()) {
+#ifdef HAS_HYPERVISOR
+            // The hypervisor VM maps the section: unmap it first, so that a new section at the
+            // same address is mapped again rather than taken for the freed one.
+            Core::Hv::Vm::Get().ReleaseBacking();
+#endif
+            device_memory.reset();
+        }
 
         LOG_INFO(Core, "Shutdown complete");
         Common::Log::Flush();

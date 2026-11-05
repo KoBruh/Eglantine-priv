@@ -20,7 +20,7 @@
 <p align="center">
   <a href="https://github.com/notsapinho/Eglantine/releases"><img src="https://img.shields.io/github/v/release/notsapinho/Eglantine?include_prereleases&label=latest%20build" alt="Latest build"></a>
   <a href="./LICENSE.txt"><img src="https://img.shields.io/badge/license-GPLv3-blue" alt="License: GPLv3"></a>
-  <a href="https://discord.gg/jCCZ58VExk"><img src="https://img.shields.io/discord/1367654015269339267?color=5865F2&label=Eglantine&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://discord.gg/XkS5NVPTUY"><img src="https://img.shields.io/discord/1367654015269339267?color=5865F2&label=Eglantine&logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
@@ -78,7 +78,7 @@ See the [General Build Guide](./docs/Build.md). On Windows, [`tools/windows/buil
 
 ## Contributing
 
-Pull requests are welcome; open them against `dev`. Please keep changes focused and documented, and describe how you tested them. For development discussions, join the [Discord](https://discord.gg/jCCZ58VExk).
+Pull requests are welcome; open them against `dev`. Please keep changes focused and documented, and describe how you tested them. For development discussions, join the [Discord](https://discord.gg/XkS5NVPTUY).
 
 ## Credits
 

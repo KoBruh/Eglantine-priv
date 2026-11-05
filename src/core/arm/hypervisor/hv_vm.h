@@ -73,6 +73,9 @@ public:
                 size_t backing_size);
     /// Stops mirroring any page table: the application runs on another backend, for `reason`.
     void Detach(std::string reason);
+    /// Detaches and unmaps the DRAM backing, which the next Attach maps again: for a backing about
+    /// to be freed, whose address a new backing may reuse, which Attach would then not map.
+    void ReleaseBacking();
     /// Why the last application could not use this backend (empty if it could).
     std::string UnavailableReason() const;
     bool IsAttached(const Common::PageTable& table) const {
