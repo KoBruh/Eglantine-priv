@@ -38,6 +38,7 @@ add_executable(tests
     core/ncz_decompressor.cpp
     core/romfs_build_memory.cpp
     core/vfs_real_cache.cpp
+    core/hle/service/acc/private_identity.cpp
     core/ldn.cpp
     core/internal_network/socket_proxy.cpp
     core/nup_writer.cpp
@@ -114,6 +115,18 @@ add_executable(tests
     video_core/shader_attributes.cpp
     input_common/calibration_configuration_job.cpp
 )
+
+# The SSL backend's tests, which make their own certificates with OpenSSL, and the cert store's,
+# which needs the backend to take a private server CA
+if (TARGET OpenSSL::SSL)
+    target_sources(tests PRIVATE
+        core/hle/service/ssl/cert_store.cpp
+        core/hle/service/ssl/handshake.cpp
+        core/hle/service/ssl/private_server_ca.h
+        core/hle/service/ssl/server_pki.cpp
+    )
+    target_link_libraries(tests PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
 
 create_target_directory_groups(tests)
 

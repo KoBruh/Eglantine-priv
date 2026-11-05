@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/settings.h"
 #include "common/string_util.h"
 #include "common/swap.h"
 #include "core/core.h"
@@ -100,6 +101,43 @@ static bool IsBlockedHost(const std::string& host) {
     return std::any_of(
         blockedDomains.begin(), blockedDomains.end(),
         [&host](const std::string& domain) { return host.find(domain) != std::string::npos; });
+}
+
+/// Resolves a guest host name. In private-server mode, the configured names resolve to its gateway
+/// alone, even within the blocked domains, and malformed settings fail every lookup.
+static std::variant<std::vector<Network::AddrInfo>, Network::GetAddrInfoError> ResolveHost(
+    const std::string& host, const std::optional<std::string>& service) {
+    const Network::PrivateServerRouting routing = Network::RoutePrivateServerHost(host);
+    switch (routing.route) {
+    case Network::PrivateServerRoute::Misconfigured:
+        LOG_ERROR(Network, "Resolution of hostname {} failed: private-server mode is on, but {} is "
+                           "malformed", host, routing.malformed_setting);
+        return Network::GetAddrInfoError::FAIL;
+    case Network::PrivateServerRoute::Routed:
+        LOG_INFO(Network, "Resolving hostname {} to the private-server gateway", host);
+        return Network::GetAddressInfo(Network::IPv4AddressToString(routing.gateway), service);
+    case Network::PrivateServerRoute::Unrouted: {
+        // These settings were validated above as numeric IPv4 addresses, so resolving them
+        // cannot send a hostname to DNS. The socket policy still enforces destination ports.
+        const std::string& gateway = Settings::values.private_server_gateway.GetValue();
+        const std::string& relay = Settings::values.private_server_relay.GetValue();
+        const std::string_view relay_address = std::string_view{relay}.substr(0, relay.find(':'));
+        if (host == gateway || (!relay.empty() && host == relay_address)) {
+            return Network::GetAddressInfo(host, service);
+        }
+        LOG_WARNING(Network, "Resolution of hostname {} blocked in private-server mode", host);
+        return Network::GetAddrInfoError::AGAIN;
+    }
+    case Network::PrivateServerRoute::Disabled:
+        break;
+    }
+
+    // Prevent resolution of Nintendo servers
+    if (IsBlockedHost(host)) {
+        LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);
+        return Network::GetAddrInfoError::AGAIN;
+    }
+    return Network::GetAddressInfo(host, service);
 }
 
 static NetDbError GetAddrInfoErrorToNetDbError(GetAddrInfoError result) {
@@ -202,13 +240,7 @@ static std::pair<u32, GetAddrInfoError> GetHostByNameRequestImpl(HLERequestConte
     const std::string host = Common::StringFromBuffer(host_buffer);
     // For now, ignore options, which are in input buffer 1 for GetHostByNameRequestWithOptions.
 
-    // Prevent resolution of Nintendo servers
-    if (IsBlockedHost(host)) {
-        LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);
-        return {0, GetAddrInfoError::AGAIN};
-    }
-
-    auto res_v = Network::GetAddressInfo(host, /*service*/ std::nullopt);
+    auto res_v = ResolveHost(host, /*service*/ std::nullopt);
     if (auto* res = std::get_if<std::vector<Network::AddrInfo>>(&res_v)) {
         const std::vector<u8> data = SerializeAddrInfoAsHostEnt(*res, host);
         const u32 data_size = u32(data.size());
@@ -318,12 +350,6 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
     const auto host_buffer = ctx.ReadBuffer(0);
     const std::string host = Common::StringFromBuffer(host_buffer);
 
-    // Prevent resolution of Nintendo servers
-    if (IsBlockedHost(host)) {
-        LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);
-        return {0, GetAddrInfoError::AGAIN};
-    }
-
     std::optional<std::string> service = std::nullopt;
     if (ctx.CanReadBuffer(1)) {
         const std::span<const u8> service_buffer = ctx.ReadBuffer(1);
@@ -332,7 +358,7 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
 
     // Serialized hints are also passed in a buffer, but are ignored for now.
 
-    auto res_v = Network::GetAddressInfo(host, service);
+    auto res_v = ResolveHost(host, service);
     if (auto* res = std::get_if<std::vector<Network::AddrInfo>>(&res_v)) {
         const std::vector<u8> data = SerializeAddrInfo(*res, host);
         const u32 data_size = u32(data.size());
