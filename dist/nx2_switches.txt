@@ -37,6 +37,16 @@
 #EDEN_NX2_UBOREUSE=0
 # Keep ASTC textures uncompressed on GPUs without ASTC (default: re-compressed to BC3, 4x smaller).
 #EDEN_NX2_KEEP_ASTC=1
+# Size the temporary ASTC decode images exactly (=0) instead of rounding them up to a multiple of 64
+# texels so textures of nearly the same size share one.
+#EDEN_NX2_ASTC_SCRATCH_BUCKET=0
+# Submit after the ASTC decode (=0) instead of recording the decode and the BC encode in one submit.
+#EDEN_NX2_ASTC_ONE_SUBMIT=0
+# When the pool of finished ASTC decode images is full, drop the newest one (=0) instead of
+# evicting the least recently used.
+#EDEN_NX2_ASTC_POOL_V2=0
+# Only reuse an ASTC decode image of exactly the size asked for (=0), not a larger one.
+#EDEN_NX2_ASTC_POOL_FIT=0
 # Windows: never release command buffer recording memory back to the driver.
 #EDEN_NX2_COMMAND_POOL_RELEASE=0
 

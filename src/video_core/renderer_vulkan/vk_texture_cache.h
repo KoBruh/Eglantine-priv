@@ -270,6 +270,7 @@ public:
         u32 levels;
         u32 layers;
         u32 unused_frames;
+        u64 last_use;
     };
     std::deque<PendingTranscode> pending_transcodes;
     void ReclaimCompletedTranscodes();
@@ -283,6 +284,9 @@ public:
     u64 transcode_frames{};
     /// Decode images the GPU is done with, for the next texture of the same shape.
     std::vector<PendingTranscode> free_transcodes;
+
+    /// Orders the decode images by use, for evicting the least recently used free one.
+    u64 transcode_use_counter{};
 
     std::optional<BlockLinearUnswizzle3DPass> bl3d_unswizzle_pass;
     const Settings::ResolutionScalingInfo& resolution;
