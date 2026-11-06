@@ -43,6 +43,7 @@
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/framebuffer_clear_layers.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
+#include "video_core/renderer_vulkan/nx2_draw_census.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
@@ -405,6 +406,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
                 flags[VideoCommon::Dirty::VertexBuffer0 + binding] = true;
             }
         }
+    }
+    if (Nx2DrawCensus::Enabled()) [[unlikely]] {
+        Nx2DrawCensus::NoteVertexDirty(maxwell3d->dirty.flags[VideoCommon::Dirty::VertexBuffers]);
     }
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
@@ -780,6 +784,11 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const auto& draw_state = maxwell3d->draw_manager.draw_state;
         const u32 num_instances{instance_count};
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
+        if (Nx2DrawCensus::Enabled()) [[unlikely]] {
+            Nx2DrawCensus::RecordDraw(maxwell3d->regs, draw_params.num_vertices,
+                                      draw_params.num_instances, false,
+                                      Core::g_nx2_present_count.load(std::memory_order_relaxed));
+        }
 
         if (mesh_draw) {
             scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
@@ -819,6 +828,10 @@ void RasterizerVulkan::DrawIndirect() {
     const auto& params = maxwell3d->draw_manager.indirect_state;
     buffer_cache.SetDrawIndirect(&params);
     PrepareDraw(params.is_indexed, [this, &params] {
+        if (Nx2DrawCensus::Enabled()) [[unlikely]] {
+            Nx2DrawCensus::RecordDraw(maxwell3d->regs, 0, 0, true,
+                                      Core::g_nx2_present_count.load(std::memory_order_relaxed));
+        }
         if (mesh_draw) {
             // Indirect task/mesh draws would need vkCmdDrawMeshTasksIndirectEXT's layout.
             static bool logged{};
