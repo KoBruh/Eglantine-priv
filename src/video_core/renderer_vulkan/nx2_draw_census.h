@@ -60,6 +60,29 @@ struct PairHash {
     }
 };
 
+/// A viewport rectangle in pixels (x, y, width, height) and the scissor's (min_x, min_y, max_x,
+/// max_y; zero when the test is off).
+struct RectKey {
+    s32 x{};
+    s32 y{};
+    s32 width{};
+    s32 height{};
+    u32 scissor{};
+    u32 scissor_max{};
+
+    bool operator==(const RectKey&) const = default;
+};
+
+struct RectKeyHash {
+    size_t operator()(const RectKey& key) const noexcept {
+        u64 h = static_cast<u64>(static_cast<u32>(key.x)) << 32 | static_cast<u32>(key.y);
+        h ^= (static_cast<u64>(static_cast<u32>(key.width)) << 32 | static_cast<u32>(key.height)) *
+             0x9E3779B97F4A7C15ULL;
+        h ^= (u64{key.scissor} << 32 | key.scissor_max) * 0xC2B2AE3D27D4EB4FULL;
+        return static_cast<size_t>(h);
+    }
+};
+
 struct PassStats {
     u64 draws{};
     u64 mergeable{};
@@ -104,6 +127,13 @@ struct State {
     u64 longest_run{};
     std::unordered_map<PassKey, PassStats, PassKeyHash> passes;
     std::unordered_map<std::pair<u64, u64>, u64, PairHash> shaders;
+    // Depth-only square passes of 1024 pixels or more (shadow maps): draws by viewport and
+    // scissor, by shader pair, and their vertices and instances.
+    u64 shadow_draws{};
+    u64 shadow_vertices{};
+    u64 shadow_instances{};
+    std::unordered_map<RectKey, u64, RectKeyHash> shadow_rects;
+    std::unordered_map<std::pair<u64, u64>, u64, PairHash> shadow_shaders;
 };
 
 [[nodiscard]] inline State& Get() {
@@ -185,6 +215,35 @@ inline void Report(State& s, u64 frames) {
                  shaders[i].first.second, static_cast<double>(shaders[i].second) / f);
     }
     LOG_INFO(HW_GPU, "  {} render passes, {} shader pairs seen", passes.size(), shaders.size());
+    if (s.shadow_draws == 0) {
+        return;
+    }
+    LOG_INFO(HW_GPU,
+             "Draw census, shadow maps: {:.0f} draws/frame, avg {:.0f} vertices, avg {:.2f} "
+             "instances; {} viewport/scissor rectangles, {} shader pairs",
+             static_cast<double>(s.shadow_draws) / f,
+             static_cast<double>(s.shadow_vertices) / static_cast<double>(s.shadow_draws),
+             static_cast<double>(s.shadow_instances) / static_cast<double>(s.shadow_draws),
+             s.shadow_rects.size(), s.shadow_shaders.size());
+    std::vector<std::pair<RectKey, u64>> rects(s.shadow_rects.begin(), s.shadow_rects.end());
+    std::sort(rects.begin(), rects.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (size_t i = 0; i < rects.size() && i < 12; ++i) {
+        const RectKey& r = rects[i].first;
+        LOG_INFO(HW_GPU,
+                 "  shadow viewport {},{} {}x{} scissor {:#010x}..{:#010x}: {:.0f} draws/frame",
+                 r.x, r.y, r.width, r.height, r.scissor, r.scissor_max,
+                 static_cast<double>(rects[i].second) / f);
+    }
+    std::vector<std::pair<std::pair<u64, u64>, u64>> shadow_shaders(s.shadow_shaders.begin(),
+                                                                    s.shadow_shaders.end());
+    std::sort(shadow_shaders.begin(), shadow_shaders.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (size_t i = 0; i < shadow_shaders.size() && i < 10; ++i) {
+        LOG_INFO(HW_GPU, "  shadow shaders vs {:#x} ps {:#x}: {:.0f} draws/frame",
+                 shadow_shaders[i].first.first, shadow_shaders[i].first.second,
+                 static_cast<double>(shadow_shaders[i].second) / f);
+    }
 }
 
 /// After the pipeline configured, as the draw is recorded.
@@ -255,6 +314,26 @@ inline void RecordDraw(const Tegra::Engines::Maxwell3D::Regs& regs, u32 num_vert
     const u64 vs = (u64{regs.pipelines[1].reserved[0] & 0xff} << 32) | regs.pipelines[1].reserved[1];
     const u64 ps = (u64{regs.pipelines[5].reserved[0] & 0xff} << 32) | regs.pipelines[5].reserved[1];
     ++s.shaders[{vs, ps}];
+    if (depth_only && pass.width == pass.height && pass.width >= 1024) {
+        const auto& vt = regs.viewport_transform[0];
+        const float half_w = vt.scale_x < 0 ? -vt.scale_x : vt.scale_x;
+        const float half_h = vt.scale_y < 0 ? -vt.scale_y : vt.scale_y;
+        const auto& sc = regs.scissor_test[0];
+        RectKey rect{
+            .x = static_cast<s32>(vt.translate_x - half_w),
+            .y = static_cast<s32>(vt.translate_y - half_h),
+            .width = static_cast<s32>(half_w * 2.0f),
+            .height = static_cast<s32>(half_h * 2.0f),
+            .scissor = sc.enable != 0 ? (u32{sc.min_x.Value()} | u32{sc.min_y.Value()} << 16) : 0,
+            .scissor_max =
+                sc.enable != 0 ? (u32{sc.max_x.Value()} | u32{sc.max_y.Value()} << 16) : 0,
+        };
+        ++s.shadow_draws;
+        s.shadow_vertices += num_vertices;
+        s.shadow_instances += num_instances;
+        ++s.shadow_rects[rect];
+        ++s.shadow_shaders[{vs, ps}];
+    }
 
     s.last_pipeline = s.pipeline;
     s.last_pass = pass;
