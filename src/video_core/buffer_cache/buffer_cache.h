@@ -1651,8 +1651,11 @@ void BufferCache<P>::UpdateVertexBuffers() {
     }
     flags[Dirty::VertexBuffers] = false;
 
+    // Most draws change a few of the 32 streams: test the flag here rather than call for each.
     for (u32 index = 0; index < NUM_VERTEX_BUFFERS; ++index) {
-        UpdateVertexBuffer(index);
+        if (flags[Dirty::VertexBuffer0 + index]) {
+            UpdateVertexBuffer(index);
+        }
     }
 }
 
@@ -2247,6 +2250,38 @@ void BufferCache<P>::TouchBuffer(Buffer& buffer, BufferId buffer_id) noexcept {
 
 template <class P>
 bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size) {
+    // Every draw synchronizes its vertex, index and uniform buffers; with thousands of draws a
+    // frame most find nothing to upload. A range synchronized at the same CPU generation of its
+    // tracker region has had no CPU or cached CPU write since, so its scan would find no pages
+    // and change no bits: skip it. EDEN_NX2_SYNC_SKIP=0 always scans.
+    static const bool sync_skip = [] {
+        const char* value = std::getenv("EDEN_NX2_SYNC_SKIP");
+        return value == nullptr || value[0] != '0';
+    }();
+    const auto [region, generation] =
+        sync_skip ? memory_tracker.CpuGenerationOf(device_addr, size) : std::pair<const void*, u64>{};
+    if (region != nullptr && buffer.synced_region == region &&
+        buffer.synced_generation == generation && device_addr >= buffer.synced_begin &&
+        device_addr + size <= buffer.synced_end) {
+        return true;
+    }
+    const auto remember_clean = [&] {
+        if (region == nullptr) {
+            return;
+        }
+        const DAddr end = device_addr + size;
+        // Ranges clean at the same generation that touch or overlap join into one.
+        if (buffer.synced_region == region && buffer.synced_generation == generation &&
+            device_addr <= buffer.synced_end && buffer.synced_begin <= end) {
+            buffer.synced_begin = (std::min)(buffer.synced_begin, device_addr);
+            buffer.synced_end = (std::max)(buffer.synced_end, end);
+            return;
+        }
+        buffer.synced_region = region;
+        buffer.synced_generation = generation;
+        buffer.synced_begin = device_addr;
+        buffer.synced_end = end;
+    };
 #ifdef __ANDROID__
     const bool use_optimized_vertex_buffers = Settings::values.use_optimized_vertex_buffers.GetValue();
 #else
@@ -2282,6 +2317,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             largest_copy = (std::max)(largest_copy, range_size);
         };
         for_each_cpu_modified_range(add_upload);
+        remember_clean();
         if (total_size_bytes == 0) {
             return true;
         }
@@ -2312,6 +2348,7 @@ bool BufferCache<P>::SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 si
             total_size_bytes += range_size;
             largest_copy = (std::max)(largest_copy, range_size);
         });
+        remember_clean();
         if (total_size_bytes == 0) {
             return true;
         }

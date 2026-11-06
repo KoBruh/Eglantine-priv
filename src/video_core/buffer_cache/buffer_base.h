@@ -103,6 +103,14 @@ public:
 
     DAddr cpu_addr_cached = 0;
 
+    /// A range SynchronizeBuffer left without CPU-modified pages, and the memory tracker region
+    /// and CPU generation it was checked at: unchanged, the range needs no check (see
+    /// MemoryTrackerBase::CpuGenerationOf).
+    const void* synced_region = nullptr;
+    u64 synced_generation = 0;
+    DAddr synced_begin = 0;
+    DAddr synced_end = 0;
+
     /// Returns the offset relative to the given CPU address
     /// @pre IsInBounds returns true
     [[nodiscard]] u32 Offset(VAddr other_cpu_addr) const noexcept {

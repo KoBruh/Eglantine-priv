@@ -119,6 +119,9 @@ struct WordManager {
     /// @param dirty_addr    Base address to mark or unmark as modified
     /// @param size          Size in bytes to mark or unmark as modified
     void ChangeRegionState(Type type, bool enable, u64 dirty_addr, u64 size) noexcept {
+        if (enable && (type == Type::CPU || type == Type::CachedCPU)) {
+            ++cpu_generation;
+        }
         std::span<u64> state_words = Span(type);
         [[maybe_unused]] std::span<u64> untracked_words = Span(Type::Untracked);
         [[maybe_unused]] std::span<u64> cached_words = Span(Type::CachedCPU);
@@ -247,6 +250,7 @@ struct WordManager {
     }
 
     void FlushCachedWrites() noexcept {
+        ++cpu_generation;
         auto const cached_words = Span(Type::CachedCPU);
         auto const untracked_words = Span(Type::Untracked);
         auto const cpu_words = Span(Type::CPU);
@@ -321,6 +325,9 @@ struct WordManager {
     std::array<u64, size_t(Type::Max) * num_words> heap = {};
     DeviceTracker* tracker = nullptr;
     VAddr cpu_addr = 0;
+    /// Changes whenever pages here may become CPU-modified (CPU or cached CPU writes): a range
+    /// left clean at one generation is still clean at the same generation.
+    u64 cpu_generation = 1;
 };
 
 } // namespace VideoCommon
