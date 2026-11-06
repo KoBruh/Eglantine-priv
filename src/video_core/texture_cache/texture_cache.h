@@ -2199,12 +2199,19 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             std::vector<BufferImageCopy> copies;
             for (size_t i = 0; i < layers.size(); ++i) {
                 const GPUVAddr layer_addr = image.gpu_addr + u64{layers[i]} * image.info.layer_stride;
-                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
-                    swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride,
-                                 &swizzle_data_buffer);
-                auto layer_copies =
-                    UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
-                                   staging.mapped_span.subspan(i * layer_size, layer_size));
+                const std::span<u8> layer_out = staging.mapped_span.subspan(i * layer_size, layer_size);
+                auto layer_copies = [&] {
+                    if (layer_info.type == ImageType::Linear) {
+                        // Read straight from guest memory; no copy into swizzle_data first.
+                        return UnswizzleLinearImage(*gpu_memory, layer_addr, layer_info,
+                                                    image.info.layer_stride, layer_out);
+                    }
+                    Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
+                        swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride,
+                                     &swizzle_data_buffer);
+                    return UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
+                                          layer_out);
+                }();
                 for (BufferImageCopy copy : layer_copies) {
                     copy.buffer_offset += i * layer_size;
                     copy.image_subresource.base_layer = static_cast<s32>(layers[i]);
@@ -2273,6 +2280,23 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         return;
     }
 
+    if (image.info.type == ImageType::Linear) {
+        // A linear image is read straight from guest memory into its destination: copying it
+        // into swizzle_data first, as below, read it twice (3% of the split's back thread with
+        // Pokopia's town in view).
+        if (True(image.flags & ImageFlagBits::Converted)) {
+            unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
+            auto copies = UnswizzleLinearImage(*gpu_memory, gpu_addr, image.info,
+                                               image.guest_size_bytes, unswizzle_data_buffer);
+            ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
+            image.UploadMemory(staging, copies);
+        } else {
+            const auto copies = UnswizzleLinearImage(*gpu_memory, gpu_addr, image.info,
+                                                     image.guest_size_bytes, mapped_span);
+            image.UploadMemory(staging, copies);
+        }
+        return;
+    }
     Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
         *gpu_memory, gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
     if (True(image.flags & ImageFlagBits::Converted)) {

@@ -850,6 +850,32 @@ bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config
     return gpu_memory.GpuToCpuAddress(address, guest_size_bytes).has_value();
 }
 
+boost::container::small_vector<BufferImageCopy, 16> UnswizzleLinearImage(
+    Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
+    size_t guest_size_bytes, std::span<u8> output) {
+    const u32 bpp_log2 = BytesPerBlockLog2(info.format);
+    const Extent2D tile_size = DefaultBlockSize(info.format);
+    const Extent3D size = info.size;
+    ASSERT(output.size_bytes() >= guest_size_bytes);
+    gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), guest_size_bytes);
+
+    ASSERT((info.pitch >> bpp_log2) << bpp_log2 == info.pitch);
+    return {{
+        .buffer_offset = 0,
+        .buffer_size = guest_size_bytes,
+        .buffer_row_length = info.pitch * tile_size.width >> bpp_log2,
+        .buffer_image_height = size.height,
+        .image_subresource =
+            {
+                .base_level = 0,
+                .base_layer = 0,
+                .num_layers = 1,
+            },
+        .image_offset = {0, 0, 0},
+        .image_extent = size,
+    }};
+}
+
 boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::MemoryManager& gpu_memory,
                                                                    GPUVAddr gpu_addr,
                                                                    const ImageInfo& info,
@@ -861,24 +887,7 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
     const Extent3D size = info.size;
 
     if (info.type == ImageType::Linear) {
-        ASSERT(output.size_bytes() >= guest_size_bytes);
-        gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), guest_size_bytes);
-
-        ASSERT((info.pitch >> bpp_log2) << bpp_log2 == info.pitch);
-        return {{
-            .buffer_offset = 0,
-            .buffer_size = guest_size_bytes,
-            .buffer_row_length = info.pitch * tile_size.width >> bpp_log2,
-            .buffer_image_height = size.height,
-            .image_subresource =
-                {
-                    .base_level = 0,
-                    .base_layer = 0,
-                    .num_layers = 1,
-                },
-            .image_offset = {0, 0, 0},
-            .image_extent = size,
-        }};
+        return UnswizzleLinearImage(gpu_memory, gpu_addr, info, guest_size_bytes, output);
     }
     const LevelInfo level_info = MakeLevelInfo(info);
     const s32 num_layers = info.resources.layers;

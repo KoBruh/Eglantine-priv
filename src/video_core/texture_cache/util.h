@@ -103,6 +103,12 @@ void ExecuteUnswizzlePlan(Tegra::MemoryManager& gpu_memory, const UnswizzlePlan&
     Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
     std::span<const u8> input, std::span<u8> output);
 
+/// UnswizzleImage for a linear image: copies its `guest_size_bytes` straight from guest memory
+/// into `output`. Needs no copy of the guest data beforehand.
+[[nodiscard]] boost::container::small_vector<BufferImageCopy, 16> UnswizzleLinearImage(
+    Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
+    size_t guest_size_bytes, std::span<u8> output);
+
 /// Unswizzles only the blocks of a 2D block-linear image that overlap `dirty_ranges` (sorted,
 /// non-overlapping [begin, end) byte offsets from the image start) into `output`. Returns no copies
 /// when the image layout is not one this handles; the caller then uploads the whole image.
