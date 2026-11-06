@@ -567,8 +567,19 @@ void TextureCache<P>::TickFrame() {
     TickAsyncDecode();
     TickAsyncUnswizzle();
     if (frame_tick % 600 == 0 && !uploaded_ranges.empty()) {
-        for (const auto& [address, size] : uploaded_ranges) {
-            device_memory.HintCold(address, size);
+        // A range uploaded more than once in the window is being rewritten (Pokopia re-uploads
+        // three 4 MiB textures every 3 frames): it is hot, and hinting each upload cold took its
+        // pages out of the working set ~200 times a window just before the game wrote them again.
+        std::sort(uploaded_ranges.begin(), uploaded_ranges.end());
+        for (size_t i = 0; i < uploaded_ranges.size();) {
+            size_t next = i + 1;
+            while (next < uploaded_ranges.size() && uploaded_ranges[next] == uploaded_ranges[i]) {
+                ++next;
+            }
+            if (next - i == 1) {
+                device_memory.HintCold(uploaded_ranges[i].first, uploaded_ranges[i].second);
+            }
+            i = next;
         }
         uploaded_ranges.clear();
     }

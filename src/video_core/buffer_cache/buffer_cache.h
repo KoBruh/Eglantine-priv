@@ -111,10 +111,21 @@ void BufferCache<P>::TickFrame() {
     }
     runtime.TickFrame(slot_buffers);
     if (frame_tick % 600 == 0 && !uploaded_buffer_ranges.empty()) {
-        for (const auto& [address, size] : uploaded_buffer_ranges) {
-            device_memory.HintCold(address, size);
+        // As in TextureCache::TickFrame: a range uploaded more than once in the window is being
+        // rewritten, not cold.
+        auto& ranges = uploaded_buffer_ranges;
+        std::sort(ranges.begin(), ranges.end());
+        for (size_t i = 0; i < ranges.size();) {
+            size_t next = i + 1;
+            while (next < ranges.size() && ranges[next] == ranges[i]) {
+                ++next;
+            }
+            if (next - i == 1) {
+                device_memory.HintCold(ranges[i].first, ranges[i].second);
+            }
+            i = next;
         }
-        uploaded_buffer_ranges.clear();
+        ranges.clear();
     }
     if (static u64 frames{}; ++frames % 600 == 0) {
         u64 total{};
