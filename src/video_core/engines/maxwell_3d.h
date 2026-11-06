@@ -3232,6 +3232,13 @@ public:
         Tables tables{};
     } dirty;
 
+    /// Set by every register write that changes a value, except to registers the graphics
+    /// pipeline key never reads (pipeline_neutral_registers): the pipeline cache then looks the
+    /// pipeline up again; while it stays clear, the last pipeline still stands. The cache clears it.
+    bool pipeline_state_dirty{true};
+    /// The register that last set pipeline_state_dirty (EDEN_NX2_PIPELINE_SKIP=verify reports).
+    u32 pipeline_dirty_method{};
+
     DrawManager draw_manager;
 
     GPUVAddr GetMacroAddress(size_t index) const {
@@ -3274,6 +3281,15 @@ public:
 
 private:
     void InitializeRegisterDefaults();
+
+    /// Fills pipeline_neutral_registers.
+    void InitializePipelineNeutralRegisters();
+
+    /// Registers no part of the graphics pipeline key reads (FixedPipelineState::Refresh, the
+    /// vertex repack mask): draw parameters, buffer and pool addresses, constant buffer loads and
+    /// binds, uploads, semaphores. Shader program registers are here too: the pipeline cache
+    /// compares the stages' hashes itself. Writes to them leave pipeline_state_dirty alone.
+    std::bitset<Regs::NUM_REGS> pipeline_neutral_registers{};
 
     void ProcessMacro(Core::System& system, u32 method, const u32* base_start, u32 amount, bool is_last_call);
 
