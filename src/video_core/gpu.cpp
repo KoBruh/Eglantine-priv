@@ -151,6 +151,7 @@ struct GPU::Impl {
         gpu_thread.InvalidateReadbackCache();
         const u64 fence = ++last_sync_fence;
         sync_requests.emplace_back(std::forward<Func>(action));
+        pending_sync_requests.fetch_add(1, std::memory_order_release);
         return fence;
     }
 
@@ -172,10 +173,17 @@ struct GPU::Impl {
 
     /// Tick pending requests within the GPU.
     void TickWork() {
+        // Called on every draw (0.7% of the split's back thread taking the mutex to find nothing).
+        // A request queued just after this check runs on the next tick, as one queued just after
+        // the mutex was released did.
+        if (pending_sync_requests.load(std::memory_order_acquire) == 0) {
+            return;
+        }
         std::unique_lock lck{sync_request_mutex};
         while (!sync_requests.empty()) {
             auto request = std::move(sync_requests.front());
             sync_requests.pop_front();
+            pending_sync_requests.fetch_sub(1, std::memory_order_relaxed);
             sync_request_mutex.unlock();
             request();
             current_sync_fence.fetch_add(1, std::memory_order_release);
@@ -397,6 +405,9 @@ struct GPU::Impl {
     std::condition_variable sync_cv;
 
     std::list<std::function<void()>> sync_requests;
+    /// sync_requests.size(), read without the mutex: TickWork runs on every draw and the queue
+    /// is almost always empty.
+    std::atomic<u32> pending_sync_requests{};
     std::atomic<u64> current_sync_fence{};
     u64 last_sync_fence{};
     std::mutex sync_request_mutex;
