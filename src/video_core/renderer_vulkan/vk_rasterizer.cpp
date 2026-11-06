@@ -640,6 +640,50 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
             return;
         }
     }
+    // Pokopia's 2048x2048 shadow atlas holds two cascades side by side: the near one in the upper
+    // half, the far one in the lower half. Outside the house the far one takes ~1,050 of the
+    // frame's ~3,500 draws, and its shadows are mostly faded out where it is sampled: dropping its
+    // draws saves ~17% of the GPU thread with no visible change in town. Only draws whose viewport
+    // is exactly the lower half of a square depth-only target are dropped.
+    // EDEN_NX2_SHADOW_FAR=1 keeps them; =0 drops them for any title (experiments).
+    // EDEN_NX2_SHADOW_FAR_ALTERNATE=<n>: drop them only in every other window of n presents, to
+    // compare both in one run (same weather, time and place).
+    static const int far_shadow_mode = [] {
+        const char* const value = std::getenv("EDEN_NX2_SHADOW_FAR");
+        return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
+    }();
+    static const u64 far_shadow_alternate = [] {
+        const char* const value = std::getenv("EDEN_NX2_SHADOW_FAR_ALTERNATE");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
+    }();
+    constexpr u64 PokopiaProgramId = 0x0400A3A01EE4C000ULL;
+    const bool drop_far_shadows =
+        far_shadow_alternate != 0
+            ? (Core::g_nx2_present_count.load(std::memory_order_relaxed) / far_shadow_alternate) %
+                      2 ==
+                  1
+            : far_shadow_mode == 0 || (far_shadow_mode == -1 && program_id == PokopiaProgramId);
+    if (drop_far_shadows) {
+        const auto& regs = maxwell3d->regs;
+        const u32 size = regs.zeta_size.width;
+        if (regs.zeta_enable != 0 && size >= 1024 && size == regs.zeta_size.height) {
+            const u32 colors = regs.rt_control.count.Value();
+            bool color_written = false;
+            for (u32 i = 0; i < colors && i < 8; ++i) {
+                color_written |= regs.color_mask[i].raw != 0;
+            }
+            const auto& vt = regs.viewport_transform[0];
+            const float half_width = std::abs(vt.scale_x);
+            const float half_height = std::abs(vt.scale_y);
+            const float left = vt.translate_x - half_width;
+            const float top = vt.translate_y - half_height;
+            const float extent = static_cast<float>(size);
+            if (!color_written && left == 0.0f && top == extent / 2.0f &&
+                half_width * 2.0f == extent && half_height * 4.0f == extent) {
+                return;
+            }
+        }
+    }
     TraceWindowTarget(*maxwell3d, *gpu_memory, is_indexed ? "draw-indexed" : "draw",
                       is_indexed ? maxwell3d->draw_manager.draw_state.index_buffer.count
                                  : maxwell3d->draw_manager.draw_state.vertex_buffer.count);
