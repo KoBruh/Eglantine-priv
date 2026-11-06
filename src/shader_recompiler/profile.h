@@ -45,6 +45,8 @@ struct Profile {
     bool support_viewport_index_layer_non_geometry{};
     bool support_viewport_mask{};
     bool support_typeless_image_loads{};
+    /// Storage images may be declared with the extended formats (Rg8, R16, Rgba16 and so on).
+    bool support_storage_image_extended_formats{};
     bool support_demote_to_helper_invocation{};
     bool support_int64_atomics{};
     bool support_shared_int64_atomics{};

@@ -40,6 +40,9 @@ struct HostTranslateInfo {
     bool support_conditional_barrier{}; ///< True when the device supports barriers in conditional
                                         ///< control flow
     bool single_lane_geometry_subgroups{};
+    /// True when the device reads storage images without a declared format. Without it, typeless
+    /// image reads take the bound texture's format at translation (ImageDescriptor::pixel_format).
+    bool support_typeless_image_loads{};
 
     void ApplyDescriptorLimitPolicy() noexcept {
         if (min_ssbo_alignment == 0) {

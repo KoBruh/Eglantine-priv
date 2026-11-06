@@ -313,6 +313,10 @@ struct ImageDescriptor {
     /// Index in Info::handle_programs when the handle is computed at draw time (read from a
     /// storage buffer), ~0 when it is the constant buffer word.
     u32 handle_program{~0U};
+    /// The bound texture's format, for a typeless image the host cannot read without one
+    /// (HostTranslateInfo::support_typeless_image_loads): the backend declares the image with it.
+    TexturePixelFormat pixel_format{};
+    bool has_pixel_format{};
 
     auto operator<=>(const ImageDescriptor&) const = default;
 };

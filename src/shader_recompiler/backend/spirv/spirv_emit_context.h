@@ -69,6 +69,9 @@ struct ImageDefinition {
     Id pointer_type;
     u32 count;
     bool is_integer;
+    /// A typeless image declared with its bound texture's format (DeclaredImageFormat): reads
+    /// need no StorageImageReadWithoutFormat.
+    bool declared_format{};
 };
 
 struct UniformDefinitions {

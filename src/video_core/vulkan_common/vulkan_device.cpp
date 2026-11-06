@@ -547,7 +547,26 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         IsFormatSupported(VK_FORMAT_D24_UNORM_S8_UINT,
                           VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, FormatType::Optimal);
 
+    // Barriers in conditional control flow are removed on Intel's Windows driver (a workaround
+    // from yuzu). That lets shared-memory passes read stale data (Mario Kart World's black
+    // textures, upstream #541). EDEN_NX2_CONDITIONAL_BARRIERS=1 keeps them on every driver, =0
+    // removes them on every driver.
     supports_conditional_barriers = !is_intel_windows;
+    if (const char* value = std::getenv("EDEN_NX2_CONDITIONAL_BARRIERS")) {
+        supports_conditional_barriers = value[0] != '0';
+    }
+    // EDEN_NX2_NO_TYPELESS_LOADS=1 (debug): act as a device that cannot read storage images
+    // without a format, as Intel's Windows driver, to test that path on other GPUs.
+    if (std::getenv("EDEN_NX2_NO_TYPELESS_LOADS") != nullptr) {
+        features.features.shaderStorageImageReadWithoutFormat = VK_FALSE;
+    }
+    LOG_INFO(Render_Vulkan,
+             "Storage images: read without format {}, write without format {}, extended formats "
+             "{}; barriers in conditional control flow {}",
+             features.features.shaderStorageImageReadWithoutFormat ? "yes" : "no",
+             features.features.shaderStorageImageWriteWithoutFormat ? "yes" : "no",
+             features.features.shaderStorageImageExtendedFormats ? "yes" : "no",
+             supports_conditional_barriers ? "kept" : "removed");
 
     CollectPhysicalMemoryInfo();
     CollectToolingInfo();

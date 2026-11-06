@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <climits>
+#include <utility>
 
 #include <boost/container/static_vector.hpp>
 
@@ -15,6 +17,7 @@
 
 #include "common/common_types.h"
 #include "common/div_ceil.h"
+#include "common/logging.h"
 #include "shader_recompiler/backend/nvn_storage_descriptor.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
@@ -79,8 +82,107 @@ spv::ImageFormat GetImageFormat(ImageFormat format) {
     throw InvalidArgument("Invalid image format {}", format);
 }
 
+/// The SPIR-V format of a bound texture's storage view (the image's own format, see
+/// ImageView::StorageView), and whether it is one of the extended formats. Unknown for formats
+/// without an exact SPIR-V match: sRGB and BGRA views, and signed integers (integer images are
+/// declared unsigned here, and the format's signedness must match).
+std::pair<spv::ImageFormat, bool> PixelFormatToSpirv(TexturePixelFormat format) {
+    using F = spv::ImageFormat;
+    switch (format) {
+    case TexturePixelFormat::A8B8G8R8_UNORM:
+        return {F::Rgba8, false};
+    case TexturePixelFormat::A8B8G8R8_SNORM:
+        return {F::Rgba8Snorm, false};
+    case TexturePixelFormat::A8B8G8R8_UINT:
+        return {F::Rgba8ui, false};
+    case TexturePixelFormat::R16G16B16A16_FLOAT:
+        return {F::Rgba16f, false};
+    case TexturePixelFormat::R16G16B16A16_UINT:
+        return {F::Rgba16ui, false};
+    case TexturePixelFormat::R32G32B32A32_FLOAT:
+        return {F::Rgba32f, false};
+    case TexturePixelFormat::R32G32B32A32_UINT:
+        return {F::Rgba32ui, false};
+    case TexturePixelFormat::R32_FLOAT:
+        return {F::R32f, false};
+    case TexturePixelFormat::R32_UINT:
+        return {F::R32ui, false};
+    case TexturePixelFormat::R16G16B16A16_UNORM:
+        return {F::Rgba16, true};
+    case TexturePixelFormat::R16G16B16A16_SNORM:
+        return {F::Rgba16Snorm, true};
+    case TexturePixelFormat::R32G32_FLOAT:
+        return {F::Rg32f, true};
+    case TexturePixelFormat::R32G32_UINT:
+        return {F::Rg32ui, true};
+    case TexturePixelFormat::R16G16_FLOAT:
+        return {F::Rg16f, true};
+    case TexturePixelFormat::R16G16_UNORM:
+        return {F::Rg16, true};
+    case TexturePixelFormat::R16G16_SNORM:
+        return {F::Rg16Snorm, true};
+    case TexturePixelFormat::R16G16_UINT:
+        return {F::Rg16ui, true};
+    case TexturePixelFormat::R16_FLOAT:
+        return {F::R16f, true};
+    case TexturePixelFormat::R16_UNORM:
+        return {F::R16, true};
+    case TexturePixelFormat::R16_SNORM:
+        return {F::R16Snorm, true};
+    case TexturePixelFormat::R16_UINT:
+        return {F::R16ui, true};
+    case TexturePixelFormat::R8G8_UNORM:
+        return {F::Rg8, true};
+    case TexturePixelFormat::R8G8_SNORM:
+        return {F::Rg8Snorm, true};
+    case TexturePixelFormat::R8G8_UINT:
+        return {F::Rg8ui, true};
+    case TexturePixelFormat::R8_UNORM:
+        return {F::R8, true};
+    case TexturePixelFormat::R8_SNORM:
+        return {F::R8Snorm, true};
+    case TexturePixelFormat::R8_UINT:
+        return {F::R8ui, true};
+    case TexturePixelFormat::B10G11R11_FLOAT:
+        return {F::R11fG11fB10f, true};
+    case TexturePixelFormat::A2B10G10R10_UNORM:
+        return {F::Rgb10A2, true};
+    case TexturePixelFormat::A2B10G10R10_UINT:
+        return {F::Rgb10a2ui, true};
+    default:
+        return {F::Unknown, false};
+    }
+}
+
+/// The format a storage image is declared with. A typeless image is declared Unknown, unless the
+/// host cannot read without a format: then the bound texture's format, when SPIR-V has it.
+spv::ImageFormat DeclaredImageFormat(EmitContext& ctx, const ImageDescriptor& desc) {
+    if (desc.format != ImageFormat::Typeless || !desc.has_pixel_format ||
+        ctx.profile.support_typeless_image_loads) {
+        return GetImageFormat(desc.format);
+    }
+    const auto [format, extended] = PixelFormatToSpirv(desc.pixel_format);
+    if (format == spv::ImageFormat::Unknown) {
+        return format;
+    }
+    if (extended) {
+        if (!ctx.profile.support_storage_image_extended_formats) {
+            return spv::ImageFormat::Unknown;
+        }
+        ctx.AddCapability(spv::Capability::StorageImageExtendedFormats);
+    }
+    // Once per format: shows in a log that the host needed it, and for which formats.
+    static std::array<std::atomic<bool>, 256> logged{};
+    if (const size_t index = static_cast<size_t>(desc.pixel_format);
+        index < logged.size() && !logged[index].exchange(true)) {
+        LOG_INFO(Shader_SPIRV, "Typeless image reads of format {} declared with SPIR-V format {}",
+                 static_cast<u32>(desc.pixel_format), static_cast<u32>(format));
+    }
+    return format;
+}
+
 Id ImageType(EmitContext& ctx, const ImageDescriptor& desc, Id sampled_type) {
-    const spv::ImageFormat format{GetImageFormat(desc.format)};
+    const spv::ImageFormat format{DeclaredImageFormat(ctx, desc)};
     switch (desc.type) {
     case TextureType::Color1D:
         return ctx.TypeImage(sampled_type, spv::Dim::Dim1D, false, false, false, 2, format);
@@ -1593,6 +1695,8 @@ void EmitContext::DefineImages(const Info& info, u32& binding, u32& scaling_inde
             .pointer_type = pointer_type,
             .count = desc.count,
             .is_integer = desc.is_integer,
+            .declared_format = desc.format == ImageFormat::Typeless &&
+                               DeclaredImageFormat(*this, desc) != spv::ImageFormat::Unknown,
         });
         if (profile.supported_spirv >= 0x00010400) {
             interfaces.push_back(id);

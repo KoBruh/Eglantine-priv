@@ -741,7 +741,8 @@ Id EmitImageGradient(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, I
 
 Id EmitImageRead(EmitContext& ctx, IR::Inst* inst, const IR::Value& index, Id coords) {
     const auto info{inst->Flags<IR::TextureInstInfo>()};
-    if (info.image_format == ImageFormat::Typeless && !ctx.profile.support_typeless_image_loads) {
+    if (info.image_format == ImageFormat::Typeless && !ctx.profile.support_typeless_image_loads &&
+        (info.type == TextureType::Buffer || !ctx.images.at(info.descriptor_index).declared_format)) {
         LOG_WARNING(Shader_SPIRV, "Typeless image read not supported by host");
         return ctx.ConstantNull(ctx.U32[4]);
     }

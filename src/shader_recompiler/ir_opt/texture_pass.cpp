@@ -1078,6 +1078,10 @@ public:
         image_descriptors[index].is_written |= desc.is_written;
         image_descriptors[index].is_read |= desc.is_read;
         image_descriptors[index].is_integer |= desc.is_integer;
+        if (desc.has_pixel_format && !image_descriptors[index].has_pixel_format) {
+            image_descriptors[index].pixel_format = desc.pixel_format;
+            image_descriptors[index].has_pixel_format = true;
+        }
         return index;
     }
 
@@ -1589,7 +1593,7 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .handle_program = cbuf.handle_program,
                 });
             } else {
-                index = descriptors.Add(ImageDescriptor{
+                ImageDescriptor desc{
                     .type = flags.type,
                     .format = flags.image_format,
                     .is_written = is_written,
@@ -1600,7 +1604,16 @@ void TexturePass(Environment& env, IR::Program& program, const HostTranslateInfo
                     .count = count,
                     .size_shift = size_shift,
                     .handle_program = cbuf.handle_program,
-                });
+                };
+                // A host that cannot read images without a format (Intel on Windows) would read
+                // zeros from a typeless image: the backend declares the bound texture's format
+                // instead (Switch 2 image loads are all typeless, SULD.P).
+                if (is_read && flags.image_format == ImageFormat::Typeless &&
+                    !host_info.support_typeless_image_loads) {
+                    desc.pixel_format = ReadTexturePixelFormatCached(env, cbuf);
+                    desc.has_pixel_format = true;
+                }
+                index = descriptors.Add(desc);
             }
             break;
         }
