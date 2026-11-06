@@ -853,12 +853,16 @@ bool IsValidEntry(const Tegra::MemoryManager& gpu_memory, const TICEntry& config
 boost::container::small_vector<BufferImageCopy, 16> UnswizzleLinearImage(
     Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr, const ImageInfo& info,
     size_t guest_size_bytes, std::span<u8> output) {
+    ASSERT(output.size_bytes() >= guest_size_bytes);
+    gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), guest_size_bytes);
+    return LinearImageCopies(info, guest_size_bytes);
+}
+
+boost::container::small_vector<BufferImageCopy, 16> LinearImageCopies(const ImageInfo& info,
+                                                                      size_t guest_size_bytes) {
     const u32 bpp_log2 = BytesPerBlockLog2(info.format);
     const Extent2D tile_size = DefaultBlockSize(info.format);
     const Extent3D size = info.size;
-    ASSERT(output.size_bytes() >= guest_size_bytes);
-    gpu_memory.ReadBlockUnsafe(gpu_addr, output.data(), guest_size_bytes);
-
     ASSERT((info.pitch >> bpp_log2) << bpp_log2 == info.pitch);
     return {{
         .buffer_offset = 0,

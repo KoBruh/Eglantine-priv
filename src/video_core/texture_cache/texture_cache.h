@@ -2302,6 +2302,28 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
             ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
             image.UploadMemory(staging, copies);
         } else {
+            // Pokopia rewrites three 4 MiB linear textures in turn and each is uploaded again
+            // every 3 frames: the worker thread copies guest memory into the staging buffer,
+            // right before the image copy it records, instead of this thread (~2.5% of the
+            // split's back thread). EDEN_NX2_DEFER_UPLOADS=0 copies here.
+            if constexpr (requires(u8* p) {
+                              runtime.DeferGuestRead(p, device_memory, DAddr{}, size_t{});
+                          }) {
+                static const bool defer_uploads = [] {
+                    const char* const value = std::getenv("EDEN_NX2_DEFER_UPLOADS");
+                    return value == nullptr || value[0] != '0';
+                }();
+                constexpr size_t DeferMinBytes = 64_KiB;
+                if (defer_uploads && image.guest_size_bytes >= DeferMinBytes &&
+                    False(image.flags & ImageFlagBits::Sparse) &&
+                    mapped_span.size_bytes() >= image.guest_size_bytes) {
+                    runtime.DeferGuestRead(mapped_span.data(), device_memory, image.cpu_addr,
+                                           image.guest_size_bytes);
+                    const auto copies = LinearImageCopies(image.info, image.guest_size_bytes);
+                    image.UploadMemory(staging, copies);
+                    return;
+                }
+            }
             const auto copies = UnswizzleLinearImage(*gpu_memory, gpu_addr, image.info,
                                                      image.guest_size_bytes, mapped_span);
             image.UploadMemory(staging, copies);

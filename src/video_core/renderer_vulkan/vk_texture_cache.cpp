@@ -1274,6 +1274,15 @@ StagingBufferRef TextureCacheRuntime::UploadStagingBuffer(size_t size, bool defe
     return staging_buffer_pool.Request(size, MemoryUsage::Upload, deferred);
 }
 
+void TextureCacheRuntime::DeferGuestRead(u8* dst, Tegra::MaxwellDeviceMemoryManager& memory,
+                                         DAddr address, size_t size) {
+    // Runs when the worker records this chunk, before its commands are submitted: the copies
+    // recorded after it read the staging memory only once the GPU executes them.
+    scheduler.Record([dst, memory = &memory, address, size](vk::CommandBuffer) {
+        memory->ReadBlockUnsafe(address, dst, size);
+    });
+}
+
 StagingBufferRef TextureCacheRuntime::DownloadStagingBuffer(size_t size, bool deferred) {
     return staging_buffer_pool.Request(size, MemoryUsage::Download, deferred);
 }
