@@ -234,6 +234,8 @@ public:
     const Profile& profile;
     const RuntimeInfo& runtime_info;
     Stage stage{};
+    /// Info::requires_coherent_global_memory: barriers also order storage buffer memory.
+    bool requires_coherent_global_memory{};
 
     Id void_id{};
     Id U1{};

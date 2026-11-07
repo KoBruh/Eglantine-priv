@@ -429,32 +429,32 @@ U32 IREmitter::LaneId() {
     return Inst<U32>(Opcode::LaneId);
 }
 
-U32 IREmitter::LoadGlobalU8(const U64& address) {
-    return Inst<U32>(Opcode::LoadGlobalU8, address);
+U32 IREmitter::LoadGlobalU8(const U64& address, bool coherent) {
+    return Inst<U32>(Opcode::LoadGlobalU8, Flags{coherent}, address);
 }
 
-U32 IREmitter::LoadGlobalS8(const U64& address) {
-    return Inst<U32>(Opcode::LoadGlobalS8, address);
+U32 IREmitter::LoadGlobalS8(const U64& address, bool coherent) {
+    return Inst<U32>(Opcode::LoadGlobalS8, Flags{coherent}, address);
 }
 
-U32 IREmitter::LoadGlobalU16(const U64& address) {
-    return Inst<U32>(Opcode::LoadGlobalU16, address);
+U32 IREmitter::LoadGlobalU16(const U64& address, bool coherent) {
+    return Inst<U32>(Opcode::LoadGlobalU16, Flags{coherent}, address);
 }
 
-U32 IREmitter::LoadGlobalS16(const U64& address) {
-    return Inst<U32>(Opcode::LoadGlobalS16, address);
+U32 IREmitter::LoadGlobalS16(const U64& address, bool coherent) {
+    return Inst<U32>(Opcode::LoadGlobalS16, Flags{coherent}, address);
 }
 
-U32 IREmitter::LoadGlobal32(const U64& address) {
-    return Inst<U32>(Opcode::LoadGlobal32, address);
+U32 IREmitter::LoadGlobal32(const U64& address, bool coherent) {
+    return Inst<U32>(Opcode::LoadGlobal32, Flags{coherent}, address);
 }
 
-Value IREmitter::LoadGlobal64(const U64& address) {
-    return Inst<Value>(Opcode::LoadGlobal64, address);
+Value IREmitter::LoadGlobal64(const U64& address, bool coherent) {
+    return Inst<Value>(Opcode::LoadGlobal64, Flags{coherent}, address);
 }
 
-Value IREmitter::LoadGlobal128(const U64& address) {
-    return Inst<Value>(Opcode::LoadGlobal128, address);
+Value IREmitter::LoadGlobal128(const U64& address, bool coherent) {
+    return Inst<Value>(Opcode::LoadGlobal128, Flags{coherent}, address);
 }
 
 void IREmitter::WriteGlobalU8(const U64& address, const U32& value) {

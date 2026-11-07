@@ -410,6 +410,9 @@ struct Info {
     bool uses_atomic_s32_max{};
     bool uses_int64_bit_atomics{};
     bool uses_global_memory{};
+    /// Some global load must see other workgroups' stores (a Switch 2 LDG.CG): storage buffers
+    /// are declared Coherent and barriers order global memory too.
+    bool requires_coherent_global_memory{};
     /// Native global accesses whose pointer is chosen at run time: every storage buffer descriptor
     /// is a candidate and its bound length (not an NVN size word) limits the range.
     bool native_global_bounds{};
