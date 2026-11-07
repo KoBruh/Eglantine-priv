@@ -74,7 +74,8 @@ jobs:
         # crashing (src/common/x64/cpu_requirements.cpp). The aarch64 build keeps the default.
         include:
           - platform: linux-x86_64
-            runner: boat-large/from=eglantine-ci
+            # boat.dev is the upstream project's paid runner; this fork uses GitHub's own.
+            runner: ubuntu-24.04
             preset: v3
           - platform: windows-x86_64
             runner: windows-2022
@@ -208,6 +209,7 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON
             -DENABLE_UPDATE_CHECKER=ON
+            "-DEGLANTINE_UPDATE_REPO=${{ github.repository }}"
             "-DEGLANTINE_BUILD_TAG=build-${{ github.run_number }}"
             "-DEGLANTINE_BUILD_PLATFORM=${{ matrix.platform }}"
             -DUSE_DISCORD_PRESENCE=OFF
@@ -252,6 +254,7 @@ jobs:
             -DVulkanHeaders_FORCE_BUNDLED=ON \
             -DVulkanUtilityLibraries_FORCE_BUNDLED=ON \
             -DENABLE_UPDATE_CHECKER=ON \
+            "-DEGLANTINE_UPDATE_REPO=${{ github.repository }}" \
             "-DEGLANTINE_BUILD_TAG=build-${{ github.run_number }}" \
             "-DEGLANTINE_BUILD_PLATFORM=${{ matrix.platform }}" \
             -DUSE_DISCORD_PRESENCE=OFF \

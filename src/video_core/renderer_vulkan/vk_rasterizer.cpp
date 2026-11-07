@@ -642,10 +642,10 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     }
     // Pokopia's 2048x2048 shadow atlas holds two cascades side by side: the near one in the upper
     // half, the far one in the lower half. Outside the house the far one takes ~1,050 of the
-    // frame's ~3,500 draws, and its shadows are mostly faded out where it is sampled: dropping its
-    // draws saves ~17% of the GPU thread with no visible change in town. Only draws whose viewport
-    // is exactly the lower half of a square depth-only target are dropped.
-    // EDEN_NX2_SHADOW_FAR=1 keeps them; =0 drops them for any title (experiments).
+    // frame's ~3,500 draws; dropping them saves ~17% of the GPU thread but makes distant shadows
+    // vanish and pop in at the near cascade's edge, so it is off by default. Only draws whose
+    // viewport is exactly the lower half of a square depth-only target are dropped.
+    // EDEN_NX2_SHADOW_FAR=0 drops them (any title, opt-in speed hack); unset or =1 keeps them.
     // EDEN_NX2_SHADOW_FAR_ALTERNATE=<n>: drop them only in every other window of n presents, to
     // compare both in one run (same weather, time and place).
     static const int far_shadow_mode = [] {
@@ -656,13 +656,12 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const char* const value = std::getenv("EDEN_NX2_SHADOW_FAR_ALTERNATE");
         return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
     }();
-    constexpr u64 PokopiaProgramId = 0x0400A3A01EE4C000ULL;
     const bool drop_far_shadows =
         far_shadow_alternate != 0
             ? (Core::g_nx2_present_count.load(std::memory_order_relaxed) / far_shadow_alternate) %
                       2 ==
                   1
-            : far_shadow_mode == 0 || (far_shadow_mode == -1 && program_id == PokopiaProgramId);
+            : far_shadow_mode == 0;
     if (drop_far_shadows) {
         const auto& regs = maxwell3d->regs;
         const u32 size = regs.zeta_size.width;
