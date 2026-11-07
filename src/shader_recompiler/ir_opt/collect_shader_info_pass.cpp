@@ -120,6 +120,27 @@ void CheckCBufNVN(Info& info, IR::Inst& inst) {
 
 void VisitUsages(Info& info, IR::Inst& inst) {
     switch (inst.GetOpcode()) {
+    case IR::Opcode::LoadGlobalU8:
+    case IR::Opcode::LoadGlobalS8:
+    case IR::Opcode::LoadGlobalU16:
+    case IR::Opcode::LoadGlobalS16:
+    case IR::Opcode::LoadGlobal32:
+    case IR::Opcode::LoadGlobal64:
+    case IR::Opcode::LoadGlobal128:
+    case IR::Opcode::LoadStorageU8:
+    case IR::Opcode::LoadStorageS8:
+    case IR::Opcode::LoadStorageU16:
+    case IR::Opcode::LoadStorageS16:
+    case IR::Opcode::LoadStorage32:
+    case IR::Opcode::LoadStorage64:
+    case IR::Opcode::LoadStorage128:
+        // IREmitter::LoadGlobal32's `coherent`, kept by GlobalMemoryToStorageBufferPass.
+        info.requires_coherent_global_memory |= inst.Flags<bool>();
+        break;
+    default:
+        break;
+    }
+    switch (inst.GetOpcode()) {
     case IR::Opcode::CompositeConstructF16x2:
     case IR::Opcode::CompositeConstructF16x3:
     case IR::Opcode::CompositeConstructF16x4:

@@ -108,8 +108,17 @@ public:
             return directory;
         }
 
+        // Checked on every 3D engine method: a relaxed load once known, where a function-local
+        // static paid the thread-safe initialization check on every call (0.5% of the split's
+        // back thread).
         static bool RecordingConfigured() {
-            static const bool configured = !Directory().empty() || GpfifoCapture::Configured();
+            static constinit std::atomic<int> state{-1};
+            const int known = state.load(std::memory_order_relaxed);
+            if (known >= 0) [[likely]] {
+                return known != 0;
+            }
+            const bool configured = !Directory().empty() || GpfifoCapture::Configured();
+            state.store(configured ? 1 : 0, std::memory_order_relaxed);
             return configured;
         }
 

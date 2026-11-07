@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 
 #include "common/common_types.h"
 #include "common/logging.h"
@@ -1608,7 +1609,12 @@ Result IHidServer::NativeInputCommand3111(AppletResourceUserId aruid) {
 }
 
 Result IHidServer::SetNativeInputFlags3112(u32 flags, AppletResourceUserId aruid) {
-    LOG_INFO(Service_HID, "(STUBBED) Native input flags 3112={:#x}, aruid={}", flags, aruid.pid);
+    // Pokopia toggles these flags many times a second: log the first calls only.
+    static std::atomic<u32> logged_3112{};
+    if (logged_3112.fetch_add(1, std::memory_order_relaxed) < 8) {
+        LOG_INFO(Service_HID, "(STUBBED) Native input flags 3112={:#x}, aruid={}", flags,
+                 aruid.pid);
+    }
     R_TRY(CheckNativeInputAruid(aruid));
     R_UNLESS((flags & 0xf8) == 0, Result{0x285aca});
     R_UNLESS((flags & 0xfe00) == 0, Result{0x285cca});
@@ -1616,7 +1622,12 @@ Result IHidServer::SetNativeInputFlags3112(u32 flags, AppletResourceUserId aruid
 }
 
 Result IHidServer::SetNativeInputFlags3113(u32 flags, AppletResourceUserId aruid) {
-    LOG_INFO(Service_HID, "(STUBBED) Native input flags 3113={:#x}, aruid={}", flags, aruid.pid);
+    // Pokopia toggles these flags many times a second: log the first calls only.
+    static std::atomic<u32> logged_3113{};
+    if (logged_3113.fetch_add(1, std::memory_order_relaxed) < 8) {
+        LOG_INFO(Service_HID, "(STUBBED) Native input flags 3113={:#x}, aruid={}", flags,
+                 aruid.pid);
+    }
     R_TRY(CheckNativeInputAruid(aruid));
     R_UNLESS((flags & 0xf8) == 0, Result{0x285aca});
     R_UNLESS((flags & 0xfe00) == 0, Result{0x285cca});

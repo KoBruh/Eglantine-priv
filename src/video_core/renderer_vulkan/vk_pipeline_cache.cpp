@@ -1010,26 +1010,137 @@ u64 DiskPipelineHash(const GraphicsPipelineCacheKey& key, const Environments& en
 }
 } // Anonymous namespace
 
+namespace {
+/// EDEN_NX2_PIPELINE_SKIP: unset or 1 skips lookups nothing changed for, 0 never does, verify looks
+/// up anyway and reports what skipping would have done.
+int PipelineSkipMode() noexcept {
+    static constinit std::atomic<int> mode{-1};
+    const int known = mode.load(std::memory_order_relaxed);
+    if (known >= 0) [[likely]] {
+        return known;
+    }
+    const char* const value = std::getenv("EDEN_NX2_PIPELINE_SKIP");
+    int parsed = 1;
+    if (value != nullptr && value[0] == '0') {
+        parsed = 0;
+    } else if (value != nullptr && (value[0] == 'v' || value[0] == 'V')) {
+        parsed = 2;
+    }
+    mode.store(parsed, std::memory_order_relaxed);
+    if (parsed != 1) {
+        LOG_INFO(Render_Vulkan, "EDEN_NX2_PIPELINE_SKIP: {}", parsed == 0 ? "off" : "verify");
+    }
+    return parsed;
+}
+} // Anonymous namespace
+
 GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
     if (!RefreshStages(graphics_key.unique_hashes)) {
         current_pipeline = nullptr;
         current_pipeline_is_variant = false;
+        pipeline_skip.valid = false;
         return nullptr;
     }
-    graphics_key.state.Refresh(*maxwell3d, dynamic_features);
-
-    if (current_pipeline) {
-        GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
-        // A native pipeline translated for other storage buffer pointers binds the wrong buffers.
-        if (next && NativePointersMatch(*next)) {
-            // A transition always leads to a pipeline in graphics_cache.
-            current_pipeline_is_variant = current_pipeline_is_variant && next == current_pipeline;
-            current_pipeline = next;
-            current_pipeline->MarkUsed(use_seconds);
-            return BuiltPipeline(current_pipeline);
-        }
+    // Most draws keep the previous draw's pipeline state (~90% of Pokopia's). While no register
+    // the key reads has changed, nor the stages, topology, engine hint or channel, the key is the
+    // one current_pipeline was found for, and re-reading the state and comparing keys finds it
+    // again: return it as Next() would.
+    const int skip_mode = PipelineSkipMode();
+    Tegra::Engines::Maxwell3D& maxwell = *maxwell3d;
+    const auto topology = maxwell.draw_manager.draw_state.topology;
+    const bool same_inputs = skip_mode != 0 && pipeline_skip.valid && current_pipeline != nullptr &&
+                             pipeline_skip.pipeline == current_pipeline &&
+                             pipeline_skip.maxwell3d == maxwell3d &&
+                             pipeline_skip.topology == topology &&
+                             pipeline_skip.engine_state == maxwell.engine_state &&
+                             pipeline_skip.unique_hashes == graphics_key.unique_hashes;
+    const bool unchanged = same_inputs && !maxwell.pipeline_state_dirty;
+    if (unchanged && skip_mode == 1 && NativePointersMatch(*current_pipeline)) {
+        current_pipeline->MarkUsed(use_seconds);
+        return BuiltPipeline(current_pipeline);
     }
-    return CurrentGraphicsPipelineSlowPath();
+    std::optional<GraphicsPipelineCacheKey> before;
+    if (skip_mode == 2) [[unlikely]] {
+        before.emplace(graphics_key);
+    }
+    const bool dirty_only = same_inputs && maxwell.pipeline_state_dirty;
+    maxwell.pipeline_state_dirty = false;
+    graphics_key.state.Refresh(maxwell, dynamic_features);
+    if (before) [[unlikely]] {
+        VerifyPipelineSkip(unchanged, dirty_only, maxwell.pipeline_dirty_method, *before);
+    }
+
+    GraphicsPipeline* const pipeline = [&]() -> GraphicsPipeline* {
+        if (current_pipeline) {
+            GraphicsPipeline* const next{current_pipeline->Next(graphics_key)};
+            // A native pipeline translated for other storage buffer pointers binds the wrong
+            // buffers.
+            if (next && NativePointersMatch(*next)) {
+                // A transition always leads to a pipeline in graphics_cache.
+                current_pipeline_is_variant =
+                    current_pipeline_is_variant && next == current_pipeline;
+                current_pipeline = next;
+                current_pipeline->MarkUsed(use_seconds);
+                return BuiltPipeline(current_pipeline);
+            }
+        }
+        return CurrentGraphicsPipelineSlowPath();
+    }();
+    pipeline_skip = PipelineSkip{
+        .maxwell3d = maxwell3d,
+        .pipeline = current_pipeline,
+        .unique_hashes = graphics_key.unique_hashes,
+        .topology = topology,
+        .engine_state = maxwell.engine_state,
+        .valid = current_pipeline != nullptr && current_pipeline->Key() == graphics_key,
+    };
+    return pipeline;
+}
+
+void PipelineCache::VerifyPipelineSkip(bool would_skip, bool dirty_only, u32 dirty_method,
+                                       const GraphicsPipelineCacheKey& before) {
+    auto& stats = pipeline_skip_stats;
+    ++stats.lookups;
+    const bool same = before == graphics_key;
+    if (would_skip) {
+        ++stats.would_skip;
+        if (!same) {
+            ++stats.mismatches;
+            if (stats.mismatches <= 16) {
+                const auto* const old_bytes = reinterpret_cast<const u8*>(&before.state);
+                const auto* const new_bytes = reinterpret_cast<const u8*>(&graphics_key.state);
+                size_t first = 0;
+                while (first < sizeof(FixedPipelineState) && old_bytes[first] == new_bytes[first]) {
+                    ++first;
+                }
+                LOG_ERROR(Render_Vulkan,
+                          "Pipeline skip would have kept a stale key: pipeline state differs "
+                          "from byte {:#x} (no pipeline register written since the last lookup)",
+                          first);
+            }
+        }
+    } else if (dirty_only && same) {
+        ++stats.false_dirty;
+        ++stats.false_dirty_methods[dirty_method];
+    }
+    if ((stats.lookups & 0x3ffff) != 0) {
+        return;
+    }
+    const auto pct = [&](u64 part) {
+        return 100.0 * static_cast<double>(part) / static_cast<double>(stats.lookups);
+    };
+    LOG_INFO(Render_Vulkan,
+             "Pipeline skip (verify): {} lookups, {:.1f}% would skip, {} mismatches, {:.1f}% "
+             "looked up only for a register that changed nothing",
+             stats.lookups, pct(stats.would_skip), stats.mismatches, pct(stats.false_dirty));
+    std::vector<std::pair<u32, u64>> methods(stats.false_dirty_methods.begin(),
+                                             stats.false_dirty_methods.end());
+    std::sort(methods.begin(), methods.end(),
+              [](const auto& a, const auto& b) { return a.second > b.second; });
+    for (size_t i = 0; i < methods.size() && i < 16; ++i) {
+        LOG_INFO(Render_Vulkan, "  register {:#06x} (method {:#x}): {:.1f}% of lookups",
+                 methods[i].first * 4, methods[i].first, pct(methods[i].second));
+    }
 }
 
 bool PipelineCache::NativePointersMatch(const GraphicsPipeline& pipeline) const {

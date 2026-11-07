@@ -19,6 +19,7 @@
 
 #include "common/bit_field.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
+#include "video_core/renderer_vulkan/nx2_draw_census.h"
 #include "video_core/renderer_vulkan/pipeline_statistics.h"
 #include "video_core/renderer_vulkan/pipeline_stats.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
@@ -549,6 +550,16 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
     }
     ASSERT(views.size() == num_image_elements);
     ASSERT(samplers.size() == num_textures);
+    if (Nx2DrawCensus::Enabled()) [[unlikely]] {
+        boost::container::small_vector<u32, 64> handles;
+        for (const auto& view : views) {
+            handles.push_back(view.index);
+        }
+        for (const auto& sampler : samplers) {
+            handles.push_back(sampler.index);
+        }
+        Nx2DrawCensus::NoteHandles(this, handles.data(), handles.size());
+    }
     {
         Profile::Scope scope{Profile::Zone::FillImageViews};
         texture_cache.FillImageViews(std::span(views.data(), views.size()), false,
@@ -735,6 +746,12 @@ bool GraphicsPipeline::ConfigureImpl(bool is_indexed) {
 bool GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
                                      const RenderAreaPushConstant& render_area) {
     const void* const descriptor_data{guest_descriptor_queue.UpdateData()};
+    if (Nx2DrawCensus::Enabled()) [[unlikely]] {
+        Nx2DrawCensus::NotePayload(this, descriptor_data,
+                                   descriptor_data != nullptr
+                                       ? num_descriptor_entries * sizeof(DescriptorUpdateEntry)
+                                       : 0);
+    }
 
     VkDeviceSize descriptor_buffer_offset{};
     u32 descriptor_buffer_chunk{};

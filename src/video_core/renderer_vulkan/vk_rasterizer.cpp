@@ -43,6 +43,7 @@
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "video_core/renderer_vulkan/framebuffer_clear_layers.h"
 #include "video_core/renderer_vulkan/maxwell_to_vk.h"
+#include "video_core/renderer_vulkan/nx2_draw_census.h"
 #include "video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "video_core/renderer_vulkan/vk_descriptor_pool.h"
@@ -406,6 +407,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
             }
         }
     }
+    if (Nx2DrawCensus::Enabled()) [[unlikely]] {
+        Nx2DrawCensus::NoteVertexDirty(maxwell3d->dirty.flags[VideoCommon::Dirty::VertexBuffers]);
+    }
     if (Profile::Scope scope{Profile::Zone::Configure}; !pipeline->Configure(is_indexed)) {
         report_failure("configure failed");
         return;
@@ -636,6 +640,50 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
             return;
         }
     }
+    // Pokopia's 2048x2048 shadow atlas holds two cascades side by side: the near one in the upper
+    // half, the far one in the lower half. Outside the house the far one takes ~1,050 of the
+    // frame's ~3,500 draws, and its shadows are mostly faded out where it is sampled: dropping its
+    // draws saves ~17% of the GPU thread with no visible change in town. Only draws whose viewport
+    // is exactly the lower half of a square depth-only target are dropped.
+    // EDEN_NX2_SHADOW_FAR=1 keeps them; =0 drops them for any title (experiments).
+    // EDEN_NX2_SHADOW_FAR_ALTERNATE=<n>: drop them only in every other window of n presents, to
+    // compare both in one run (same weather, time and place).
+    static const int far_shadow_mode = [] {
+        const char* const value = std::getenv("EDEN_NX2_SHADOW_FAR");
+        return value == nullptr ? -1 : (value[0] == '0' ? 0 : 1);
+    }();
+    static const u64 far_shadow_alternate = [] {
+        const char* const value = std::getenv("EDEN_NX2_SHADOW_FAR_ALTERNATE");
+        return value != nullptr ? std::strtoull(value, nullptr, 10) : 0ULL;
+    }();
+    constexpr u64 PokopiaProgramId = 0x0400A3A01EE4C000ULL;
+    const bool drop_far_shadows =
+        far_shadow_alternate != 0
+            ? (Core::g_nx2_present_count.load(std::memory_order_relaxed) / far_shadow_alternate) %
+                      2 ==
+                  1
+            : far_shadow_mode == 0 || (far_shadow_mode == -1 && program_id == PokopiaProgramId);
+    if (drop_far_shadows) {
+        const auto& regs = maxwell3d->regs;
+        const u32 size = regs.zeta_size.width;
+        if (regs.zeta_enable != 0 && size >= 1024 && size == regs.zeta_size.height) {
+            const u32 colors = regs.rt_control.count.Value();
+            bool color_written = false;
+            for (u32 i = 0; i < colors && i < 8; ++i) {
+                color_written |= regs.color_mask[i].raw != 0;
+            }
+            const auto& vt = regs.viewport_transform[0];
+            const float half_width = std::abs(vt.scale_x);
+            const float half_height = std::abs(vt.scale_y);
+            const float left = vt.translate_x - half_width;
+            const float top = vt.translate_y - half_height;
+            const float extent = static_cast<float>(size);
+            if (!color_written && left == 0.0f && top == extent / 2.0f &&
+                half_width * 2.0f == extent && half_height * 4.0f == extent) {
+                return;
+            }
+        }
+    }
     TraceWindowTarget(*maxwell3d, *gpu_memory, is_indexed ? "draw-indexed" : "draw",
                       is_indexed ? maxwell3d->draw_manager.draw_state.index_buffer.count
                                  : maxwell3d->draw_manager.draw_state.vertex_buffer.count);
@@ -780,6 +828,11 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const auto& draw_state = maxwell3d->draw_manager.draw_state;
         const u32 num_instances{instance_count};
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
+        if (Nx2DrawCensus::Enabled()) [[unlikely]] {
+            Nx2DrawCensus::RecordDraw(maxwell3d->regs, draw_params.num_vertices,
+                                      draw_params.num_instances, false,
+                                      Core::g_nx2_present_count.load(std::memory_order_relaxed));
+        }
 
         if (mesh_draw) {
             scheduler.Record([groups = draw_params.num_vertices](vk::CommandBuffer cmdbuf) {
@@ -819,6 +872,10 @@ void RasterizerVulkan::DrawIndirect() {
     const auto& params = maxwell3d->draw_manager.indirect_state;
     buffer_cache.SetDrawIndirect(&params);
     PrepareDraw(params.is_indexed, [this, &params] {
+        if (Nx2DrawCensus::Enabled()) [[unlikely]] {
+            Nx2DrawCensus::RecordDraw(maxwell3d->regs, 0, 0, true,
+                                      Core::g_nx2_present_count.load(std::memory_order_relaxed));
+        }
         if (mesh_draw) {
             // Indirect task/mesh draws would need vkCmdDrawMeshTasksIndirectEXT's layout.
             static bool logged{};

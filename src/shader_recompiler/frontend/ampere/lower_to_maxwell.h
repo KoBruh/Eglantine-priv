@@ -1944,6 +1944,11 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
         case 0x381: case 0x981: { // LDG.E of 8 to 128 bits, register or uniform 64-bit address.
             // Sizes as Maxwell's: U8, S8, U16, S16, 32, 64, 128.
             const u32 size = insn.Bits(73, 3);
+            // LDG.E.STRONG.GPU desc[URn][Ra.64]: a load other workgroups' stores must reach (one
+            // workgroup reads what another published). It becomes LDG.CG, which the translator
+            // turns into a Coherent storage buffer: without it, AMD read stale lines from a
+            // non-coherent cache (Pokopia's photo encoder wrote bands of garbage).
+            const bool scoped_descriptor = opcode == 0x981 && insn.words[2] == 0x0c1ebd00;
             u32 address = insn.Bits(24, 8);
             if (size > 6 || (opcode == 0x381 && insn.Bits(32, 8)) ||
                 (size == 5 && (dest & 1)) || (size == 6 && (dest & 3)))
@@ -1979,7 +1984,8 @@ case 0x311: { // F2I.FTZ.U64.TRUNC, per nvdisasm: Maxwell's F2I gives 32 bits, s
                 }
             }
             emit(base(0xeed0000000000000ULL) | (u64{address} << 8) |
-                 (u64{insn.Bits(40, 24)} << 20) | (u64{1} << 45) | (u64{size} << 48));
+                 (u64{insn.Bits(40, 24)} << 20) | (u64{1} << 45) |
+                 (u64{scoped_descriptor} << 46) | (u64{size} << 48));
             break;
         }
         case 0x386: case 0x986: { // Global store of 32/64/128 bits, 64-bit address.

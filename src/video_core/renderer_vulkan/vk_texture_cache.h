@@ -64,6 +64,12 @@ public:
 
     StagingBufferRef UploadStagingBuffer(size_t size, bool deferred = false);
 
+    /// Reads `size` bytes of guest memory at device address `address` into `dst` (mapped staging
+    /// memory) on the worker thread, in order with the commands recorded around it: the GPU
+    /// thread hands the copy off instead of making it.
+    void DeferGuestRead(u8* dst, Tegra::MaxwellDeviceMemoryManager& memory, DAddr address,
+                        size_t size);
+
     StagingBufferRef DownloadStagingBuffer(size_t size, bool deferred = false);
 
     void FreeDeferredStagingBuffer(StagingBufferRef& ref);

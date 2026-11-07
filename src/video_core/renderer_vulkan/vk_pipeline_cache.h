@@ -264,6 +264,28 @@ private:
     GraphicsPipelineCacheKey graphics_key{};
     GraphicsPipeline* current_pipeline{};
 
+    /// What the last full lookup saw: while the engine's pipeline state stays clean
+    /// (Maxwell3D::pipeline_state_dirty) and these match, graphics_key is what it was and
+    /// current_pipeline is still the pipeline for it. EDEN_NX2_PIPELINE_SKIP=0 always looks up.
+    struct PipelineSkip {
+        const Tegra::Engines::Maxwell3D* maxwell3d{};
+        const GraphicsPipeline* pipeline{};
+        std::array<u64, 6> unique_hashes{};
+        Tegra::Engines::Maxwell3D::Regs::PrimitiveTopology topology{};
+        Tegra::Engines::Maxwell3D::EngineHint engine_state{};
+        bool valid{};
+    } pipeline_skip;
+    /// EDEN_NX2_PIPELINE_SKIP=verify: looks up anyway and compares (counts, mismatches).
+    void VerifyPipelineSkip(bool would_skip, bool dirty_only, u32 dirty_method,
+                            const GraphicsPipelineCacheKey& before);
+    struct PipelineSkipStats {
+        u64 lookups{};
+        u64 would_skip{};
+        u64 mismatches{};
+        u64 false_dirty{};
+        std::unordered_map<u32, u64> false_dirty_methods;
+    } pipeline_skip_stats;
+
     /// Declared before the pipelines, which may have been linked from its libraries.
     GraphicsPipelineLibraryCache pipeline_libraries;
     /// Destroys graphics pipelines unused for a while, once the GPU is done with them.

@@ -576,7 +576,9 @@ void ReplaceLoad(IR::Block& block, IR::Inst& inst, const IR::U32& storage_index,
                  const IR::U32& offset) {
     const IR::Opcode new_opcode{GlobalToStorage(inst.GetOpcode())};
     const auto it{IR::Block::InstructionList::s_iterator_to(inst)};
-    const IR::Value value{&*block.PrependNewInst(it, new_opcode, {storage_index, offset})};
+    // The flags carry over: a coherent load stays coherent (IREmitter::LoadGlobal32).
+    const IR::Value value{
+        &*block.PrependNewInst(it, new_opcode, {storage_index, offset}, inst.Flags<u32>())};
     inst.ReplaceUsesWith(value);
 }
 

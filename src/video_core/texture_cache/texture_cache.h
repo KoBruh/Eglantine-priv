@@ -567,8 +567,19 @@ void TextureCache<P>::TickFrame() {
     TickAsyncDecode();
     TickAsyncUnswizzle();
     if (frame_tick % 600 == 0 && !uploaded_ranges.empty()) {
-        for (const auto& [address, size] : uploaded_ranges) {
-            device_memory.HintCold(address, size);
+        // A range uploaded more than once in the window is being rewritten (Pokopia re-uploads
+        // three 4 MiB textures every 3 frames): it is hot, and hinting each upload cold took its
+        // pages out of the working set ~200 times a window just before the game wrote them again.
+        std::sort(uploaded_ranges.begin(), uploaded_ranges.end());
+        for (size_t i = 0; i < uploaded_ranges.size();) {
+            size_t next = i + 1;
+            while (next < uploaded_ranges.size() && uploaded_ranges[next] == uploaded_ranges[i]) {
+                ++next;
+            }
+            if (next - i == 1) {
+                device_memory.HintCold(uploaded_ranges[i].first, uploaded_ranges[i].second);
+            }
+            i = next;
         }
         uploaded_ranges.clear();
     }
@@ -2199,12 +2210,19 @@ void TextureCache<P>::UploadLayers(Image& image, std::span<const u32> layers) {
             std::vector<BufferImageCopy> copies;
             for (size_t i = 0; i < layers.size(); ++i) {
                 const GPUVAddr layer_addr = image.gpu_addr + u64{layers[i]} * image.info.layer_stride;
-                Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
-                    swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride,
-                                 &swizzle_data_buffer);
-                auto layer_copies =
-                    UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
-                                   staging.mapped_span.subspan(i * layer_size, layer_size));
+                const std::span<u8> layer_out = staging.mapped_span.subspan(i * layer_size, layer_size);
+                auto layer_copies = [&] {
+                    if (layer_info.type == ImageType::Linear) {
+                        // Read straight from guest memory; no copy into swizzle_data first.
+                        return UnswizzleLinearImage(*gpu_memory, layer_addr, layer_info,
+                                                    image.info.layer_stride, layer_out);
+                    }
+                    Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead>
+                        swizzle_data(*gpu_memory, layer_addr, image.info.layer_stride,
+                                     &swizzle_data_buffer);
+                    return UnswizzleImage(*gpu_memory, layer_addr, layer_info, swizzle_data,
+                                          layer_out);
+                }();
                 for (BufferImageCopy copy : layer_copies) {
                     copy.buffer_offset += i * layer_size;
                     copy.image_subresource.base_layer = static_cast<s32>(layers[i]);
@@ -2273,6 +2291,45 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
         return;
     }
 
+    if (image.info.type == ImageType::Linear) {
+        // A linear image is read straight from guest memory into its destination: copying it
+        // into swizzle_data first, as below, read it twice (3% of the split's back thread with
+        // Pokopia's town in view).
+        if (True(image.flags & ImageFlagBits::Converted)) {
+            unswizzle_data_buffer.resize_destructive(image.unswizzled_size_bytes);
+            auto copies = UnswizzleLinearImage(*gpu_memory, gpu_addr, image.info,
+                                               image.guest_size_bytes, unswizzle_data_buffer);
+            ConvertImage(unswizzle_data_buffer, image.info, mapped_span, copies);
+            image.UploadMemory(staging, copies);
+        } else {
+            // Pokopia rewrites three 4 MiB linear textures in turn and each is uploaded again
+            // every 3 frames: the worker thread copies guest memory into the staging buffer,
+            // right before the image copy it records, instead of this thread (~2.5% of the
+            // split's back thread). EDEN_NX2_DEFER_UPLOADS=0 copies here.
+            if constexpr (requires(u8* p) {
+                              runtime.DeferGuestRead(p, device_memory, DAddr{}, size_t{});
+                          }) {
+                static const bool defer_uploads = [] {
+                    const char* const value = std::getenv("EDEN_NX2_DEFER_UPLOADS");
+                    return value == nullptr || value[0] != '0';
+                }();
+                constexpr size_t DeferMinBytes = 64_KiB;
+                if (defer_uploads && image.guest_size_bytes >= DeferMinBytes &&
+                    False(image.flags & ImageFlagBits::Sparse) &&
+                    mapped_span.size_bytes() >= image.guest_size_bytes) {
+                    runtime.DeferGuestRead(mapped_span.data(), device_memory, image.cpu_addr,
+                                           image.guest_size_bytes);
+                    const auto copies = LinearImageCopies(image.info, image.guest_size_bytes);
+                    image.UploadMemory(staging, copies);
+                    return;
+                }
+            }
+            const auto copies = UnswizzleLinearImage(*gpu_memory, gpu_addr, image.info,
+                                                     image.guest_size_bytes, mapped_span);
+            image.UploadMemory(staging, copies);
+        }
+        return;
+    }
     Tegra::Memory::GpuGuestMemory<u8, Tegra::Memory::GuestMemoryFlags::UnsafeRead> swizzle_data(
         *gpu_memory, gpu_addr, image.guest_size_bytes, &swizzle_data_buffer);
     if (True(image.flags & ImageFlagBits::Converted)) {

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <string>
@@ -78,8 +79,21 @@ inline constexpr std::array<const char*, static_cast<size_t>(Zone::Count)> zone_
     "drain dma read", "drain release",
 };
 
+namespace detail {
+/// -1 until the first call reads EDEN_NX2_GPU_PROFILE, then 0 or 1. Not read during static
+/// initialization: main() sets the variables from nx2_switches.txt first.
+inline std::atomic<int> profile_state{-1};
+} // namespace detail
+
+// Called around every engine method and draw (millions of times a second): a relaxed load, where
+// a function-local static paid the thread-safe initialization check on every call.
 inline bool Enabled() {
-    static const bool enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+    const int state = detail::profile_state.load(std::memory_order_relaxed);
+    if (state >= 0) [[likely]] {
+        return state != 0;
+    }
+    const bool enabled = std::getenv("EDEN_NX2_GPU_PROFILE") != nullptr;
+    detail::profile_state.store(enabled ? 1 : 0, std::memory_order_relaxed);
     return enabled;
 }
 
